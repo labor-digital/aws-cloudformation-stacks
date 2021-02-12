@@ -1,0 +1,608 @@
+{
+  "Parameters" : {
+    "Cluster" : {
+      "Description" : "Name of the cluster, where this service should run.",
+      "Type" : "String",
+      "MinLength" : 1
+    },
+    "ListenerArn" : {
+      "Description" : "ARN of the https-listener we should register with.",
+      "Type" : "String",
+      "MinLength" : 1
+    },
+    "ListenerArnHttp" : {
+      "Description" : "ARN of the http-listener we should register with.",
+      "Type" : "String",
+      "MinLength" : 1
+    },
+    "ListenerRuleHost" : {
+      "Description" : "Hostname for the ListenerRule.",
+      "Type" : "String",
+      "MinLength" : 1
+    },
+    "ListenerRulePath" : {
+      "Description" : "PathPattern for the ListenerRule. Normally you should use * here.",
+      "Type" : "String",
+      "MinLength" : 1
+    },
+    "ListenerRulePriority" : {
+      "Description" : "The Priority for the ListenerRule",
+      "Type" : "Number",
+      "MinValue" : 1
+    },
+    "Vpc" : {
+      "Description" : "Vpc to start this service in.",
+      "Type" : "AWS::EC2::VPC::Id",
+      "MinLength" : 1
+    },
+    "ContainerCommand" : {
+      "Description" : "The startup command for the container.",
+      "Default": "/opt/bootstrap.sh",
+      "Type" : "String",
+      "MinLength" : 1
+    },
+    "InitialDockerImage" : {
+      "Description" : "The initial Docker image for the container.",
+      "Type" : "String",
+      "MinLength" : 1
+    },
+    "TaskMemory" : {
+      "Type" : "Number",
+      "Description" : "The Memory soft limit for one Task-Instance. [128-2048]",
+      "MinValue" : 128,
+      "MaxValue" : 2048
+    },
+    "ServiceDesiredCount" : {
+      "Type" : "Number",
+      "Description" : "The desired task count of this service. This number is also taken for the min count of Task-Instances (for Autoscaling). [0-4]",
+      "MinValue" : 0,
+      "MaxValue" : 4
+    },
+    "ServiceMaxCapacity" : {
+      "Type" : "Number",
+      "Description" : "The max count of Task-Instances (for Autoscaling). [1-10]",
+      "MinValue" : 1,
+      "MaxValue" : 10
+    },
+    "ECSHealthCheckGracePeriod" : {
+      "Description" : "The number in seconds ECS waits for the container to initialize before it kills the instance because of \"poor health\".",
+      "Default": "0",
+      "Type" : "Number"
+    },
+    "ServiceTrafficPort": {
+      "Description" : "Port on which the docker container is serving content. This one is also used for the health check.",
+      "Default" : "443",
+      "Type" : "Number",
+      "AllowedValues" : ["80", "443", "3000", "8000", "8080", "8443"]
+    },
+    "ServiceTrafficProtocol": {
+      "Description" : "Protocol on which the docker container is serving content. This one is also used for the health check.",
+      "Default" : "HTTPS",
+      "Type" : "String",
+      "AllowedValues" : ["HTTP", "HTTPS"]
+    },
+    "ECSHealthCheckPath": {
+      "Description" : "Path to use for health check.",
+      "Default" : "/test.php",
+      "Type" : "String"
+    }
+  },
+  "Resources" : {
+    "Key" : {
+      "Type" : "AWS::KMS::Key",
+      "Properties" : {
+        "Description" : {
+          "Fn::Join" : [ "-", [
+            { "Ref" : "AWS::StackName" },
+            "Key" ]
+          ]
+        },
+        "Enabled" : "true",
+        "EnableKeyRotation" : "false",
+        "KeyPolicy" : {
+          "Version" : "2012-10-17",
+          "Statement" : [ {
+            "Sid" : "Enable IAM User Permissions",
+            "Effect" : "Allow",
+            "Principal" : {
+              "AWS" : {
+                "Fn::Join" : [ "", [ "arn:aws:iam::",
+                  { "Ref" : "AWS::AccountId" },
+                  ":root" ]
+                ]
+              }
+            },
+            "Action" : "kms:*",
+            "Resource" : "*"
+          } ]
+        },
+        "Tags" : [ {
+          "Key" : "Name",
+          "Value" : {
+            "Fn::Join" : [ "-", [
+              { "Ref" : "AWS::StackName" },
+              "Key" ]
+            ]
+          }
+        } ]
+      }
+    },
+    "KeyAlias" : {
+      "Type" : "AWS::KMS::Alias",
+      "Properties" : {
+        "AliasName" : {
+          "Fn::Join" : [ "/", [ "alias", {
+            "Fn::Join" : [ "-", [
+              { "Ref" : "AWS::StackName" },
+              "KeyAlias" ]
+            ]
+          } ] ]
+        },
+        "TargetKeyId" : { "Ref" : "Key" }
+      },
+      "DependsOn" : [ "Key" ]
+    },
+    "ServiceRole" : {
+      "Type" : "AWS::IAM::Role",
+      "Properties" : {
+        "AssumeRolePolicyDocument" : {
+          "Version" : "2012-10-17",
+          "Statement" : [ {
+            "Effect" : "Allow",
+            "Principal" : {
+              "Service" : [ "ecs.amazonaws.com" ]
+            },
+            "Action" : [ "sts:AssumeRole" ]
+          } ]
+        },
+        "ManagedPolicyArns" : [ "arn:aws:iam::aws:policy/service-role/AmazonEC2ContainerServiceRole" ],
+        "Path" : "/",
+        "RoleName" : {
+          "Fn::Join" : [ "-", [
+            { "Ref" : "AWS::StackName" },
+            "ServiceRole" ]
+          ]
+        }
+      }
+    },
+    "LogGroup" : {
+      "Type" : "AWS::Logs::LogGroup",
+      "Properties" : {
+        "LogGroupName" : {
+          "Fn::Join" : [ "-", [
+            { "Ref" : "AWS::StackName" },
+            "LogGroup" ]
+          ]
+        },
+        "RetentionInDays" : 14
+      }
+    },
+    "TaskRole" : {
+      "Type" : "AWS::IAM::Role",
+      "Properties" : {
+        "AssumeRolePolicyDocument" : {
+          "Version" : "2012-10-17",
+          "Statement" : [ {
+            "Effect" : "Allow",
+            "Principal" : {
+              "Service" : [ "ecs-tasks.amazonaws.com" ]
+            },
+            "Action" : [ "sts:AssumeRole" ]
+          } ]
+        },
+        "Policies" : [ {
+          "PolicyDocument" : {
+            "Version" : "2012-10-17",
+            "Statement" : [
+              {
+                "Effect" : "Allow",
+                "Action" : [
+                  "logs:ListTagsLogGroup",
+                  "logs:CreateLogStream",
+                  "logs:DescribeLogGroups",
+                  "logs:DescribeLogStreams",
+                  "logs:GetLogEvents",
+                  "logs:PutLogEvents"
+                ],
+                "Resource" : [ {
+                  "Fn::Join" : [ "", [
+                    "arn:aws:logs:",
+                    { "Ref" : "AWS::Region" },
+                    ":",
+                    { "Ref" : "AWS::AccountId" },
+                    ":*" ]
+                  ]
+                } ]
+              },
+              {
+                "Effect" : "Allow",
+                "Action" : [ "ssm:DescribeParameters" ],
+                "Resource" : "*"
+              },
+              {
+                "Effect" : "Allow",
+                "Action" : [ "ssm:GetParameters" ],
+                "Resource" : [ {
+                  "Fn::Join" : [ "", [
+                    "arn:aws:ssm:",
+                    { "Ref" : "AWS::Region" },
+                    ":",
+                    { "Ref" : "AWS::AccountId" },
+                    ":parameter/",
+                    { "Ref" : "AWS::StackName" },
+                    "/*" ]
+                  ]
+                } ]
+              },
+              {
+                "Effect" : "Allow",
+                "Action" : [ "kms:Decrypt" ],
+                "Resource" : [ { "Fn::GetAtt" : [ "Key", "Arn" ] } ]
+              },
+              {
+                "Effect": "Allow",
+                "Action": [
+                  "ecr:GetAuthorizationToken",
+                  "ecr:BatchCheckLayerAvailability",
+                  "ecr:GetDownloadUrlForLayer",
+                  "ecr:BatchGetImage"
+                ],
+                "Resource": "*"
+              }
+            ]
+          },
+          "PolicyName" : {
+            "Fn::Join" : [ "-", [
+              { "Ref" : "AWS::StackName" },
+              "TaskRole" ]
+            ]
+          }
+        } ],
+        "Path" : "/",
+        "RoleName" : {
+          "Fn::Join" : [ "-", [
+            { "Ref" : "AWS::StackName" }, "TaskRole" ]
+          ]
+        }
+      },
+      "DependsOn" : [ "Key" ]
+    },
+    "Task" : {
+      "Type" : "AWS::ECS::TaskDefinition",
+      "Properties" : {
+        "Volumes" : [ {
+          "Host" : {
+            "SourcePath" : {
+              "Fn::Join" : [ "", [
+                "/mnt/efs/",
+                { "Ref" : "AWS::StackName"} ]
+              ]
+            }
+          },
+          "Name" : "data"
+        } ],
+        "Family" : {
+          "Fn::Join" : [ "-", [
+            { "Ref" : "AWS::StackName" },
+            "Task" ]
+          ]
+        },
+        "NetworkMode" : "bridge",
+        "ExecutionRoleArn" : { "Fn::GetAtt" : [ "TaskRole", "Arn" ] },
+        "TaskRoleArn" : { "Fn::GetAtt" : [ "TaskRole", "Arn" ] },
+        "ContainerDefinitions" : [ {
+          "Command" : [ {
+            "Ref" : "ContainerCommand"
+          } ],
+          "EntryPoint" : [ "sh", "-c" ],
+          "Environment" : [ {
+            "Name" : "PROJECT_ENV",
+            "Value" : "prod"
+          }, {
+            "Name" : "PROJECT_ENV_HOSTER",
+            "Value" : "aws"
+          } ],
+          "Essential" : true,
+          "Image" : { "Ref" : "InitialDockerImage" },
+          "MemoryReservation" : { "Ref" : "TaskMemory" },
+          "MountPoints" : [ {
+            "ReadOnly" : "false",
+            "ContainerPath" : "/var/www/html_data",
+            "SourceVolume" : "data"
+          } ],
+          "Name" : {
+            "Fn::Join" : [ "-", [
+              { "Ref" : "AWS::StackName" },
+              "Container" ] ]
+          },
+          "PortMappings" : [ {
+            "HostPort" : 0,
+            "Protocol" : "tcp",
+            "ContainerPort" : { "Ref" : "ServiceTrafficPort" }
+          } ],
+          "LogConfiguration" : {
+            "LogDriver" : "awslogs",
+            "Options" : {
+              "awslogs-group": {
+                "Fn::Join" : [ "-", [
+                  { "Ref" : "AWS::StackName" },
+                  "LogGroup" ]
+                ]
+              },
+              "awslogs-region": { "Ref" : "AWS::Region" },
+              "awslogs-stream-prefix": "ECSDockerTask"
+            }
+          }
+        } ]
+      },
+      "DependsOn" : [ "TaskRole" ]
+    },
+    "Target" : {
+      "Type" : "AWS::ElasticLoadBalancingV2::TargetGroup",
+      "Properties" : {
+        "HealthCheckIntervalSeconds" : 45,
+        "HealthCheckPath" : { "Ref" : "ECSHealthCheckPath" },
+        "HealthCheckPort" : "traffic-port",
+        "HealthCheckProtocol" : { "Ref" : "ServiceTrafficProtocol" },
+        "HealthCheckTimeoutSeconds" : 15,
+        "HealthyThresholdCount" : 2,
+        "Matcher" : {
+          "HttpCode" : "200"
+        },
+        "Name" : {
+          "Fn::Join" : [ "-", [
+            { "Ref" : "AWS::StackName" },
+            "Target" ]
+          ]
+        },
+        "Port" : { "Ref" : "ServiceTrafficPort" },
+        "Protocol" : { "Ref" : "ServiceTrafficProtocol" },
+        "Tags" : [ {
+          "Key" : "Name",
+          "Value" : {
+            "Fn::Join" : [ "-", [
+              { "Ref" : "AWS::StackName" },
+              "Target" ] ]
+          }
+        } ],
+        "TargetGroupAttributes" : [ {
+          "Key" : "deregistration_delay.timeout_seconds",
+          "Value" : "120"
+        }, {
+          "Key" : "stickiness.enabled",
+          "Value" : "false"
+        } ],
+        "TargetType" : "instance",
+        "UnhealthyThresholdCount" : 4,
+        "VpcId" : { "Ref" : "Vpc" }
+      }
+    },
+    "LoadbalancerRuleHttp" : {
+      "Type" : "AWS::ElasticLoadBalancingV2::ListenerRule",
+      "Properties" : {
+        "Actions" : [ {
+          "RedirectConfig" : {
+            "Host" : "#{host}",
+            "Path" : "/#{path}",
+            "Port" : "443",
+            "Protocol" : "HTTPS",
+            "Query" : "#{query}",
+            "StatusCode" : "HTTP_301"
+          },
+          "Type" : "redirect"
+        } ],
+        "Conditions" : [ {
+          "Field" : "host-header",
+          "Values" : [ { "Ref" : "ListenerRuleHost" } ]
+        }, {
+          "Field" : "path-pattern",
+          "Values" : [ { "Ref" : "ListenerRulePath" } ]
+        } ],
+        "ListenerArn" : { "Ref" : "ListenerArnHttp" },
+        "Priority" : { "Ref" : "ListenerRulePriority" }
+      }
+    },
+    "LoadbalancerRule" : {
+      "Type" : "AWS::ElasticLoadBalancingV2::ListenerRule",
+      "Properties" : {
+        "Actions" : [ {
+          "TargetGroupArn" : { "Ref" : "Target" },
+          "Type" : "forward"
+        } ],
+        "Conditions" : [ {
+          "Field" : "host-header",
+          "Values" : [ { "Ref" : "ListenerRuleHost" } ]
+        }, {
+          "Field" : "path-pattern",
+          "Values" : [ { "Ref" : "ListenerRulePath" } ]
+        } ],
+        "ListenerArn" : { "Ref" : "ListenerArn" },
+        "Priority" : { "Ref" : "ListenerRulePriority" }
+      },
+      "DependsOn" : [ "Target" ]
+    },
+    "Service" : {
+      "Type" : "AWS::ECS::Service",
+      "Properties" : {
+        "Cluster" : { "Ref" : "Cluster" },
+        "DeploymentConfiguration" : {
+          "MaximumPercent" : 200,
+          "MinimumHealthyPercent" : 50
+        },
+        "DesiredCount" : { "Ref" : "ServiceDesiredCount" },
+        "LoadBalancers" : [ {
+          "ContainerName" : {
+            "Fn::Join" : [ "-", [
+              { "Ref" : "AWS::StackName" },
+              "Container" ]
+            ]
+          },
+          "ContainerPort" : { "Ref" : "ServiceTrafficPort" },
+          "TargetGroupArn" : { "Ref" : "Target"  }
+        } ],
+        "HealthCheckGracePeriodSeconds": { "Ref": "ECSHealthCheckGracePeriod" },
+        "Role" : { "Fn::GetAtt" : [ "ServiceRole", "Arn" ] },
+        "PlacementStrategies" : [ {
+          "Type" : "spread",
+          "Field" : "attribute:ecs.availability-zone"
+        }, {
+          "Type" : "spread",
+          "Field" : "instanceId"
+        } ],
+        "ServiceName" : {
+          "Fn::Join" : [ "-", [
+            { "Ref" : "AWS::StackName" },
+            "Service" ]
+          ]
+        },
+        "TaskDefinition" : { "Ref" : "Task" }
+      },
+      "DependsOn" : [ "ServiceRole", "Task", "Target" ]
+    },
+    "AutoscaleRole" : {
+      "Type" : "AWS::IAM::Role",
+      "Properties" : {
+        "AssumeRolePolicyDocument" : {
+          "Version" : "2012-10-17",
+          "Statement" : [ {
+            "Effect" : "Allow",
+            "Principal" : {
+              "Service" : [ "application-autoscaling.amazonaws.com" ]
+            },
+            "Action" : [ "sts:AssumeRole" ]
+          } ]
+        },
+        "ManagedPolicyArns" : [ "arn:aws:iam::aws:policy/service-role/AmazonEC2ContainerServiceAutoscaleRole" ],
+        "Path" : "/",
+        "RoleName" : {
+          "Fn::Join" : [ "-", [
+            { "Ref" : "AWS::StackName" },
+            "AutoscaleRole" ]
+          ]
+        }
+      }
+    },
+    "Autoscaletarget" : {
+      "Type" : "AWS::ApplicationAutoScaling::ScalableTarget",
+      "Properties" : {
+        "MaxCapacity" : { "Ref" : "ServiceMaxCapacity" },
+        "MinCapacity" : { "Ref" : "ServiceDesiredCount" },
+        "ResourceId" : {
+          "Fn::Join" : [ "/", [
+            "service",
+            { "Ref" : "Cluster" },
+            { "Fn::GetAtt" : [ "Service", "Name" ] }]
+          ]
+        },
+        "RoleARN" : {
+          "Fn::GetAtt" : [ "AutoscaleRole", "Arn" ]
+        },
+        "ScalableDimension" : "ecs:service:DesiredCount",
+        "ServiceNamespace" : "ecs"
+      },
+      "DependsOn" : [ "AutoscaleRole" ]
+    },
+    "AutoscaleScaleUp" : {
+      "Type" : "AWS::ApplicationAutoScaling::ScalingPolicy",
+      "Properties" : {
+        "PolicyName" : {
+          "Fn::Join" : [ "-", [
+            { "Ref" : "AWS::StackName" },
+            "AutoscaleScaleUp" ]
+          ]
+        },
+        "PolicyType" : "StepScaling",
+        "ScalingTargetId" : { "Ref" : "Autoscaletarget" },
+        "StepScalingPolicyConfiguration" : {
+          "AdjustmentType" : "ChangeInCapacity",
+          "Cooldown" : 300,
+          "MetricAggregationType" : "Average",
+          "StepAdjustments" : [ {
+            "MetricIntervalLowerBound" : 0,
+            "ScalingAdjustment" : 1
+          } ]
+        }
+      },
+      "DependsOn" : [ "Autoscaletarget" ]
+    },
+    "AlarmAutoscaleScaleUp" : {
+      "Type" : "AWS::CloudWatch::Alarm",
+      "Properties" : {
+        "AlarmActions" : [ { "Ref" : "AutoscaleScaleUp" } ],
+        "AlarmName" : {
+          "Fn::Join" : [ "-", [
+            { "Ref" : "AWS::StackName" },
+            "AlarmAutoscaleScaleUp" ]
+          ]
+        },
+        "ComparisonOperator" : "GreaterThanThreshold",
+        "Dimensions" : [ {
+          "Name" : "ClusterName",
+          "Value" : { "Ref" : "Cluster" }
+        }, {
+          "Name" : "ServiceName",
+          "Value" : {
+            "Fn::GetAtt" : [ "Service", "Name" ]
+          }
+        } ],
+        "EvaluationPeriods" : "1",
+        "MetricName" : "CPUUtilization",
+        "Namespace" : "AWS/ECS",
+        "Period" : 60,
+        "Statistic" : "Average",
+        "Threshold" : 65
+      },
+      "DependsOn" : [ "AutoscaleScaleUp", "Service" ]
+    },
+    "AutoscaleScaleDown" : {
+      "Type" : "AWS::ApplicationAutoScaling::ScalingPolicy",
+      "Properties" : {
+        "PolicyName" : {
+          "Fn::Join" : [ "-", [
+            { "Ref" : "AWS::StackName" },
+            "AutoscaleScaleDown" ]
+          ]
+        },
+        "PolicyType" : "StepScaling",
+        "ScalingTargetId" : { "Ref" : "Autoscaletarget" },
+        "StepScalingPolicyConfiguration" : {
+          "AdjustmentType" : "ChangeInCapacity",
+          "Cooldown" : 300,
+          "MetricAggregationType" : "Average",
+          "StepAdjustments" : [ {
+            "MetricIntervalUpperBound" : 0,
+            "ScalingAdjustment" : -1
+          } ]
+        }
+      },
+      "DependsOn" : [ "Autoscaletarget" ]
+    },
+    "AlarmAutoscaleScaleDown" : {
+      "Type" : "AWS::CloudWatch::Alarm",
+      "Properties" : {
+        "AlarmActions" : [ { "Ref" : "AutoscaleScaleDown" } ],
+        "AlarmName" : {
+          "Fn::Join" : [ "-", [
+            { "Ref" : "AWS::StackName" },
+            "AlarmAutoscaleScaleDown" ]
+          ]
+        },
+        "ComparisonOperator" : "LessThanThreshold",
+        "Dimensions" : [ {
+          "Name" : "ClusterName",
+          "Value" : { "Ref" : "Cluster" }
+        }, {
+          "Name" : "ServiceName",
+          "Value" : { "Fn::GetAtt" : [ "Service", "Name" ] }
+        } ],
+        "EvaluationPeriods" : "1",
+        "MetricName" : "CPUUtilization",
+        "Namespace" : "AWS/ECS",
+        "Period" : 60,
+        "Statistic" : "Average",
+        "Threshold" : 15
+      },
+      "DependsOn" : [ "AutoscaleScaleDown", "Service" ]
+    }
+  }
+}

@@ -1,0 +1,304 @@
+{
+
+	"Parameters" : {
+		"AscalegroupMinSize" : {
+			"Type" : "Number",
+			"Description" : "The min count of EC2-Instances (for Autoscaling) [1-10].",
+			"MinValue" : 1,
+			"MaxValue" : 10
+		},
+		"AscalegroupMaxSize" : {
+			"Type" : "Number",
+			"Description" : "The max count of EC2-Instances (for Autoscaling) [5-10].",
+			"MinValue" : 5,
+			"MaxValue" : 10
+		},
+		"CreateInstanceType": {
+			"Type": "String",
+			"Default": "t2.micro",
+			"AllowedValues" : ["t2.micro", "t2.small", "t2.medium"],
+			"Description" : "Enter t2.micro, t2.small, or t2.large. Default is t2.micro."
+		},
+		"MasterStackName": {
+			"Type" : "String",
+			"Description": "Go to your Master-Stack, click on 'Outputs' and copy the value of: 'MyName'"
+		},
+		"MasterImageId": {
+			"Type" : "String",
+			"Description": "Go to your Master-Stack, click on 'Outputs' and copy the value of: 'ImageId'"
+		},
+		"MasterSubnet1": {
+			"Type" : "String",
+			"Description": "Go to your Master-Stack, click on 'Outputs' and copy the value of: 'Subnet1'"
+		},
+		"MasterSubnet2": {
+			"Type" : "String",
+			"Description": "Go to your Master-Stack, click on 'Outputs' and copy the value of: 'Subnet2'"
+		},
+		"MasterInstanceroleProfile": {
+			"Type" : "String",
+			"Description": "Go to your Master-Stack, click on 'Outputs' and copy the value of: 'InstanceroleProfile'"
+		},
+		"MasterKeypairName": {
+			"Type" : "String",
+			"Description": "Go to your Master-Stack, click on 'Outputs' and copy the value of: 'KeypairName'"
+		},
+		"MasterEfs": {
+			"Type" : "String",
+			"Description": "Go to your Master-Stack, click on 'Outputs' and copy the value of: 'Efs'"
+		},
+		"MasterSgVpcMysqlAccess": {
+			"Type" : "String",
+			"Description": "Go to your Master-Stack, click on 'Outputs' and copy the value of: 'SgVpcMysqlAccess'"
+		},
+		"MasterSgVpcLoadbalancerports": {
+			"Type" : "String",
+			"Description": "Go to your Master-Stack, click on 'Outputs' and copy the value of: 'SgVpcLoadbalancerports'"
+		},
+		"MasterSgVpcEfsAccess": {
+			"Type" : "String",
+			"Description": "Go to your Master-Stack, click on 'Outputs' and copy the value of: 'SgVpcEfsAccess'"
+		},
+		"MasterSgLaborSsh": {
+			"Type" : "String",
+			"Description": "Go to your Master-Stack, click on 'Outputs' and copy the value of: 'SgLaborSsh'"
+		},
+		"MasterAscalegroupHookTermTopic": {
+			"Type" : "String",
+			"Description": "Go to your Master-Stack, click on 'Outputs' and copy the value of: 'AscalegroupHookTermTopic'"
+		}
+	},
+
+	"Resources" : {
+
+		"Ecscluster" : {
+			"Type" : "AWS::ECS::Cluster",
+			"Properties" : {
+				"ClusterName" : {
+					"Fn::Join" : [ "-", [
+						{ "Ref" : "AWS::StackName" },
+						{ "Ref":  "MasterStackName" },
+						"Sub-Ecscluster" ] ]
+				}
+			}
+		},
+
+		"Launchconfiguration" : {
+			"Type" : "AWS::AutoScaling::LaunchConfiguration",
+			"Properties" : {
+				"AssociatePublicIpAddress" : "true",
+				"BlockDeviceMappings" : [ {
+					"DeviceName" : "/dev/xvda",
+					"Ebs" : {
+						"VolumeSize" : "8",
+						"VolumeType" : "gp2",
+						"DeleteOnTermination" : "true"
+					}
+				}, {
+					"DeviceName" : "/dev/xvdcz",
+					"Ebs" : {
+						"VolumeSize" : "22",
+						"VolumeType" : "gp2",
+						"DeleteOnTermination" : "true",
+						"Encrypted" : "false"
+					}
+				} ],
+				"EbsOptimized" : "false",
+				"IamInstanceProfile" : { "Ref":  "MasterInstanceroleProfile" },
+				"ImageId" : { "Ref":  "MasterImageId" },
+				"InstanceMonitoring" : "true",
+				"InstanceType" : { "Ref":  "CreateInstanceType" },
+				"KeyName" : { "Ref":  "MasterKeypairName" },
+				"SecurityGroups" : [
+					{ "Ref":  "MasterSgVpcMysqlAccess" },
+					{ "Ref":  "MasterSgVpcLoadbalancerports" },
+					{ "Ref":  "MasterSgVpcEfsAccess" },
+					{ "Ref":  "MasterSgLaborSsh" }
+				],
+				"UserData" : {
+					"Fn::Base64" : {
+						"Fn::Join" : [ "", [
+							"#!/bin/bash\n",
+							"echo ECS_CLUSTER=",
+							{ "Ref" : "Ecscluster" },
+							" >> /etc/ecs/ecs.config\n", "\n", "sudo yum install -y nfs-utils\n", "\n", "sudo stop ecs\n", "sudo mkdir /mnt/efs\n", "sudo mount -t nfs4 -o nfsvers=4.1,rsize=1048576,wsize=1048576,hard,timeo=600,retrans=2 ",
+							{ "Ref":  "MasterEfs" },
+							".efs.",
+							{ "Ref" : "AWS::Region" },
+							".amazonaws.com:/ /mnt/efs\n", "sudo service docker restart\n", "sudo start ecs\n" ]
+						]
+					}
+				}
+			},
+			"DependsOn" : ["Ecscluster"]
+		},
+		"Ascalegroup" : {
+			"Type" : "AWS::AutoScaling::AutoScalingGroup",
+			"Properties" : {
+				"Cooldown" : "300",
+				"DesiredCapacity" : {
+					"Ref" : "AscalegroupMinSize"
+				},
+				"HealthCheckGracePeriod" : 300,
+				"HealthCheckType" : "EC2",
+				"LaunchConfigurationName" : {
+					"Ref" : "Launchconfiguration"
+				},
+				"LifecycleHookSpecificationList" : [ {
+					"DefaultResult" : "ABANDON",
+					"HeartbeatTimeout" : 3600,
+					"LifecycleHookName" : {
+						"Fn::Join" : [ "-", [
+							{ "Ref" : "MasterStackName" },
+							"AscalegroupHookTerm" ]
+						]
+					},
+					"LifecycleTransition" : "autoscaling:EC2_INSTANCE_TERMINATING"
+				} ],
+				"MaxSize" : {
+					"Ref" : "AscalegroupMaxSize"
+				},
+				"MinSize" : {
+					"Ref" : "AscalegroupMinSize"
+				},
+				"Tags" : [ {
+					"Key" : "Name",
+					"Value" : {
+						"Fn::Join" : [ "-", [
+							{ "Ref" : "AWS::StackName" },
+							"Instance" ]
+						]
+					},
+					"PropagateAtLaunch" : "true"
+				} ],
+				"TerminationPolicies" : [ "OldestInstance" ],
+				"VPCZoneIdentifier" : [
+					{ "Ref":  "MasterSubnet1" },
+					{ "Ref":  "MasterSubnet2" }
+				]
+			},
+			"DependsOn" : [ "Launchconfiguration"]
+		},
+		"AscalegroupHookTermRule" : {
+			"Type" : "AWS::Events::Rule",
+			"Properties" : {
+				"Description" : {
+					"Fn::Join" : [ "-", [
+						{ "Ref" : "AWS::StackName" },
+						"AscalegroupHookTermRule" ]
+					]
+				},
+				"EventPattern" : {
+					"source" : [ "aws.autoscaling" ],
+					"detail-type" : [ "EC2 Instance-terminate Lifecycle Action" ],
+					"detail" : {
+						"AutoScalingGroupName" : [ { "Ref" : "Ascalegroup" } ]
+					}
+				},
+				"Name" : {
+					"Fn::Join" : [ "-", [ {
+						"Ref" : "AWS::StackName"
+					}, "AscalegroupHookTermRule" ] ]
+				},
+				"State" : "ENABLED",
+				"Targets" : [ {
+					"Arn" : { "Ref":  "MasterAscalegroupHookTermTopic" },
+					"Id" : {
+						"Fn::Join" : [ "-", [ { "Ref" : "AWS::StackName" }, "AscalegroupHookTermRuleTarget" ] ]
+					}
+				} ]
+			},
+			"DependsOn" : [ "Ascalegroup" ]
+		},
+		"AscalegroupHookTermTopicPolicy" : {
+			"Type" : "AWS::SNS::TopicPolicy",
+			"Properties" : {
+				"PolicyDocument" : {
+					"Version" : "2012-10-17",
+					"Statement" : [ {
+						"Effect" : "Allow",
+						"Principal" : {
+							"Service" : "events.amazonaws.com"
+						},
+						"Action" : "sns:Publish",
+						"Resource" : { "Ref":  "MasterAscalegroupHookTermTopic" }
+					} ]
+				},
+				"Topics" : [ { "Ref":  "MasterAscalegroupHookTermTopic" } ]
+			}
+		},
+		"AscalegroupScaleDown" : {
+			"Type" : "AWS::AutoScaling::ScalingPolicy",
+			"Properties" : {
+				"AdjustmentType" : "ChangeInCapacity",
+				"AutoScalingGroupName" : {
+					"Ref" : "Ascalegroup"
+				},
+				"Cooldown" : "300",
+				"PolicyType" : "SimpleScaling",
+				"ScalingAdjustment" : -1
+			},
+			"DependsOn" : [ "Ascalegroup" ]
+		},
+		"AlarmAscalegroupScaleDown" : {
+			"Type" : "AWS::CloudWatch::Alarm",
+			"Properties" : {
+				"AlarmActions" : [ { "Ref" : "AscalegroupScaleDown" } ],
+				"AlarmName" : {
+					"Fn::Join" : [ "-", [ {
+						"Ref" : "AWS::StackName"
+					}, "AlarmAscalegroupScaleDown" ] ]
+				},
+				"ComparisonOperator" : "LessThanThreshold",
+				"Dimensions" : [ {
+					"Name" : "ClusterName",
+					"Value" : { "Ref" : "Ecscluster" }
+				} ],
+				"EvaluationPeriods" : "1",
+				"MetricName" : "MemoryReservation",
+				"Namespace" : "AWS/ECS",
+				"Period" : 60,
+				"Statistic" : "Average",
+				"Threshold" : 43
+			},
+			"DependsOn" : [ "AscalegroupScaleDown", "Ecscluster" ]
+		},
+		"AscalegroupScaleUp" : {
+			"Type" : "AWS::AutoScaling::ScalingPolicy",
+			"Properties" : {
+				"AdjustmentType" : "ChangeInCapacity",
+				"AutoScalingGroupName" : { "Ref" : "Ascalegroup" },
+				"Cooldown" : "300",
+				"PolicyType" : "SimpleScaling",
+				"ScalingAdjustment" : 1
+			},
+			"DependsOn" : [ "Ascalegroup" ]
+		},
+		"AlarmAscalegroupScaleUp" : {
+			"Type" : "AWS::CloudWatch::Alarm",
+			"Properties" : {
+				"AlarmActions" : [ {
+					"Ref" : "AscalegroupScaleUp"
+				} ],
+				"AlarmName" : {
+					"Fn::Join" : [ "-", [
+						{ "Ref" : "AWS::StackName" },
+						"AlarmAscalegroupScaleUp" ]
+					]
+				},
+				"ComparisonOperator" : "GreaterThanThreshold",
+				"Dimensions" : [ {
+					"Name" : "ClusterName",
+					"Value" : { "Ref" : "Ecscluster" }
+				} ],
+				"EvaluationPeriods" : "1",
+				"MetricName" : "MemoryReservation",
+				"Namespace" : "AWS/ECS",
+				"Period" : 60,
+				"Statistic" : "Average",
+				"Threshold" : 65
+			},
+			"DependsOn" : [ "AscalegroupScaleUp", "Ecscluster" ]
+		}
+	}
+}
