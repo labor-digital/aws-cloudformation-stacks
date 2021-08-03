@@ -90,17 +90,9 @@
 				"BlockDeviceMappings" : [ {
 					"DeviceName" : "/dev/xvda",
 					"Ebs" : {
-						"VolumeSize" : "8",
+						"VolumeSize" : "30",
 						"VolumeType" : "gp2",
 						"DeleteOnTermination" : "true"
-					}
-				}, {
-					"DeviceName" : "/dev/xvdcz",
-					"Ebs" : {
-						"VolumeSize" : "22",
-						"VolumeType" : "gp2",
-						"DeleteOnTermination" : "true",
-						"Encrypted" : "false"
 					}
 				} ],
 				"EbsOptimized" : "false",
