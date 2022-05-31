@@ -551,11 +551,21 @@
         },
         "GroupDescription" : "Securitygroup to access http and https from everywhere",
         "SecurityGroupIngress" : [ {
+		  "IpProtocol" : "tcp",
+		  "FromPort" : 80,
+		  "ToPort" : 80,
+		  "CidrIp" : "0.0.0.0/0"
+		}, {
           "IpProtocol" : "tcp",
           "FromPort" : 443,
           "ToPort" : 443,
           "CidrIp" : "0.0.0.0/0"
         }, {
+		"IpProtocol" : "tcp",
+		"FromPort" : 80,
+		"ToPort" : 80,
+		"CidrIpv6" : "::/0"
+	  }, {
           "IpProtocol" : "tcp",
           "FromPort" : 443,
           "ToPort" : 443,
@@ -1276,6 +1286,23 @@
       },
       "DependsOn" : [ "Vpc" ]
     },
+    "Httpdefaultlistener" : {
+		"Type" : "AWS::ElasticLoadBalancingV2::Listener",
+		"Properties" : {
+		  "DefaultActions" : [ {
+			"Type" : "forward",
+			"TargetGroupArn" : {
+			  "Ref" : "Deftarget"
+			}
+		  } ],
+		  "LoadBalancerArn" : {
+			"Ref" : "Loadbalancer"
+		  },
+		  "Port" : 80,
+		  "Protocol" : "HTTP"
+		},
+		"DependsOn" : [ "Deftarget", "Loadbalancer" ]
+	  },
     "Httpsdefaultlistener" : {
       "Type" : "AWS::ElasticLoadBalancingV2::Listener",
       "Properties" : {
