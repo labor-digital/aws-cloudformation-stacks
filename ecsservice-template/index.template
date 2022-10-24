@@ -85,6 +85,11 @@
       "Description" : "Path to use for health check.",
       "Default" : "/test.php",
       "Type" : "String"
+    },
+    "VolumeMountPath": {
+      "Description" : "Path in the container, where the EFS-Volume should be mounted",
+      "Default" : "/var/www/html_data",
+      "Type" : "String"
     }
   },
   "Resources" : {
@@ -307,7 +312,7 @@
           "MemoryReservation" : { "Ref" : "TaskMemory" },
           "MountPoints" : [ {
             "ReadOnly" : "false",
-            "ContainerPath" : "/var/www/html_data",
+            "ContainerPath" : { "Ref" : "VolumeMountPath" },
             "SourceVolume" : "data"
           } ],
           "Name" : {
