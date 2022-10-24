@@ -73,7 +73,7 @@
       "Description" : "Port on which the docker container is serving content. This one is also used for the health check.",
       "Default" : "443",
       "Type" : "Number",
-      "AllowedValues" : ["80", "443", "3000", "8000", "8080", "8443"]
+      "AllowedValues" : ["80", "443", "3000", "8000", "8001", "8080", "8443"]
     },
     "ServiceTrafficProtocol": {
       "Description" : "Protocol on which the docker container is serving content. This one is also used for the health check.",
