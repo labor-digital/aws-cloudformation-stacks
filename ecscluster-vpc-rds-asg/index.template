@@ -1,1495 +1,2382 @@
 {
-  "Parameters" : {
-    "KeypairName" : {
-      "Description" : "Name of an EC2 KeyPair to enable SSH access to the instance. Add using EC2 -> Keypairs",
-      "Type" : "AWS::EC2::KeyPair::KeyName",
-      "ConstraintDescription" : "must be the name of an existing EC2 KeyPair."
+  "Parameters": {
+    "KeypairName": {
+      "Description": "Name of an EC2 KeyPair to enable SSH access to the instance. Add using EC2 -> Keypairs",
+      "Type": "AWS::EC2::KeyPair::KeyName",
+      "ConstraintDescription": "must be the name of an existing EC2 KeyPair."
     },
-    "RdsMasterUsername" : {
-      "Description" : "MasterUsername which is applied to RDS cluster/instances.",
-      "Type" : "String",
-      "MinLength" : 4
+    "RdsMasterUsername": {
+      "Description": "MasterUsername which is applied to RDS cluster/instances.",
+      "Type": "String",
+      "MinLength": 4
     },
-    "RdsMasterPassword" : {
-      "Description" : "MasterPassword which is applied to RDS cluster/instances.",
-      "Type" : "String",
-      "MinLength" : 32,
-      "NoEcho" : "true"
+    "RdsMasterPassword": {
+      "Description": "MasterPassword which is applied to RDS cluster/instances.",
+      "Type": "String",
+      "MinLength": 32,
+      "NoEcho": "true"
     },
-    "HttpsdefaultlistenerCertificate" : {
-      "Description" : "The certificate-arn which is used for the default listener of the loadbalancer. Add using Certificate Manage (4096-bit keys are not supported!)",
-      "Type" : "String",
-      "MinLength" : 1
+    "HttpsdefaultlistenerCertificate": {
+      "Description": "The certificate-arn which is used for the default listener of the loadbalancer. Add using Certificate Manage (4096-bit keys are not supported!)",
+      "Type": "String",
+      "MinLength": 1
     },
-	"AscalegroupMinSize" : {
-		"Type" : "Number",
-		"Description" : "The min count of EC2-Instances (for Autoscaling).",
-		"MinValue" : 1,
-		"MaxValue" : 10
-	},
-	"AscalegroupMaxSize" : {
-		"Type" : "Number",
-		"Description" : "The max count of EC2-Instances (for Autoscaling).",
-		"MinValue" : 5,
-		"MaxValue" : 10
-	},
-	"AscalegroupDesSize" : {
-		"Type" : "Number",
-		"Description" : "The desired count of EC2-Instances (for Autoscaling).",
-		"MinValue" : 1,
-		"MaxValue" : 10
-	}
-  },
-  "Mappings" : {
-    "AWSRegion2AMI" : {
-      "us-east-2" : {
-        "AMI" : "ami-068a784e5da70c400"
-      },
-      "us-east-1" : {
-        "AMI" : "ami-0dde61416371df99a"
-      },
-      "us-west-2" : {
-        "AMI" : "ami-050274527f8727b52"
-      },
-      "us-west-1" : {
-        "AMI" : "ami-01b403cf431fecff5"
-      },
-      "eu-west-3" : {
-        "AMI" : "ami-065d86bd1f3350c52"
-      },
-      "eu-west-2" : {
-        "AMI" : "ami-0294bb049c608a183"
-      },
-      "eu-west-1" : {
-        "AMI" : "ami-0f43fe59461776205"
-      },
-      "eu-central-1" : {
-        "AMI" : "ami-075703041f2f591b9"
-      },
-      "eu-north-1" : {
-        "AMI" : "ami-07fcc859b2567e0c4"
-      },
-      "ap-northeast-2" : {
-        "AMI" : "ami-009ef65c02eb7db10"
-      },
-      "ap-northeast-1" : {
-        "AMI" : "ami-088d9a38123ee2d21"
-      },
-      "ap-southeast-2" : {
-        "AMI" : "ami-096d467b43b2344ba"
-      },
-      "ap-southeast-1" : {
-        "AMI" : "ami-0c8ef5b3cf8888930"
-      },
-      "ca-central-1" : {
-        "AMI" : "ami-079442f710b115509"
-      },
-      "ap-south-1" : {
-        "AMI" : "ami-03f59e90c8855694e"
-      },
-      "sa-east-1" : {
-        "AMI" : "ami-024b28d14f975baf4"
-      }
+    "AscalegroupMinSize": {
+      "Type": "Number",
+      "Description": "The min count of EC2-Instances (for Autoscaling).",
+      "MinValue": 1,
+      "MaxValue": 10
+    },
+    "AscalegroupMaxSize": {
+      "Type": "Number",
+      "Description": "The max count of EC2-Instances (for Autoscaling).",
+      "MinValue": 5,
+      "MaxValue": 10
+    },
+    "AscalegroupDesSize": {
+      "Type": "Number",
+      "Description": "The desired count of EC2-Instances (for Autoscaling).",
+      "MinValue": 1,
+      "MaxValue": 10
+    },
+    "EC2MachineImage": {
+      "Type": "AWS::EC2::Image::Id",
+      "Description": "EC2 Machine Image we should use to start the EC2 machines in the cluster."
+    },
+    "EC2InstanceType": {
+      "Description": "Instance type which you want to use for the EC2 machines in the cluster.",
+      "Default": "t3.small",
+      "Type": "String",
+      "AllowedValues": [
+        "t3.small",
+        "t3.micro"
+      ]
+    },
+    "RdsInstanceType": {
+      "Description": "Instance type which you want to use for the RDS DB.",
+      "Default": "db.t3.medium",
+      "Type": "String",
+      "AllowedValues": [
+        "db.t3.medium"
+      ]
     }
   },
-  "Resources" : {
-    "Vpc" : {
-      "Type" : "AWS::EC2::VPC",
-      "Properties" : {
-        "CidrBlock" : "10.1.0.0/16",
-        "EnableDnsSupport" : "true",
-        "EnableDnsHostnames" : "true",
-        "InstanceTenancy" : "default",
-        "Tags" : [ {
-          "Key" : "Name",
-          "Value" : {
-            "Fn::Join" : [ "-", [ {
-              "Ref" : "AWS::StackName"
-            }, "Vpc" ] ]
-          }
-        } ]
-      }
-    },
-    "Subnet1" : {
-      "Type" : "AWS::EC2::Subnet",
-      "Properties" : {
-        "CidrBlock" : "10.1.1.0/24",
-        "AvailabilityZone" : {
-          "Fn::Select" : [ "0", {
-            "Fn::GetAZs" : {
-              "Ref" : "AWS::Region"
-            }
-          } ]
-        },
-        "MapPublicIpOnLaunch" : "false",
-        "Tags" : [ {
-          "Key" : "Name",
-          "Value" : {
-            "Fn::Join" : [ "-", [ {
-              "Ref" : "AWS::StackName"
-            }, "Subnet1" ] ]
-          }
-        } ],
-        "VpcId" : {
-          "Ref" : "Vpc"
-        }
-      },
-      "DependsOn" : [ "Vpc" ]
-    },
-    "Subnet2" : {
-      "Type" : "AWS::EC2::Subnet",
-      "Properties" : {
-        "CidrBlock" : "10.1.2.0/24",
-        "AvailabilityZone" : {
-          "Fn::Select" : [ "1", {
-            "Fn::GetAZs" : {
-              "Ref" : "AWS::Region"
-            }
-          } ]
-        },
-        "MapPublicIpOnLaunch" : "false",
-        "Tags" : [ {
-          "Key" : "Name",
-          "Value" : {
-            "Fn::Join" : [ "-", [ {
-              "Ref" : "AWS::StackName"
-            }, "Subnet2" ] ]
-          }
-        } ],
-        "VpcId" : {
-          "Ref" : "Vpc"
-        }
-      },
-      "DependsOn" : [ "Vpc" ]
-    },
-    "Routetable" : {
-      "Type" : "AWS::EC2::RouteTable",
-      "Properties" : {
-        "VpcId" : {
-          "Ref" : "Vpc"
-        },
-        "Tags" : [ {
-          "Key" : "Name",
-          "Value" : {
-            "Fn::Join" : [ "-", [ {
-              "Ref" : "AWS::StackName"
-            }, "Routetable" ] ]
-          }
-        } ]
-      },
-      "DependsOn" : [ "Vpc" ]
-    },
-    "AssociateRoutetable1" : {
-      "Type" : "AWS::EC2::SubnetRouteTableAssociation",
-      "Properties" : {
-        "RouteTableId" : {
-          "Ref" : "Routetable"
-        },
-        "SubnetId" : {
-          "Ref" : "Subnet1"
-        }
-      },
-      "DependsOn" : [ "Routetable", "Subnet1" ]
-    },
-    "AssociateRoutetable2" : {
-      "Type" : "AWS::EC2::SubnetRouteTableAssociation",
-      "Properties" : {
-        "RouteTableId" : {
-          "Ref" : "Routetable"
-        },
-        "SubnetId" : {
-          "Ref" : "Subnet2"
-        }
-      },
-      "DependsOn" : [ "Routetable", "Subnet2" ]
-    },
-    "Igw" : {
-      "Type" : "AWS::EC2::InternetGateway",
-      "Properties" : {
-        "Tags" : [ {
-          "Key" : "Name",
-          "Value" : {
-            "Fn::Join" : [ "-", [ {
-              "Ref" : "AWS::StackName"
-            }, "Igw" ] ]
-          }
-        } ]
-      }
-    },
-    "Route" : {
-      "Type" : "AWS::EC2::Route",
-      "Properties" : {
-        "DestinationCidrBlock" : "0.0.0.0/0",
-        "GatewayId" : {
-          "Ref" : "Igw"
-        },
-        "RouteTableId" : {
-          "Ref" : "Routetable"
-        }
-      },
-      "DependsOn" : [ "Igw", "Routetable" ]
-    },
-    "AttachIgw" : {
-      "Type" : "AWS::EC2::VPCGatewayAttachment",
-      "Properties" : {
-        "VpcId" : {
-          "Ref" : "Vpc"
-        },
-        "InternetGatewayId" : {
-          "Ref" : "Igw"
-        }
-      },
-      "DependsOn" : [ "Vpc", "Igw" ]
-    },
-    "Dhcpopts" : {
-      "Type" : "AWS::EC2::DHCPOptions",
-      "Properties" : {
-        "DomainName" : "ec2.internal",
-        "DomainNameServers" : [ "AmazonProvidedDNS" ],
-        "Tags" : [ {
-          "Key" : "Name",
-          "Value" : {
-            "Fn::Join" : [ "-", [ {
-              "Ref" : "AWS::StackName"
-            }, "Dhcpopts" ] ]
-          }
-        } ]
-      }
-    },
-    "AssociateDhcpopts" : {
-      "Type" : "AWS::EC2::VPCDHCPOptionsAssociation",
-      "Properties" : {
-        "DhcpOptionsId" : {
-          "Ref" : "Dhcpopts"
-        },
-        "VpcId" : {
-          "Ref" : "Vpc"
-        }
-      },
-      "DependsOn" : [ "Vpc", "Dhcpopts" ]
-    },
-    "Netacl" : {
-      "Type" : "AWS::EC2::NetworkAcl",
-      "Properties" : {
-        "Tags" : [ {
-          "Key" : "Name",
-          "Value" : {
-            "Fn::Join" : [ "-", [ {
-              "Ref" : "AWS::StackName"
-            }, "Netacl" ] ]
-          }
-        } ],
-        "VpcId" : {
-          "Ref" : "Vpc"
-        }
-      },
-      "DependsOn" : [ "Vpc" ]
-    },
-    "NetaclEntry1" : {
-      "Type" : "AWS::EC2::NetworkAclEntry",
-      "Properties" : {
-        "CidrBlock" : "0.0.0.0/0",
-        "Egress" : "false",
-        "NetworkAclId" : {
-          "Ref" : "Netacl"
-        },
-        "Protocol" : "-1",
-        "RuleAction" : "allow",
-        "RuleNumber" : 100
-      }
-    },
-    "NetaclEntry2" : {
-      "Type" : "AWS::EC2::NetworkAclEntry",
-      "Properties" : {
-        "CidrBlock" : "0.0.0.0/0",
-        "Egress" : "true",
-        "NetworkAclId" : {
-          "Ref" : "Netacl"
-        },
-        "Protocol" : "-1",
-        "RuleAction" : "allow",
-        "RuleNumber" : 100
-      }
-    },
-    "AssociateNetacl1" : {
-      "Type" : "AWS::EC2::SubnetNetworkAclAssociation",
-      "Properties" : {
-        "SubnetId" : {
-          "Ref" : "Subnet1"
-        },
-        "NetworkAclId" : {
-          "Ref" : "Netacl"
-        }
-      },
-      "DependsOn" : [ "Subnet1", "Netacl" ]
-    },
-    "AssociateNetacl2" : {
-      "Type" : "AWS::EC2::SubnetNetworkAclAssociation",
-      "Properties" : {
-        "SubnetId" : {
-          "Ref" : "Subnet2"
-        },
-        "NetworkAclId" : {
-          "Ref" : "Netacl"
-        }
-      },
-      "DependsOn" : [ "Subnet2", "Netacl" ]
-    },
-    "SgVpcEfsAccess" : {
-      "Type" : "AWS::EC2::SecurityGroup",
-      "Properties" : {
-        "GroupName" : {
-          "Fn::Join" : [ "-", [ {
-            "Ref" : "AWS::StackName"
-          }, "SgVpcEfsAccess" ] ]
-        },
-        "GroupDescription" : "Securitygroup to access the EFS",
-        "Tags" : [ {
-          "Key" : "Name",
-          "Value" : {
-            "Fn::Join" : [ "-", [ {
-              "Ref" : "AWS::StackName"
-            }, "SgVpcEfsAccess" ] ]
-          }
-        } ],
-        "VpcId" : {
-          "Ref" : "Vpc"
-        }
-      },
-      "DependsOn" : [ "Vpc" ]
-    },
-    "SgVpcEfs" : {
-      "Type" : "AWS::EC2::SecurityGroup",
-      "Properties" : {
-        "GroupName" : {
-          "Fn::Join" : [ "-", [ {
-            "Ref" : "AWS::StackName"
-          }, "SgVpcEfs" ] ]
-        },
-        "GroupDescription" : "Securitygroup for the EFS",
-        "SecurityGroupIngress" : [ {
-          "IpProtocol" : "tcp",
-          "FromPort" : 2049,
-          "ToPort" : 2049,
-          "SourceSecurityGroupId" : {
-            "Ref" : "SgVpcEfsAccess"
-          }
-        } ],
-        "Tags" : [ {
-          "Key" : "Name",
-          "Value" : {
-            "Fn::Join" : [ "-", [ {
-              "Ref" : "AWS::StackName"
-            }, "SgVpcEfs" ] ]
-          }
-        } ],
-        "VpcId" : {
-          "Ref" : "Vpc"
-        }
-      },
-      "DependsOn" : [ "Vpc", "SgVpcEfsAccess" ]
-    },
-    "SgVpcLoadbalancerportsAccess" : {
-      "Type" : "AWS::EC2::SecurityGroup",
-      "Properties" : {
-        "GroupName" : {
-          "Fn::Join" : [ "-", [ {
-            "Ref" : "AWS::StackName"
-          }, "SgVpcLoadbalancerportsAccess" ] ]
-        },
-        "GroupDescription" : "Securitygroup to access the loadbalancerports on an instance",
-        "Tags" : [ {
-          "Key" : "Name",
-          "Value" : {
-            "Fn::Join" : [ "-", [ {
-              "Ref" : "AWS::StackName"
-            }, "SgVpcLoadbalancerportsAccess" ] ]
-          }
-        } ],
-        "VpcId" : {
-          "Ref" : "Vpc"
-        }
-      },
-      "DependsOn" : [ "Vpc" ]
-    },
-    "SgVpcLoadbalancerports" : {
-      "Type" : "AWS::EC2::SecurityGroup",
-      "Properties" : {
-        "GroupName" : {
-          "Fn::Join" : [ "-", [ {
-            "Ref" : "AWS::StackName"
-          }, "SgVpcLoadbalancerports" ] ]
-        },
-        "GroupDescription" : "Securitygroup for the loadbalancerports of an instance",
-        "SecurityGroupIngress" : [ {
-          "IpProtocol" : "tcp",
-          "FromPort" : 32768,
-          "ToPort" : 61000,
-          "SourceSecurityGroupId" : {
-            "Ref" : "SgVpcLoadbalancerportsAccess"
-          }
-        } ],
-        "Tags" : [ {
-          "Key" : "Name",
-          "Value" : {
-            "Fn::Join" : [ "-", [ {
-              "Ref" : "AWS::StackName"
-            }, "SgVpcLoadbalancerports" ] ]
-          }
-        } ],
-        "VpcId" : {
-          "Ref" : "Vpc"
-        }
-      },
-      "DependsOn" : [ "Vpc", "SgVpcLoadbalancerportsAccess" ]
-    },
-    "SgVpcMysqlAccess" : {
-      "Type" : "AWS::EC2::SecurityGroup",
-      "Properties" : {
-        "GroupName" : {
-          "Fn::Join" : [ "-", [ {
-            "Ref" : "AWS::StackName"
-          }, "SgVpcMysqlAccess" ] ]
-        },
-        "GroupDescription" : "Securitygroup to access the MySQL",
-        "Tags" : [ {
-          "Key" : "Name",
-          "Value" : {
-            "Fn::Join" : [ "-", [ {
-              "Ref" : "AWS::StackName"
-            }, "SgVpcMysqlAccess" ] ]
-          }
-        } ],
-        "VpcId" : {
-          "Ref" : "Vpc"
-        }
-      },
-      "DependsOn" : [ "Vpc" ]
-    },
-    "SgVpcMysql" : {
-      "Type" : "AWS::EC2::SecurityGroup",
-      "Properties" : {
-        "GroupName" : {
-          "Fn::Join" : [ "-", [ {
-            "Ref" : "AWS::StackName"
-          }, "SgVpcMysql" ] ]
-        },
-        "GroupDescription" : "Securitygroup for the MySQL",
-        "SecurityGroupIngress" : [ {
-          "IpProtocol" : "tcp",
-          "FromPort" : 3306,
-          "ToPort" : 3306,
-          "SourceSecurityGroupId" : {
-            "Ref" : "SgVpcMysqlAccess"
-          }
-        } ],
-        "Tags" : [ {
-          "Key" : "Name",
-          "Value" : {
-            "Fn::Join" : [ "-", [ {
-              "Ref" : "AWS::StackName"
-            }, "SgVpcMysql" ] ]
-          }
-        } ],
-        "VpcId" : {
-          "Ref" : "Vpc"
-        }
-      },
-      "DependsOn" : [ "Vpc", "SgVpcMysqlAccess" ]
-    },
-    "SgPublicHttpHttps" : {
-      "Type" : "AWS::EC2::SecurityGroup",
-      "Properties" : {
-        "GroupName" : {
-          "Fn::Join" : [ "-", [ {
-            "Ref" : "AWS::StackName"
-          }, "SgPublicHttpHttps" ] ]
-        },
-        "GroupDescription" : "Securitygroup to access http and https from everywhere",
-        "SecurityGroupIngress" : [ {
-          "IpProtocol" : "tcp",
-          "FromPort" : 80,
-          "ToPort" : 80,
-          "CidrIp" : "0.0.0.0/0"
-        }, {
-          "IpProtocol" : "tcp",
-          "FromPort" : 443,
-          "ToPort" : 443,
-          "CidrIp" : "0.0.0.0/0"
-        }, {
-          "IpProtocol" : "tcp",
-          "FromPort" : 80,
-          "ToPort" : 80,
-          "CidrIpv6" : "::/0"
-        }, {
-          "IpProtocol" : "tcp",
-          "FromPort" : 443,
-          "ToPort" : 443,
-          "CidrIpv6" : "::/0"
-        } ],
-        "Tags" : [ {
-          "Key" : "Name",
-          "Value" : {
-            "Fn::Join" : [ "-", [ {
-              "Ref" : "AWS::StackName"
-            }, "SgPublicHttpHttps" ] ]
-          }
-        } ],
-        "VpcId" : {
-          "Ref" : "Vpc"
-        }
-      },
-      "DependsOn" : [ "Vpc" ]
-    },
-    "SgPublicHttps" : {
-      "Type" : "AWS::EC2::SecurityGroup",
-      "Properties" : {
-        "GroupName" : {
-          "Fn::Join" : [ "-", [ {
-            "Ref" : "AWS::StackName"
-          }, "SgPublicHttps" ] ]
-        },
-        "GroupDescription" : "Securitygroup to access http and https from everywhere",
-        "SecurityGroupIngress" : [ {
-		  "IpProtocol" : "tcp",
-		  "FromPort" : 80,
-		  "ToPort" : 80,
-		  "CidrIp" : "0.0.0.0/0"
-		}, {
-          "IpProtocol" : "tcp",
-          "FromPort" : 443,
-          "ToPort" : 443,
-          "CidrIp" : "0.0.0.0/0"
-        }, {
-		"IpProtocol" : "tcp",
-		"FromPort" : 80,
-		"ToPort" : 80,
-		"CidrIpv6" : "::/0"
-	  }, {
-          "IpProtocol" : "tcp",
-          "FromPort" : 443,
-          "ToPort" : 443,
-          "CidrIpv6" : "::/0"
-        } ],
-        "Tags" : [ {
-          "Key" : "Name",
-          "Value" : {
-            "Fn::Join" : [ "-", [ {
-              "Ref" : "AWS::StackName"
-            }, "SgPublicHttps" ] ]
-          }
-        } ],
-        "VpcId" : {
-          "Ref" : "Vpc"
-        }
-      },
-      "DependsOn" : [ "Vpc" ]
-    },
-    "SgLaborSsh" : {
-      "Type" : "AWS::EC2::SecurityGroup",
-      "Properties" : {
-        "GroupName" : {
-          "Fn::Join" : [ "-", [ {
-            "Ref" : "AWS::StackName"
-          }, "SgLaborSsh" ] ]
-        },
-        "GroupDescription" : "Securitygroup to access ssh from labor",
-        "SecurityGroupIngress" : [ ],
-        "Tags" : [ {
-          "Key" : "Name",
-          "Value" : {
-            "Fn::Join" : [ "-", [ {
-              "Ref" : "AWS::StackName"
-            }, "SgLaborSsh" ] ]
-          }
-        } ],
-        "VpcId" : {
-          "Ref" : "Vpc"
-        }
-      },
-      "DependsOn" : [ "Vpc" ]
-    },
-    "SgLaborMysql" : {
-      "Type" : "AWS::EC2::SecurityGroup",
-      "Properties" : {
-        "GroupName" : {
-          "Fn::Join" : [ "-", [ {
-            "Ref" : "AWS::StackName"
-          }, "SgLaborMysql" ] ]
-        },
-        "GroupDescription" : "Securitygroup to access MySQL from labor",
-        "SecurityGroupIngress" : [ ],
-        "Tags" : [ {
-          "Key" : "Name",
-          "Value" : {
-            "Fn::Join" : [ "-", [ {
-              "Ref" : "AWS::StackName"
-            }, "SgLaborMysql" ] ]
-          }
-        } ],
-        "VpcId" : {
-          "Ref" : "Vpc"
-        }
-      },
-      "DependsOn" : [ "Vpc" ]
-    },
-    "RdsclSubnetgroup" : {
-      "Type" : "AWS::RDS::DBSubnetGroup",
-      "Properties" : {
-        "DBSubnetGroupDescription" : {
-          "Fn::Join" : [ "-", [ {
-            "Ref" : "AWS::StackName"
-          }, "RdsclSubnetgroup" ] ]
-        },
-        "SubnetIds" : [ {
-          "Ref" : "Subnet1"
-        }, {
-          "Ref" : "Subnet2"
-        } ],
-        "Tags" : [ {
-          "Key" : "Name",
-          "Value" : {
-            "Fn::Join" : [ "-", [ {
-              "Ref" : "AWS::StackName"
-            }, "RdsclSubnetgroup" ] ]
-          }
-        } ]
-      },
-      "DependsOn" : [ "Subnet1", "Subnet2" ]
-    },
-	"RdsParameterGroup" : {
-	  "Type" : "AWS::RDS::DBParameterGroup",
-	  "Properties" : {
-        "Description" : "Aurora 5.6 Parameter Group with increased connection limit",
-        "Family" : "aurora5.6",
-        "Parameters" : {
-		  "max_connections" : "{log(DBInstanceClassMemory/805306368)*60}"
-		}
-	  }
-	},
-    "Rdscl" : {
-      "Type" : "AWS::RDS::DBCluster",
-      "Properties" : {
-        "AvailabilityZones" : [ {
-          "Fn::Select" : [ "0", {
-            "Fn::GetAZs" : {
-              "Ref" : "AWS::Region"
-            }
-          } ]
-        }, {
-          "Fn::Select" : [ "1", {
-            "Fn::GetAZs" : {
-              "Ref" : "AWS::Region"
-            }
-          } ]
-        } ],
-        "BackupRetentionPeriod" : 35,
-        "DBSubnetGroupName" : {
-          "Ref" : "RdsclSubnetgroup"
-        },
-        "Engine" : "aurora",
-        "EngineVersion" : "5.6.10a",
-        "MasterUsername" : {
-          "Ref" : "RdsMasterUsername"
-        },
-        "MasterUserPassword" : {
-          "Ref" : "RdsMasterPassword"
-        },
-        "Tags" : [ {
-          "Key" : "Name",
-          "Value" : {
-            "Fn::Join" : [ "-", [ {
-              "Ref" : "AWS::StackName"
-            }, "Rdscl" ] ]
-          }
-        } ],
-        "VpcSecurityGroupIds" : [ {
-          "Ref" : "SgVpcMysql"
-        }, {
-          "Ref" : "SgLaborMysql"
-        } ]
-      },
-      "DependsOn" : [ "RdsclSubnetgroup", "SgVpcMysql" ]
-    },
-    "Rdsinstance1" : {
-      "Type" : "AWS::RDS::DBInstance",
-      "Properties" : {
-        "AllowMajorVersionUpgrade" : "false",
-        "AutoMinorVersionUpgrade" : "true",
-        "AvailabilityZone" : {
-          "Fn::Select" : [ "0", {
-            "Fn::GetAZs" : {
-              "Ref" : "AWS::Region"
-            }
-          } ]
-        },
-        "DBClusterIdentifier" : {
-          "Ref" : "Rdscl"
-        },
-        "DBInstanceClass" : "db.t2.small",
-        "DBInstanceIdentifier" : {
-          "Fn::Join" : [ "-", [ {
-            "Ref" : "AWS::StackName"
-          }, "Rdsinstance1" ] ]
-        },
-        "DBSubnetGroupName" : {
-          "Ref" : "RdsclSubnetgroup"
-        },
-        "Engine" : "aurora",
-        "EngineVersion" : "5.6.10a",
-        "MultiAZ" : "false",
-        "PubliclyAccessible" : "false",
-        "StorageEncrypted" : "false",
-		"DBParameterGroupName" : { "Ref" : "RdsParameterGroup" },
-        "Tags" : [ {
-          "Key" : "Name",
-          "Value" : {
-            "Fn::Join" : [ "-", [ {
-              "Ref" : "AWS::StackName"
-            }, "Rdsinstance1" ] ]
-          }
-        } ]
-      },
-      "DependsOn" : [ "Rdscl", "RdsclSubnetgroup", "RdsParameterGroup" ]
-    },
-    "Efs" : {
-      "Type" : "AWS::EFS::FileSystem",
-      "Properties" : {
-        "Encrypted" : "false",
-        "FileSystemTags" : [ {
-          "Key" : "Name",
-          "Value" : {
-            "Fn::Join" : [ "-", [ {
-              "Ref" : "AWS::StackName"
-            }, "Efs" ] ]
-          }
-        } ],
-        "PerformanceMode" : "generalPurpose"
-      }
-    },
-    "EfsMounttarget1" : {
-      "Type" : "AWS::EFS::MountTarget",
-      "Properties" : {
-        "FileSystemId" : {
-          "Ref" : "Efs"
-        },
-        "SecurityGroups" : [ {
-          "Ref" : "SgVpcEfs"
-        } ],
-        "SubnetId" : {
-          "Ref" : "Subnet1"
-        }
-      },
-      "DependsOn" : [ "Efs", "SgVpcEfs", "Subnet1" ]
-    },
-    "EfsMounttarget2" : {
-      "Type" : "AWS::EFS::MountTarget",
-      "Properties" : {
-        "FileSystemId" : {
-          "Ref" : "Efs"
-        },
-        "SecurityGroups" : [ {
-          "Ref" : "SgVpcEfs"
-        } ],
-        "SubnetId" : {
-          "Ref" : "Subnet2"
-        }
-      },
-      "DependsOn" : [ "Efs", "SgVpcEfs", "Subnet2" ]
-    },
-    "Ecscluster" : {
-      "Type" : "AWS::ECS::Cluster",
-      "Properties" : {
-        "ClusterName" : {
-          "Fn::Join" : [ "-", [ {
-            "Ref" : "AWS::StackName"
-          }, "Ecscluster" ] ]
-        }
-      }
-    },
-    "Instancerole" : {
-      "Type" : "AWS::IAM::Role",
-      "Properties" : {
-        "AssumeRolePolicyDocument" : {
-          "Version" : "2012-10-17",
-          "Statement" : [ {
-            "Effect" : "Allow",
-            "Principal" : {
-              "Service" : [ "ec2.amazonaws.com" ]
-            },
-            "Action" : [ "sts:AssumeRole" ]
-          } ]
-        },
-        "ManagedPolicyArns" : [ "arn:aws:iam::aws:policy/service-role/AmazonEC2ContainerServiceforEC2Role" ],
-        "Path" : "/",
-        "RoleName" : {
-          "Fn::Join" : [ "-", [ {
-            "Ref" : "AWS::StackName"
-          }, "Instancerole" ] ]
-        }
-      }
-    },
-    "InstanceroleProfile" : {
-      "Type" : "AWS::IAM::InstanceProfile",
-      "Properties" : {
-        "Path" : "/",
-        "Roles" : [ {
-          "Ref" : "Instancerole"
-        } ],
-        "InstanceProfileName" : {
-          "Fn::Join" : [ "-", [ {
-            "Ref" : "AWS::StackName"
-          }, "InstanceroleProfile" ] ]
-        }
-      },
-      "DependsOn" : [ "Instancerole" ]
-    },
-    "Launchconfiguration" : {
-      "Type" : "AWS::AutoScaling::LaunchConfiguration",
-      "Properties" : {
-        "AssociatePublicIpAddress" : "true",
-        "BlockDeviceMappings" : [ {
-          "DeviceName" : "/dev/xvda",
-          "Ebs" : {
-            "VolumeSize" : "30",
-            "VolumeType" : "gp2",
-            "DeleteOnTermination" : "true"
-          }
-        } ],
-        "EbsOptimized" : "false",
-        "IamInstanceProfile" : {
-          "Ref" : "InstanceroleProfile"
-        },
-        "ImageId" : {
-          "Fn::FindInMap" : [ "AWSRegion2AMI", {
-            "Ref" : "AWS::Region"
-          }, "AMI" ]
-        },
-        "InstanceMonitoring" : "true",
-        "InstanceType" : "t2.micro",
-        "KeyName" : {
-          "Ref" : "KeypairName"
-        },
-        "SecurityGroups" : [ {
-          "Ref" : "SgVpcMysqlAccess"
-        }, {
-          "Ref" : "SgVpcLoadbalancerports"
-        }, {
-          "Ref" : "SgVpcEfsAccess"
-        }, {
-          "Ref" : "SgLaborSsh"
-        } ],
-        "UserData" : {
-          "Fn::Base64" : {
-            "Fn::Join" : [ "", [ "#!/bin/bash\n", "echo ECS_CLUSTER=", {
-              "Ref" : "Ecscluster"
-            }, " >> /etc/ecs/ecs.config\n", "\n", "sudo yum install -y nfs-utils\n", "\n", "sudo stop ecs\n", "sudo mkdir /mnt/efs\n", "sudo mount -t nfs4 -o nfsvers=4.1,rsize=1048576,wsize=1048576,hard,timeo=600,retrans=2 ", {
-              "Ref" : "Efs"
-            }, ".efs.", {
-              "Ref" : "AWS::Region"
-            }, ".amazonaws.com:/ /mnt/efs\n", "sudo service docker restart\n", "sudo start ecs\n" ] ]
-          }
-        }
-      },
-      "DependsOn" : [ "InstanceroleProfile", "SgVpcMysqlAccess", "SgVpcLoadbalancerports", "SgVpcEfsAccess", "Ecscluster", "Efs", "EfsMounttarget1", "EfsMounttarget2" ]
-    },
-    "Ascalegroup" : {
-      "Type" : "AWS::AutoScaling::AutoScalingGroup",
-      "Properties" : {
-        "Cooldown" : "300",
-        "DesiredCapacity" : {
-		  "Ref" : "AscalegroupDesSize"
-		},
-        "HealthCheckGracePeriod" : 300,
-        "HealthCheckType" : "EC2",
-        "LaunchConfigurationName" : {
-          "Ref" : "Launchconfiguration"
-        },
-        "LifecycleHookSpecificationList" : [ {
-          "DefaultResult" : "ABANDON",
-          "HeartbeatTimeout" : 3600,
-          "LifecycleHookName" : {
-            "Fn::Join" : [ "-", [ {
-              "Ref" : "AWS::StackName"
-            }, "AscalegroupHookTerm" ] ]
-          },
-          "LifecycleTransition" : "autoscaling:EC2_INSTANCE_TERMINATING"
-        } ],
-        "MaxSize" : {
-		  "Ref" : "AscalegroupMaxSize"
-		},
-        "MinSize" : {
-		  "Ref" : "AscalegroupMinSize"
-		},
-        "Tags" : [ {
-          "Key" : "Name",
-          "Value" : {
-            "Fn::Join" : [ "-", [ {
-              "Ref" : "AWS::StackName"
-            }, "Instance" ] ]
-          },
-          "PropagateAtLaunch" : "true"
-        } ],
-        "TerminationPolicies" : [ "OldestInstance" ],
-        "VPCZoneIdentifier" : [ {
-          "Ref" : "Subnet1"
-        }, {
-          "Ref" : "Subnet2"
-        } ]
-      },
-      "DependsOn" : [ "Launchconfiguration", "Subnet1", "Subnet2" ]
-    },
-    "AscalegroupHookTermLbRole" : {
-      "Type" : "AWS::IAM::Role",
-      "Properties" : {
-        "AssumeRolePolicyDocument" : {
-          "Version" : "2012-10-17",
-          "Statement" : [ {
-            "Effect" : "Allow",
-            "Principal" : {
-              "Service" : [ "lambda.amazonaws.com" ]
-            },
-            "Action" : [ "sts:AssumeRole" ]
-          } ]
-        },
-        "ManagedPolicyArns" : [ "arn:aws:iam::aws:policy/CloudWatchLogsFullAccess" ],
-        "Policies" : [ {
-          "PolicyDocument" : {
-            "Version" : "2012-10-17",
-            "Statement" : [ {
-              "Effect" : "Allow",
-              "Action" : [ "autoscaling:CompleteLifecycleAction" ],
-              "Resource" : [ "*" ]
-            }, {
-              "Effect" : "Allow",
-              "Action" : [ "ec2:DescribeHosts", "ec2:DescribeInstanceAttribute", "ec2:DescribeInstanceStatus", "ec2:DescribeInstances" ],
-              "Resource" : [ "*" ]
-            }, {
-              "Effect" : "Allow",
-              "Action" : [ "ecs:DescribeContainerInstances", "ecs:DescribeTasks", "ecs:ListTasks", "ecs:SubmitContainerStateChange", "ecs:SubmitTaskStateChange", "ecs:ListContainerInstances", "ecs:UpdateContainerInstancesState" ],
-              "Resource" : [ "*" ]
-            }, {
-              "Effect" : "Allow",
-              "Action" : [ "sns:ListSubscriptions", "sns:Publish" ],
-              "Resource" : [ "*" ]
-            } ]
-          },
-          "PolicyName" : {
-            "Fn::Join" : [ "-", [ {
-              "Ref" : "AWS::StackName"
-            }, "AscalegroupHookTermLbRolePolicy" ] ]
-          }
-        } ],
-        "Path" : "/",
-        "RoleName" : {
-          "Fn::Join" : [ "-", [ {
-            "Ref" : "AWS::StackName"
-          }, "AscalegroupHookTermLbRole" ] ]
-        }
-      }
-    },
-    "LambdaLiveprojectsLogGroup" : {
-      "Type" : "AWS::Logs::LogGroup",
-      "Properties" : {
-        "LogGroupName" : {
-          "Fn::Join" : [ "/", [ "/aws", "lambda", {
-            "Fn::Join" : [ "-", [ {
-              "Ref" : "AWS::StackName"
-            }, "AscalegroupHookTermLb" ] ]
-          } ] ]
-        },
-        "RetentionInDays" : 14
-      }
-    },
-    "AscalegroupHookTermLb" : {
-      "Type" : "AWS::Lambda::Function",
-      "Properties" : {
-        "Code" : {
-          "ZipFile" : {
-            "Fn::Join" : [ "", [ "from __future__ import print_function\n", "import boto3\n", "from urlparse import urlparse\n", "import base64\n", "import json\n", "import datetime\n", "import time\n", "\n", "session = boto3.session.Session()\n", "\n", "ec2C = session.client(service_name='ec2')\n", "ecsC = session.client(service_name='ecs')\n", "asgC = session.client('autoscaling')\n", "snsC = session.client('sns')\n", "\n", "def publishToSNS(m, tARN):\n", "\tsnsR = snsC.publish(\n", "\t\tTopicArn=tARN,\n", "\t\tMessage=json.dumps(m),\n", "\t\tSubject='Invoke lambda again'\n", "\t)\n", "\treturn \"published\"\n", "\n", "def checkContainerInstanceTaskStatus(ec2Id):\n", "\tconId = None\n", "\tclN = None\n", "\ttmpM = None\n", "\n", "\tec2Resp = ec2C.describe_instance_attribute(InstanceId=ec2Id, Attribute='userData')\n", "\tudEnc = ec2Resp['UserData']\n", "\tudDec = base64.b64decode(udEnc['Value'])\n", "\n", "\ttmpList = udDec.split()\n", "\tfor token in tmpList:\n", "\t\tif token.find(\"ECS_CLUSTER\") > -1:\n", "\t\t\tclN = token.split('=')[1]\n", "\n", "\tclusterListResp = ecsC.list_container_instances(cluster=clN)\n", "\tcontainerDetResp = ecsC.describe_container_instances(cluster=clN, containerInstances=clusterListResp[\n", "\t\t'containerInstanceArns'])\n", "\n", "\tfor containerInstances in containerDetResp['containerInstances']:\n", "\t\tif containerInstances['ec2InstanceId'] == ec2Id:\n", "\t\t\tconId = containerInstances['containerInstanceArn']\n", "\n", "\t\t\tcontainerStatus = containerInstances['status']\n", "\t\t\tif containerStatus == 'DRAINING':\n", "\t\t\t\ttmpM = {\"containerInstanceId\": conId}\n", "\t\t\telse:\n", "\t\t\t\tecsResponse = ecsC.update_container_instances_state(cluster=clN,containerInstances=[conId],status='DRAINING')\n", "\t\t\t\ttmpM = {\"containerInstanceId\": conId}\n", "\n", "\tif conId != None:\n", "\t\tlistTaskResp = ecsC.list_tasks(cluster=clN, containerInstance=conId)\n", "\n", "\t\tif len(listTaskResp['taskArns']) > 0:\n", "\t\t\treturn 1, tmpM\n", "\t\telse:\n", "\t\t\treturn 0, tmpM\n", "\telse:\n", "\t\treturn 0, tmpM\n", "\n", "def lambda_handler(event, context):\n", "\tline = event['Records'][0]['Sns']['Message']\n", "\tmessage = json.loads(line)\n", "\tec2Id = message['detail']['EC2InstanceId']\n", "\tasgGroupName = message['detail']['AutoScalingGroupName']\n", "\tsnsArn = event['Records'][0]['EventSubscriptionArn']\n", "\tTopicArn = event['Records'][0]['Sns']['TopicArn']\n", "\n", "\tlifecyclehookname = None\n", "\tclN = None\n", "\ttmpM = None\n", "\tcompleteHook = 0\n", "\n", "\tec2Resp = ec2C.describe_instance_attribute(InstanceId=ec2Id, Attribute='userData')\n", "\tudEnc = ec2Resp['UserData']\n", "\tudDec = base64.b64decode(udEnc['Value'])\n", "\n", "\ttmpList = udDec.split()\n", "\tfor token in tmpList:\n", "\t\tif token.find(\"ECS_CLUSTER\") > -1:\n", "\t\t\tclN = token.split('=')[1]\n", "\n", "\tclusterListResp = ecsC.list_container_instances(cluster=clN)\n", "\n", "\tif 'LifecycleTransition' in message['detail'].keys():\n", "\t\tif message['detail']['LifecycleTransition'].find('autoscaling:EC2_INSTANCE_TERMINATING') > -1:\n", "\t\t\tlifecycleHookName = message['detail']['LifecycleHookName']\n", "\t\t\t\n", "\t\t\ttasksRunning, tmpM = checkContainerInstanceTaskStatus(ec2Id)\n", "\t\t\tif tmpM != None:\n", "\t\t\t\tmessage.update(tmpM)\n", "\n", "\t\t\tif tasksRunning == 1:\n", "\t\t\t\tmsgResponse = publishToSNS(message, TopicArn)\n", "\t\t\telif tasksRunning == 0:\n", "\t\t\t\tcompleteHook = 1\n", "\n", "\t\t\t\ttry:\n", "\t\t\t\t\tresponse = asgC.complete_lifecycle_action(\n", "\t\t\t\t\t\tLifecycleHookName=lifecycleHookName,\n", "\t\t\t\t\t\tAutoScalingGroupName=asgGroupName,\n", "\t\t\t\t\t\tLifecycleActionResult='CONTINUE',\n", "\t\t\t\t\t\tInstanceId=ec2Id)\n", "\t\t\t\texcept Exception, e:\n", "\t\t\t\t\tprint(str(e))\n" ] ]
-          }
-        },
-        "Description" : {
-          "Fn::Join" : [ "-", [ {
-            "Ref" : "AWS::StackName"
-          }, "AscalegroupHookTermLb" ] ]
-        },
-        "FunctionName" : {
-          "Fn::Join" : [ "-", [ {
-            "Ref" : "AWS::StackName"
-          }, "AscalegroupHookTermLb" ] ]
-        },
-        "Handler" : "index.lambda_handler",
-        "MemorySize" : 128,
-        "Role" : {
-          "Fn::GetAtt" : [ "AscalegroupHookTermLbRole", "Arn" ]
-        },
-        "Runtime" : "python2.7",
-        "Timeout" : 30,
-        "Tags" : [ {
-          "Key" : "Name",
-          "Value" : {
-            "Fn::Join" : [ "-", [ {
-              "Ref" : "AWS::StackName"
-            }, "AscalegroupHookTermLb" ] ]
-          }
-        } ]
-      },
-      "DependsOn" : [ "AscalegroupHookTermLbRole" ]
-    },
-    "AscalegroupHookTermTopic" : {
-      "Type" : "AWS::SNS::Topic",
-      "Properties" : {
-        "DisplayName" : {
-          "Fn::Join" : [ "-", [ {
-            "Ref" : "AWS::StackName"
-          }, "AscalegroupHookTermTopic" ] ]
-        },
-        "Subscription" : [ {
-          "Endpoint" : {
-            "Fn::GetAtt" : [ "AscalegroupHookTermLb", "Arn" ]
-          },
-          "Protocol" : "lambda"
-        } ],
-        "TopicName" : {
-          "Fn::Join" : [ "-", [ {
-            "Ref" : "AWS::StackName"
-          }, "AscalegroupHookTermTopic" ] ]
-        }
-      },
-      "DependsOn" : [ "AscalegroupHookTermLb" ]
-    },
-    "AscalegroupHookTermLbInvokePermission" : {
-      "Type" : "AWS::Lambda::Permission",
-      "Properties" : {
-        "Action" : "lambda:InvokeFunction",
-        "Principal" : "sns.amazonaws.com",
-        "SourceArn" : { "Ref" : "AscalegroupHookTermTopic" },
-        "FunctionName" : {
-          "Fn::GetAtt" : [ "AscalegroupHookTermLb", "Arn" ]
-        }
-      },
-      "DependsOn" : [ "AscalegroupHookTermTopic", "AscalegroupHookTermLb" ]
-    },
-    "AscalegroupHookTermRule" : {
-      "Type" : "AWS::Events::Rule",
-      "Properties" : {
-        "Description" : {
-          "Fn::Join" : [ "-", [
-            { "Ref" : "AWS::StackName" },
-            "AscalegroupHookTermRule" ]
-          ]
-        },
-        "EventPattern" : {
-          "source" : [ "aws.autoscaling" ],
-          "detail-type" : [ "EC2 Instance-terminate Lifecycle Action" ],
-          "detail" : {
-            "AutoScalingGroupName" : [ { "Ref" : "Ascalegroup" } ]
-          }
-        },
-        "Name" : {
-          "Fn::Join" : [ "-", [
-            { "Ref" : "AWS::StackName" },
-            "AscalegroupHookTermRule" ]
-          ]
-        },
-        "State" : "ENABLED",
-        "Targets" : [ {
-          "Arn" : {
-            "Ref" : "AscalegroupHookTermTopic"
-          },
-          "Id" : {
-            "Fn::Join" : [ "-", [
-              { "Ref" : "AWS::StackName" },
-              "AscalegroupHookTermRuleTarget" ]
-            ]
-          }
-        } ]
-      },
-      "DependsOn" : [ "Ascalegroup", "AscalegroupHookTermTopic" ]
-    },
-    "AscalegroupHookTermTopicPolicy" : {
-      "Type" : "AWS::SNS::TopicPolicy",
-      "Properties" : {
-        "PolicyDocument" : {
-          "Version" : "2012-10-17",
-          "Statement" : [ {
-            "Effect" : "Allow",
-            "Principal" : {
-              "Service" : "events.amazonaws.com"
-            },
-            "Action" : "sns:Publish",
-            "Resource" : { "Ref" : "AscalegroupHookTermTopic" }
-          } ]
-        },
-        "Topics" : [ {
-          "Ref" : "AscalegroupHookTermTopic"
-        } ]
-      },
-      "DependsOn" : [ "AscalegroupHookTermTopic" ]
-    },
-    "AscalegroupScaleDown" : {
-      "Type" : "AWS::AutoScaling::ScalingPolicy",
-      "Properties" : {
-        "AdjustmentType" : "ChangeInCapacity",
-        "AutoScalingGroupName" : { "Ref" : "Ascalegroup" },
-        "Cooldown" : "300",
-        "PolicyType" : "SimpleScaling",
-        "ScalingAdjustment" : -1
-      },
-      "DependsOn" : [ "Ascalegroup" ]
-    },
-    "AlarmAscalegroupScaleDown" : {
-      "Type" : "AWS::CloudWatch::Alarm",
-      "Properties" : {
-        "AlarmActions" : [ { "Ref" : "AscalegroupScaleDown" } ],
-        "AlarmName" : {
-          "Fn::Join" : [ "-", [
-            { "Ref" : "AWS::StackName" },
-            "AlarmAscalegroupScaleDown" ]
-          ]
-        },
-        "ComparisonOperator" : "LessThanThreshold",
-        "Dimensions" : [ {
-          "Name" : "ClusterName",
-          "Value" : { "Ref" : "Ecscluster" }
-        } ],
-        "EvaluationPeriods" : "1",
-        "MetricName" : "MemoryReservation",
-        "Namespace" : "AWS/ECS",
-        "Period" : 60,
-        "Statistic" : "Average",
-        "Threshold" : 43
-      },
-      "DependsOn" : [ "AscalegroupScaleDown", "Ecscluster" ]
-    },
-    "AscalegroupScaleUp" : {
-      "Type" : "AWS::AutoScaling::ScalingPolicy",
-      "Properties" : {
-        "AdjustmentType" : "ChangeInCapacity",
-        "AutoScalingGroupName" : { "Ref" : "Ascalegroup" },
-        "Cooldown" : "300",
-        "PolicyType" : "SimpleScaling",
-        "ScalingAdjustment" : 1
-      },
-      "DependsOn" : [ "Ascalegroup" ]
-    },
-    "AlarmAscalegroupScaleUp" : {
-      "Type" : "AWS::CloudWatch::Alarm",
-      "Properties" : {
-        "AlarmActions" : [ { "Ref" : "AscalegroupScaleUp" } ],
-        "AlarmName" : {
-          "Fn::Join" : [ "-", [ {
-            "Ref" : "AWS::StackName"
-          }, "AlarmAscalegroupScaleUp" ] ]
-        },
-        "ComparisonOperator" : "GreaterThanThreshold",
-        "Dimensions" : [ {
-          "Name" : "ClusterName",
-          "Value" : {
-            "Ref" : "Ecscluster"
-          }
-        } ],
-        "EvaluationPeriods" : "1",
-        "MetricName" : "MemoryReservation",
-        "Namespace" : "AWS/ECS",
-        "Period" : 60,
-        "Statistic" : "Average",
-        "Threshold" : 65
-      },
-      "DependsOn" : [ "AscalegroupScaleUp", "Ecscluster" ]
-    },
-    "Loadbalancer" : {
-      "Type" : "AWS::ElasticLoadBalancingV2::LoadBalancer",
-      "Properties" : {
-        "LoadBalancerAttributes" : [ {
-          "Key" : "deletion_protection.enabled",
-          "Value" : "false"
-        }, {
-          "Key" : "idle_timeout.timeout_seconds",
-          "Value" : "60"
-        }, {
-          "Key" : "access_logs.s3.enabled",
-          "Value" : "false"
-        }, {
-		  "Key": "routing.http2.enabled",
-		  "Value": true
-		} ],
-        "Name" : {
-          "Fn::Join" : [ "-", [ {
-            "Ref" : "AWS::StackName"
-          }, "Loadbalancer" ] ]
-        },
-        "Scheme" : "internet-facing",
-        "SecurityGroups" : [ {
-          "Ref" : "SgVpcLoadbalancerportsAccess"
-        }, {
-          "Ref" : "SgPublicHttps"
-        } ],
-        "Subnets" : [ {
-          "Ref" : "Subnet1"
-        }, {
-          "Ref" : "Subnet2"
-        } ],
-        "Tags" : [ {
-          "Key" : "Name",
-          "Value" : {
-            "Fn::Join" : [ "-", [ {
-              "Ref" : "AWS::StackName"
-            }, "Loadbalancer" ] ]
-          }
-        } ],
-        "Type" : "application",
-        "IpAddressType" : "ipv4"
-      },
-      "DependsOn" : [ "SgVpcLoadbalancerportsAccess", "SgPublicHttps", "Subnet1", "Subnet2" ]
-    },
-    "Deftarget" : {
-      "Type" : "AWS::ElasticLoadBalancingV2::TargetGroup",
-      "Properties" : {
-        "HealthCheckIntervalSeconds" : 30,
-        "HealthCheckPath" : "/",
-        "HealthCheckPort" : "traffic-port",
-        "HealthCheckProtocol" : "HTTPS",
-        "HealthCheckTimeoutSeconds" : 5,
-        "HealthyThresholdCount" : 5,
-        "Matcher" : {
-          "HttpCode" : "200"
-        },
-        "Name" : {
-          "Fn::Join" : [ "-", [ {
-            "Ref" : "AWS::StackName"
-          }, "Deftarget" ] ]
-        },
-        "Port" : 443,
-        "Protocol" : "HTTPS",
-        "Tags" : [ {
-          "Key" : "Name",
-          "Value" : {
-            "Fn::Join" : [ "-", [ {
-              "Ref" : "AWS::StackName"
-            }, "Deftarget" ] ]
-          }
-        } ],
-        "TargetGroupAttributes" : [ {
-          "Key" : "deregistration_delay.timeout_seconds",
-          "Value" : "300"
-        }, {
-          "Key" : "stickiness.enabled",
-          "Value" : "false"
-        } ],
-        "TargetType" : "instance",
-        "UnhealthyThresholdCount" : 2,
-        "VpcId" : {
-          "Ref" : "Vpc"
-        }
-      },
-      "DependsOn" : [ "Vpc" ]
-    },
-    "Httpdefaultlistener" : {
-		"Type" : "AWS::ElasticLoadBalancingV2::Listener",
-		"Properties" : {
-		  "DefaultActions" : [ {
-			"Type" : "forward",
-			"TargetGroupArn" : {
-			  "Ref" : "Deftarget"
-			}
-		  } ],
-		  "LoadBalancerArn" : {
-			"Ref" : "Loadbalancer"
-		  },
-		  "Port" : 80,
-		  "Protocol" : "HTTP"
-		},
-		"DependsOn" : [ "Deftarget", "Loadbalancer" ]
-	  },
-    "Httpsdefaultlistener" : {
-      "Type" : "AWS::ElasticLoadBalancingV2::Listener",
-      "Properties" : {
-        "Certificates" : [ {
-          "CertificateArn" : {
-            "Ref" : "HttpsdefaultlistenerCertificate"
-          }
-        } ],
-        "DefaultActions" : [ {
-          "Type" : "forward",
-          "TargetGroupArn" : {
-            "Ref" : "Deftarget"
-          }
-        } ],
-        "LoadBalancerArn" : {
-          "Ref" : "Loadbalancer"
-        },
-        "Port" : 443,
-        "Protocol" : "HTTPS"
-      },
-      "DependsOn" : [ "Deftarget", "Loadbalancer" ]
-    },
-	"BackupRole" : {
-      "Type" : "AWS::IAM::Role",
-      "Properties" : {
-        "AssumeRolePolicyDocument" : {
-          "Version" : "2012-10-17",
-          "Statement" : [ {
-            "Effect" : "Allow",
-            "Principal" : {
-              "Service" : [ "backup.amazonaws.com" ]
-            },
-            "Action" : [ "sts:AssumeRole" ]
-          } ]
-        },
-        "ManagedPolicyArns" : [
-		  "arn:aws:iam::aws:policy/service-role/AWSBackupServiceRolePolicyForBackup"
-		],
-		"Path" : "/",
-        "RoleName" : {
-          "Fn::Join" : [ "-", [
-		    { "Ref" : "AWS::StackName" },
-			"BackupRole" ]
-		  ]
-        }
-      }
-	},
-	"BackupVault" : {
-	  "Type" : "AWS::Backup::BackupVault",
-	  "Properties" : {
-        "BackupVaultName" : {
-          "Fn::Join" : ["-", [
-            { "Ref" : "AWS::StackName" },
-            "BackupVault" ]
-          ]
-        }
-	  }
-	},
-	"BackupPlan" : {
-	  "Type" : "AWS::Backup::BackupPlan",
-	  "Properties" : {
-	    "BackupPlan" : {
-		  "BackupPlanName" : {
-            "Fn::Join" : ["-", [
-              { "Ref" : "AWS::StackName" },
-              "BackupPlan" ]
-            ]
-          },
-		  "BackupPlanRule" : [{
-		    "Lifecycle" : {
-			  "DeleteAfterDays" : 35
-			},
-		    "RuleName" : {
-              "Fn::Join" : ["-", [
-                { "Ref" : "AWS::StackName" },
-                "BackupPlanRule" ]
+  "Resources": {
+    "Vpc": {
+      "Type": "AWS::EC2::VPC",
+      "Properties": {
+        "CidrBlock": "10.1.0.0/16",
+        "EnableDnsSupport": "true",
+        "EnableDnsHostnames": "true",
+        "InstanceTenancy": "default",
+        "Tags": [
+          {
+            "Key": "Name",
+            "Value": {
+              "Fn::Join": [
+                "-",
+                [
+                  {
+                    "Ref": "AWS::StackName"
+                  },
+                  "Vpc"
+                ]
               ]
-            },
-		    "ScheduleExpression" : "cron(0 5 ? * * *)",
-		    "StartWindowMinutes" : 480,
-		    "TargetBackupVault" : { "Ref" : "BackupVault" }
-		  }]
-		}
-	  },
-      "DependsOn" : [ "BackupVault" ]
-	},
-	"BackupSelectionEfs" : {
-	  "Type" : "AWS::Backup::BackupSelection",
-	  "Properties" : {
-        "BackupPlanId" : { "Ref" : "BackupPlan" },
-        "BackupSelection" : {
-		  "SelectionName" : {
-            "Fn::Join" : ["-", [
-              { "Ref" : "AWS::StackName" },
-              "BackupSelectionEfs" ]
-            ]
-          },
-		  "IamRoleArn" : { "Fn::GetAtt" : [ "BackupRole", "Arn" ] },
-		  "Resources" : [
-		    {
-		      "Fn::Join" : [ "", [
-		    	"arn:aws:elasticfilesystem:",
-		    	{ "Ref" : "AWS::Region" },
-		    	":",
-		    	{ "Ref" : "AWS::AccountId" },
-		    	":file-system/",
-		    	{ "Ref" : "Efs" }
-		      ]]
-		    }
-		  ]
-		}
-	  },
-      "DependsOn" : [ "BackupPlan", "BackupRole", "Efs" ]
-	}
-  },
-
-  "Outputs": {
-    "MyName": {
-      "Value": {"Fn::Sub": "${AWS::StackName}" },
-      "Export": {
-        "Name": {"Fn::Sub": "${AWS::StackName}-MyName" }
-      }
-    },
-    "ImageId": {
-      "Value": { "Fn::FindInMap" : [ "AWSRegion2AMI", { "Ref" : "AWS::Region" }, "AMI" ]},
-      "Export" : {
-        "Name" : {"Fn::Sub": "${AWS::StackName}-ImageId" }
+            }
+          }
+        ]
       }
     },
     "Subnet1": {
-      "Value": { "Ref" : "Subnet1" },
-      "Export" : {
-        "Name" : {"Fn::Sub": "${AWS::StackName}-Subnet1" }
-      }
+      "Type": "AWS::EC2::Subnet",
+      "Properties": {
+        "CidrBlock": "10.1.1.0/24",
+        "AvailabilityZone": {
+          "Fn::Select": [
+            "0",
+            {
+              "Fn::GetAZs": {
+                "Ref": "AWS::Region"
+              }
+            }
+          ]
+        },
+        "MapPublicIpOnLaunch": "false",
+        "Tags": [
+          {
+            "Key": "Name",
+            "Value": {
+              "Fn::Join": [
+                "-",
+                [
+                  {
+                    "Ref": "AWS::StackName"
+                  },
+                  "Subnet1"
+                ]
+              ]
+            }
+          }
+        ],
+        "VpcId": {
+          "Ref": "Vpc"
+        }
+      },
+      "DependsOn": [
+        "Vpc"
+      ]
     },
     "Subnet2": {
-      "Value": { "Ref" : "Subnet2" },
-      "Export" : {
-        "Name" : {"Fn::Sub": "${AWS::StackName}-Subnet2" }
+      "Type": "AWS::EC2::Subnet",
+      "Properties": {
+        "CidrBlock": "10.1.2.0/24",
+        "AvailabilityZone": {
+          "Fn::Select": [
+            "1",
+            {
+              "Fn::GetAZs": {
+                "Ref": "AWS::Region"
+              }
+            }
+          ]
+        },
+        "MapPublicIpOnLaunch": "false",
+        "Tags": [
+          {
+            "Key": "Name",
+            "Value": {
+              "Fn::Join": [
+                "-",
+                [
+                  {
+                    "Ref": "AWS::StackName"
+                  },
+                  "Subnet2"
+                ]
+              ]
+            }
+          }
+        ],
+        "VpcId": {
+          "Ref": "Vpc"
+        }
+      },
+      "DependsOn": [
+        "Vpc"
+      ]
+    },
+    "Routetable": {
+      "Type": "AWS::EC2::RouteTable",
+      "Properties": {
+        "VpcId": {
+          "Ref": "Vpc"
+        },
+        "Tags": [
+          {
+            "Key": "Name",
+            "Value": {
+              "Fn::Join": [
+                "-",
+                [
+                  {
+                    "Ref": "AWS::StackName"
+                  },
+                  "Routetable"
+                ]
+              ]
+            }
+          }
+        ]
+      },
+      "DependsOn": [
+        "Vpc"
+      ]
+    },
+    "AssociateRoutetable1": {
+      "Type": "AWS::EC2::SubnetRouteTableAssociation",
+      "Properties": {
+        "RouteTableId": {
+          "Ref": "Routetable"
+        },
+        "SubnetId": {
+          "Ref": "Subnet1"
+        }
+      },
+      "DependsOn": [
+        "Routetable",
+        "Subnet1"
+      ]
+    },
+    "AssociateRoutetable2": {
+      "Type": "AWS::EC2::SubnetRouteTableAssociation",
+      "Properties": {
+        "RouteTableId": {
+          "Ref": "Routetable"
+        },
+        "SubnetId": {
+          "Ref": "Subnet2"
+        }
+      },
+      "DependsOn": [
+        "Routetable",
+        "Subnet2"
+      ]
+    },
+    "Igw": {
+      "Type": "AWS::EC2::InternetGateway",
+      "Properties": {
+        "Tags": [
+          {
+            "Key": "Name",
+            "Value": {
+              "Fn::Join": [
+                "-",
+                [
+                  {
+                    "Ref": "AWS::StackName"
+                  },
+                  "Igw"
+                ]
+              ]
+            }
+          }
+        ]
+      }
+    },
+    "Route": {
+      "Type": "AWS::EC2::Route",
+      "Properties": {
+        "DestinationCidrBlock": "0.0.0.0/0",
+        "GatewayId": {
+          "Ref": "Igw"
+        },
+        "RouteTableId": {
+          "Ref": "Routetable"
+        }
+      },
+      "DependsOn": [
+        "Igw",
+        "Routetable"
+      ]
+    },
+    "AttachIgw": {
+      "Type": "AWS::EC2::VPCGatewayAttachment",
+      "Properties": {
+        "VpcId": {
+          "Ref": "Vpc"
+        },
+        "InternetGatewayId": {
+          "Ref": "Igw"
+        }
+      },
+      "DependsOn": [
+        "Vpc",
+        "Igw"
+      ]
+    },
+    "Dhcpopts": {
+      "Type": "AWS::EC2::DHCPOptions",
+      "Properties": {
+        "DomainName": "ec2.internal",
+        "DomainNameServers": [
+          "AmazonProvidedDNS"
+        ],
+        "Tags": [
+          {
+            "Key": "Name",
+            "Value": {
+              "Fn::Join": [
+                "-",
+                [
+                  {
+                    "Ref": "AWS::StackName"
+                  },
+                  "Dhcpopts"
+                ]
+              ]
+            }
+          }
+        ]
+      }
+    },
+    "AssociateDhcpopts": {
+      "Type": "AWS::EC2::VPCDHCPOptionsAssociation",
+      "Properties": {
+        "DhcpOptionsId": {
+          "Ref": "Dhcpopts"
+        },
+        "VpcId": {
+          "Ref": "Vpc"
+        }
+      },
+      "DependsOn": [
+        "Vpc",
+        "Dhcpopts"
+      ]
+    },
+    "Netacl": {
+      "Type": "AWS::EC2::NetworkAcl",
+      "Properties": {
+        "Tags": [
+          {
+            "Key": "Name",
+            "Value": {
+              "Fn::Join": [
+                "-",
+                [
+                  {
+                    "Ref": "AWS::StackName"
+                  },
+                  "Netacl"
+                ]
+              ]
+            }
+          }
+        ],
+        "VpcId": {
+          "Ref": "Vpc"
+        }
+      },
+      "DependsOn": [
+        "Vpc"
+      ]
+    },
+    "NetaclEntry1": {
+      "Type": "AWS::EC2::NetworkAclEntry",
+      "Properties": {
+        "CidrBlock": "0.0.0.0/0",
+        "Egress": "false",
+        "NetworkAclId": {
+          "Ref": "Netacl"
+        },
+        "Protocol": "-1",
+        "RuleAction": "allow",
+        "RuleNumber": 100
+      }
+    },
+    "NetaclEntry2": {
+      "Type": "AWS::EC2::NetworkAclEntry",
+      "Properties": {
+        "CidrBlock": "0.0.0.0/0",
+        "Egress": "true",
+        "NetworkAclId": {
+          "Ref": "Netacl"
+        },
+        "Protocol": "-1",
+        "RuleAction": "allow",
+        "RuleNumber": 100
+      }
+    },
+    "AssociateNetacl1": {
+      "Type": "AWS::EC2::SubnetNetworkAclAssociation",
+      "Properties": {
+        "SubnetId": {
+          "Ref": "Subnet1"
+        },
+        "NetworkAclId": {
+          "Ref": "Netacl"
+        }
+      },
+      "DependsOn": [
+        "Subnet1",
+        "Netacl"
+      ]
+    },
+    "AssociateNetacl2": {
+      "Type": "AWS::EC2::SubnetNetworkAclAssociation",
+      "Properties": {
+        "SubnetId": {
+          "Ref": "Subnet2"
+        },
+        "NetworkAclId": {
+          "Ref": "Netacl"
+        }
+      },
+      "DependsOn": [
+        "Subnet2",
+        "Netacl"
+      ]
+    },
+    "SgVpcEfsAccess": {
+      "Type": "AWS::EC2::SecurityGroup",
+      "Properties": {
+        "GroupName": {
+          "Fn::Join": [
+            "-",
+            [
+              {
+                "Ref": "AWS::StackName"
+              },
+              "SgVpcEfsAccess"
+            ]
+          ]
+        },
+        "GroupDescription": "Securitygroup to access the EFS",
+        "Tags": [
+          {
+            "Key": "Name",
+            "Value": {
+              "Fn::Join": [
+                "-",
+                [
+                  {
+                    "Ref": "AWS::StackName"
+                  },
+                  "SgVpcEfsAccess"
+                ]
+              ]
+            }
+          }
+        ],
+        "VpcId": {
+          "Ref": "Vpc"
+        }
+      },
+      "DependsOn": [
+        "Vpc"
+      ]
+    },
+    "SgVpcEfs": {
+      "Type": "AWS::EC2::SecurityGroup",
+      "Properties": {
+        "GroupName": {
+          "Fn::Join": [
+            "-",
+            [
+              {
+                "Ref": "AWS::StackName"
+              },
+              "SgVpcEfs"
+            ]
+          ]
+        },
+        "GroupDescription": "Securitygroup for the EFS",
+        "SecurityGroupIngress": [
+          {
+            "IpProtocol": "tcp",
+            "FromPort": 2049,
+            "ToPort": 2049,
+            "SourceSecurityGroupId": {
+              "Ref": "SgVpcEfsAccess"
+            }
+          }
+        ],
+        "Tags": [
+          {
+            "Key": "Name",
+            "Value": {
+              "Fn::Join": [
+                "-",
+                [
+                  {
+                    "Ref": "AWS::StackName"
+                  },
+                  "SgVpcEfs"
+                ]
+              ]
+            }
+          }
+        ],
+        "VpcId": {
+          "Ref": "Vpc"
+        }
+      },
+      "DependsOn": [
+        "Vpc",
+        "SgVpcEfsAccess"
+      ]
+    },
+    "SgVpcLoadbalancerportsAccess": {
+      "Type": "AWS::EC2::SecurityGroup",
+      "Properties": {
+        "GroupName": {
+          "Fn::Join": [
+            "-",
+            [
+              {
+                "Ref": "AWS::StackName"
+              },
+              "SgVpcLoadbalancerportsAccess"
+            ]
+          ]
+        },
+        "GroupDescription": "Securitygroup to access the loadbalancerports on an instance",
+        "Tags": [
+          {
+            "Key": "Name",
+            "Value": {
+              "Fn::Join": [
+                "-",
+                [
+                  {
+                    "Ref": "AWS::StackName"
+                  },
+                  "SgVpcLoadbalancerportsAccess"
+                ]
+              ]
+            }
+          }
+        ],
+        "VpcId": {
+          "Ref": "Vpc"
+        }
+      },
+      "DependsOn": [
+        "Vpc"
+      ]
+    },
+    "SgVpcLoadbalancerports": {
+      "Type": "AWS::EC2::SecurityGroup",
+      "Properties": {
+        "GroupName": {
+          "Fn::Join": [
+            "-",
+            [
+              {
+                "Ref": "AWS::StackName"
+              },
+              "SgVpcLoadbalancerports"
+            ]
+          ]
+        },
+        "GroupDescription": "Securitygroup for the loadbalancerports of an instance",
+        "SecurityGroupIngress": [
+          {
+            "IpProtocol": "tcp",
+            "FromPort": 32768,
+            "ToPort": 61000,
+            "SourceSecurityGroupId": {
+              "Ref": "SgVpcLoadbalancerportsAccess"
+            }
+          }
+        ],
+        "Tags": [
+          {
+            "Key": "Name",
+            "Value": {
+              "Fn::Join": [
+                "-",
+                [
+                  {
+                    "Ref": "AWS::StackName"
+                  },
+                  "SgVpcLoadbalancerports"
+                ]
+              ]
+            }
+          }
+        ],
+        "VpcId": {
+          "Ref": "Vpc"
+        }
+      },
+      "DependsOn": [
+        "Vpc",
+        "SgVpcLoadbalancerportsAccess"
+      ]
+    },
+    "SgVpcMysqlAccess": {
+      "Type": "AWS::EC2::SecurityGroup",
+      "Properties": {
+        "GroupName": {
+          "Fn::Join": [
+            "-",
+            [
+              {
+                "Ref": "AWS::StackName"
+              },
+              "SgVpcMysqlAccess"
+            ]
+          ]
+        },
+        "GroupDescription": "Securitygroup to access the MySQL",
+        "Tags": [
+          {
+            "Key": "Name",
+            "Value": {
+              "Fn::Join": [
+                "-",
+                [
+                  {
+                    "Ref": "AWS::StackName"
+                  },
+                  "SgVpcMysqlAccess"
+                ]
+              ]
+            }
+          }
+        ],
+        "VpcId": {
+          "Ref": "Vpc"
+        }
+      },
+      "DependsOn": [
+        "Vpc"
+      ]
+    },
+    "SgVpcMysql": {
+      "Type": "AWS::EC2::SecurityGroup",
+      "Properties": {
+        "GroupName": {
+          "Fn::Join": [
+            "-",
+            [
+              {
+                "Ref": "AWS::StackName"
+              },
+              "SgVpcMysql"
+            ]
+          ]
+        },
+        "GroupDescription": "Securitygroup for the MySQL",
+        "SecurityGroupIngress": [
+          {
+            "IpProtocol": "tcp",
+            "FromPort": 3306,
+            "ToPort": 3306,
+            "SourceSecurityGroupId": {
+              "Ref": "SgVpcMysqlAccess"
+            }
+          }
+        ],
+        "Tags": [
+          {
+            "Key": "Name",
+            "Value": {
+              "Fn::Join": [
+                "-",
+                [
+                  {
+                    "Ref": "AWS::StackName"
+                  },
+                  "SgVpcMysql"
+                ]
+              ]
+            }
+          }
+        ],
+        "VpcId": {
+          "Ref": "Vpc"
+        }
+      },
+      "DependsOn": [
+        "Vpc",
+        "SgVpcMysqlAccess"
+      ]
+    },
+    "SgPublicHttpHttps": {
+      "Type": "AWS::EC2::SecurityGroup",
+      "Properties": {
+        "GroupName": {
+          "Fn::Join": [
+            "-",
+            [
+              {
+                "Ref": "AWS::StackName"
+              },
+              "SgPublicHttpHttps"
+            ]
+          ]
+        },
+        "GroupDescription": "Securitygroup to access http and https from everywhere",
+        "SecurityGroupIngress": [
+          {
+            "IpProtocol": "tcp",
+            "FromPort": 80,
+            "ToPort": 80,
+            "CidrIp": "0.0.0.0/0"
+          },
+          {
+            "IpProtocol": "tcp",
+            "FromPort": 443,
+            "ToPort": 443,
+            "CidrIp": "0.0.0.0/0"
+          },
+          {
+            "IpProtocol": "tcp",
+            "FromPort": 80,
+            "ToPort": 80,
+            "CidrIpv6": "::/0"
+          },
+          {
+            "IpProtocol": "tcp",
+            "FromPort": 443,
+            "ToPort": 443,
+            "CidrIpv6": "::/0"
+          }
+        ],
+        "Tags": [
+          {
+            "Key": "Name",
+            "Value": {
+              "Fn::Join": [
+                "-",
+                [
+                  {
+                    "Ref": "AWS::StackName"
+                  },
+                  "SgPublicHttpHttps"
+                ]
+              ]
+            }
+          }
+        ],
+        "VpcId": {
+          "Ref": "Vpc"
+        }
+      },
+      "DependsOn": [
+        "Vpc"
+      ]
+    },
+    "SgPublicHttps": {
+      "Type": "AWS::EC2::SecurityGroup",
+      "Properties": {
+        "GroupName": {
+          "Fn::Join": [
+            "-",
+            [
+              {
+                "Ref": "AWS::StackName"
+              },
+              "SgPublicHttps"
+            ]
+          ]
+        },
+        "GroupDescription": "Securitygroup to access http and https from everywhere",
+        "SecurityGroupIngress": [
+          {
+            "IpProtocol": "tcp",
+            "FromPort": 80,
+            "ToPort": 80,
+            "CidrIp": "0.0.0.0/0"
+          },
+          {
+            "IpProtocol": "tcp",
+            "FromPort": 443,
+            "ToPort": 443,
+            "CidrIp": "0.0.0.0/0"
+          },
+          {
+            "IpProtocol": "tcp",
+            "FromPort": 80,
+            "ToPort": 80,
+            "CidrIpv6": "::/0"
+          },
+          {
+            "IpProtocol": "tcp",
+            "FromPort": 443,
+            "ToPort": 443,
+            "CidrIpv6": "::/0"
+          }
+        ],
+        "Tags": [
+          {
+            "Key": "Name",
+            "Value": {
+              "Fn::Join": [
+                "-",
+                [
+                  {
+                    "Ref": "AWS::StackName"
+                  },
+                  "SgPublicHttps"
+                ]
+              ]
+            }
+          }
+        ],
+        "VpcId": {
+          "Ref": "Vpc"
+        }
+      },
+      "DependsOn": [
+        "Vpc"
+      ]
+    },
+    "SgLaborSsh": {
+      "Type": "AWS::EC2::SecurityGroup",
+      "Properties": {
+        "GroupName": {
+          "Fn::Join": [
+            "-",
+            [
+              {
+                "Ref": "AWS::StackName"
+              },
+              "SgLaborSsh"
+            ]
+          ]
+        },
+        "GroupDescription": "Securitygroup to access ssh from labor",
+        "SecurityGroupIngress": [],
+        "Tags": [
+          {
+            "Key": "Name",
+            "Value": {
+              "Fn::Join": [
+                "-",
+                [
+                  {
+                    "Ref": "AWS::StackName"
+                  },
+                  "SgLaborSsh"
+                ]
+              ]
+            }
+          }
+        ],
+        "VpcId": {
+          "Ref": "Vpc"
+        }
+      },
+      "DependsOn": [
+        "Vpc"
+      ]
+    },
+    "SgLaborMysql": {
+      "Type": "AWS::EC2::SecurityGroup",
+      "Properties": {
+        "GroupName": {
+          "Fn::Join": [
+            "-",
+            [
+              {
+                "Ref": "AWS::StackName"
+              },
+              "SgLaborMysql"
+            ]
+          ]
+        },
+        "GroupDescription": "Securitygroup to access MySQL from labor",
+        "SecurityGroupIngress": [],
+        "Tags": [
+          {
+            "Key": "Name",
+            "Value": {
+              "Fn::Join": [
+                "-",
+                [
+                  {
+                    "Ref": "AWS::StackName"
+                  },
+                  "SgLaborMysql"
+                ]
+              ]
+            }
+          }
+        ],
+        "VpcId": {
+          "Ref": "Vpc"
+        }
+      },
+      "DependsOn": [
+        "Vpc"
+      ]
+    },
+    "RdsclSubnetgroup": {
+      "Type": "AWS::RDS::DBSubnetGroup",
+      "Properties": {
+        "DBSubnetGroupDescription": {
+          "Fn::Join": [
+            "-",
+            [
+              {
+                "Ref": "AWS::StackName"
+              },
+              "RdsclSubnetgroup"
+            ]
+          ]
+        },
+        "SubnetIds": [
+          {
+            "Ref": "Subnet1"
+          },
+          {
+            "Ref": "Subnet2"
+          }
+        ],
+        "Tags": [
+          {
+            "Key": "Name",
+            "Value": {
+              "Fn::Join": [
+                "-",
+                [
+                  {
+                    "Ref": "AWS::StackName"
+                  },
+                  "RdsclSubnetgroup"
+                ]
+              ]
+            }
+          }
+        ]
+      },
+      "DependsOn": [
+        "Subnet1",
+        "Subnet2"
+      ]
+    },
+    "RdsParameterGroup": {
+      "Type": "AWS::RDS::DBParameterGroup",
+      "Properties": {
+        "Description": "Aurora 8.0 Parameter Group with increased connection limit",
+        "Family": "aurora-mysql8.0",
+        "Parameters": {
+          "max_connections": "{log(DBInstanceClassMemory/805306368)*60}"
+        }
+      }
+    },
+    "Rdscl": {
+      "Type": "AWS::RDS::DBCluster",
+      "Properties": {
+        "AvailabilityZones": [
+          {
+            "Fn::Select": [
+              "0",
+              {
+                "Fn::GetAZs": {
+                  "Ref": "AWS::Region"
+                }
+              }
+            ]
+          },
+          {
+            "Fn::Select": [
+              "1",
+              {
+                "Fn::GetAZs": {
+                  "Ref": "AWS::Region"
+                }
+              }
+            ]
+          }
+        ],
+        "BackupRetentionPeriod": 35,
+        "DBSubnetGroupName": {
+          "Ref": "RdsclSubnetgroup"
+        },
+        "Engine": "aurora-mysql",
+        "EngineVersion": "8.0",
+        "MasterUsername": {
+          "Ref": "RdsMasterUsername"
+        },
+        "MasterUserPassword": {
+          "Ref": "RdsMasterPassword"
+        },
+        "Tags": [
+          {
+            "Key": "Name",
+            "Value": {
+              "Fn::Join": [
+                "-",
+                [
+                  {
+                    "Ref": "AWS::StackName"
+                  },
+                  "Rdscl"
+                ]
+              ]
+            }
+          }
+        ],
+        "VpcSecurityGroupIds": [
+          {
+            "Ref": "SgVpcMysql"
+          },
+          {
+            "Ref": "SgLaborMysql"
+          }
+        ]
+      },
+      "DependsOn": [
+        "RdsclSubnetgroup",
+        "SgVpcMysql"
+      ]
+    },
+    "Rdsinstance1": {
+      "Type": "AWS::RDS::DBInstance",
+      "Properties": {
+        "AllowMajorVersionUpgrade": "false",
+        "AutoMinorVersionUpgrade": "true",
+        "AvailabilityZone": {
+          "Fn::Select": [
+            "0",
+            {
+              "Fn::GetAZs": {
+                "Ref": "AWS::Region"
+              }
+            }
+          ]
+        },
+        "DBClusterIdentifier": {
+          "Ref": "Rdscl"
+        },
+        "DBInstanceClass": {
+          "Ref": "RdsInstanceType"
+        },
+        "DBInstanceIdentifier": {
+          "Fn::Join": [
+            "-",
+            [
+              {
+                "Ref": "AWS::StackName"
+              },
+              "Rdsinstance1"
+            ]
+          ]
+        },
+        "DBSubnetGroupName": {
+          "Ref": "RdsclSubnetgroup"
+        },
+        "Engine": "aurora-mysql",
+        "EngineVersion": "8.0",
+        "MultiAZ": "false",
+        "PubliclyAccessible": "false",
+        "StorageEncrypted": "false",
+        "DBParameterGroupName": {
+          "Ref": "RdsParameterGroup"
+        },
+        "Tags": [
+          {
+            "Key": "Name",
+            "Value": {
+              "Fn::Join": [
+                "-",
+                [
+                  {
+                    "Ref": "AWS::StackName"
+                  },
+                  "Rdsinstance1"
+                ]
+              ]
+            }
+          }
+        ]
+      },
+      "DependsOn": [
+        "Rdscl",
+        "RdsclSubnetgroup",
+        "RdsParameterGroup"
+      ]
+    },
+    "Efs": {
+      "Type": "AWS::EFS::FileSystem",
+      "Properties": {
+        "Encrypted": "false",
+        "FileSystemTags": [
+          {
+            "Key": "Name",
+            "Value": {
+              "Fn::Join": [
+                "-",
+                [
+                  {
+                    "Ref": "AWS::StackName"
+                  },
+                  "Efs"
+                ]
+              ]
+            }
+          }
+        ],
+        "PerformanceMode": "generalPurpose"
+      }
+    },
+    "EfsMounttarget1": {
+      "Type": "AWS::EFS::MountTarget",
+      "Properties": {
+        "FileSystemId": {
+          "Ref": "Efs"
+        },
+        "SecurityGroups": [
+          {
+            "Ref": "SgVpcEfs"
+          }
+        ],
+        "SubnetId": {
+          "Ref": "Subnet1"
+        }
+      },
+      "DependsOn": [
+        "Efs",
+        "SgVpcEfs",
+        "Subnet1"
+      ]
+    },
+    "EfsMounttarget2": {
+      "Type": "AWS::EFS::MountTarget",
+      "Properties": {
+        "FileSystemId": {
+          "Ref": "Efs"
+        },
+        "SecurityGroups": [
+          {
+            "Ref": "SgVpcEfs"
+          }
+        ],
+        "SubnetId": {
+          "Ref": "Subnet2"
+        }
+      },
+      "DependsOn": [
+        "Efs",
+        "SgVpcEfs",
+        "Subnet2"
+      ]
+    },
+    "Ecscluster": {
+      "Type": "AWS::ECS::Cluster",
+      "Properties": {
+        "ClusterName": {
+          "Fn::Join": [
+            "-",
+            [
+              {
+                "Ref": "AWS::StackName"
+              },
+              "Ecscluster"
+            ]
+          ]
+        }
+      }
+    },
+    "Instancerole": {
+      "Type": "AWS::IAM::Role",
+      "Properties": {
+        "AssumeRolePolicyDocument": {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Effect": "Allow",
+              "Principal": {
+                "Service": [
+                  "ec2.amazonaws.com"
+                ]
+              },
+              "Action": [
+                "sts:AssumeRole"
+              ]
+            }
+          ]
+        },
+        "ManagedPolicyArns": [
+          "arn:aws:iam::aws:policy/service-role/AmazonEC2ContainerServiceforEC2Role"
+        ],
+        "Path": "/",
+        "RoleName": {
+          "Fn::Join": [
+            "-",
+            [
+              {
+                "Ref": "AWS::StackName"
+              },
+              "Instancerole"
+            ]
+          ]
+        }
       }
     },
     "InstanceroleProfile": {
-      "Value": { "Ref":  "InstanceroleProfile" },
-      "Export" : {
-        "Name" : {"Fn::Sub": "${AWS::StackName}-InstanceroleProfile" }
+      "Type": "AWS::IAM::InstanceProfile",
+      "Properties": {
+        "Path": "/",
+        "Roles": [
+          {
+            "Ref": "Instancerole"
+          }
+        ],
+        "InstanceProfileName": {
+          "Fn::Join": [
+            "-",
+            [
+              {
+                "Ref": "AWS::StackName"
+              },
+              "InstanceroleProfile"
+            ]
+          ]
+        }
+      },
+      "DependsOn": [
+        "Instancerole"
+      ]
+    },
+    "Launchconfiguration": {
+      "Type": "AWS::AutoScaling::LaunchConfiguration",
+      "Properties": {
+        "AssociatePublicIpAddress": "true",
+        "BlockDeviceMappings": [
+          {
+            "DeviceName": "/dev/xvda",
+            "Ebs": {
+              "VolumeSize": "30",
+              "VolumeType": "gp2",
+              "DeleteOnTermination": "true"
+            }
+          }
+        ],
+        "EbsOptimized": "false",
+        "IamInstanceProfile": {
+          "Ref": "InstanceroleProfile"
+        },
+        "ImageId": {
+          "Ref": "EC2MachineImage"
+        },
+        "InstanceMonitoring": "true",
+        "InstanceType": {
+          "Ref": "EC2InstanceType"
+        },
+        "KeyName": {
+          "Ref": "KeypairName"
+        },
+        "SecurityGroups": [
+          {
+            "Ref": "SgVpcMysqlAccess"
+          },
+          {
+            "Ref": "SgVpcLoadbalancerports"
+          },
+          {
+            "Ref": "SgVpcEfsAccess"
+          },
+          {
+            "Ref": "SgLaborSsh"
+          }
+        ],
+        "UserData": {
+          "Fn::Base64": {
+            "Fn::Join": [
+              "",
+              [
+                "#!/bin/bash\n",
+                "echo ECS_CLUSTER=",
+                {
+                  "Ref": "Ecscluster"
+                },
+                " >> /etc/ecs/ecs.config\n",
+                "\n",
+                "sudo yum install -y nfs-utils\n",
+                "\n",
+                "sudo stop ecs\n",
+                "sudo mkdir /mnt/efs\n",
+                "sudo mount -t nfs4 -o nfsvers=4.1,rsize=1048576,wsize=1048576,hard,timeo=600,retrans=2 ",
+                {
+                  "Ref": "Efs"
+                },
+                ".efs.",
+                {
+                  "Ref": "AWS::Region"
+                },
+                ".amazonaws.com:/ /mnt/efs\n",
+                "sudo service docker restart\n",
+                "sudo start ecs\n"
+              ]
+            ]
+          }
+        }
+      },
+      "DependsOn": [
+        "InstanceroleProfile",
+        "SgVpcMysqlAccess",
+        "SgVpcLoadbalancerports",
+        "SgVpcEfsAccess",
+        "Ecscluster",
+        "Efs",
+        "EfsMounttarget1",
+        "EfsMounttarget2"
+      ]
+    },
+    "Ascalegroup": {
+      "Type": "AWS::AutoScaling::AutoScalingGroup",
+      "Properties": {
+        "Cooldown": "300",
+        "DesiredCapacity": {
+          "Ref": "AscalegroupDesSize"
+        },
+        "HealthCheckGracePeriod": 300,
+        "HealthCheckType": "EC2",
+        "LaunchConfigurationName": {
+          "Ref": "Launchconfiguration"
+        },
+        "LifecycleHookSpecificationList": [
+          {
+            "DefaultResult": "ABANDON",
+            "HeartbeatTimeout": 3600,
+            "LifecycleHookName": {
+              "Fn::Join": [
+                "-",
+                [
+                  {
+                    "Ref": "AWS::StackName"
+                  },
+                  "AscalegroupHookTerm"
+                ]
+              ]
+            },
+            "LifecycleTransition": "autoscaling:EC2_INSTANCE_TERMINATING"
+          }
+        ],
+        "MaxSize": {
+          "Ref": "AscalegroupMaxSize"
+        },
+        "MinSize": {
+          "Ref": "AscalegroupMinSize"
+        },
+        "Tags": [
+          {
+            "Key": "Name",
+            "Value": {
+              "Fn::Join": [
+                "-",
+                [
+                  {
+                    "Ref": "AWS::StackName"
+                  },
+                  "Instance"
+                ]
+              ]
+            },
+            "PropagateAtLaunch": "true"
+          }
+        ],
+        "TerminationPolicies": [
+          "OldestInstance"
+        ],
+        "VPCZoneIdentifier": [
+          {
+            "Ref": "Subnet1"
+          },
+          {
+            "Ref": "Subnet2"
+          }
+        ]
+      },
+      "DependsOn": [
+        "Launchconfiguration",
+        "Subnet1",
+        "Subnet2"
+      ]
+    },
+    "AscalegroupHookTermLbRole": {
+      "Type": "AWS::IAM::Role",
+      "Properties": {
+        "AssumeRolePolicyDocument": {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Effect": "Allow",
+              "Principal": {
+                "Service": [
+                  "lambda.amazonaws.com"
+                ]
+              },
+              "Action": [
+                "sts:AssumeRole"
+              ]
+            }
+          ]
+        },
+        "ManagedPolicyArns": [
+          "arn:aws:iam::aws:policy/CloudWatchLogsFullAccess"
+        ],
+        "Policies": [
+          {
+            "PolicyDocument": {
+              "Version": "2012-10-17",
+              "Statement": [
+                {
+                  "Effect": "Allow",
+                  "Action": [
+                    "autoscaling:CompleteLifecycleAction"
+                  ],
+                  "Resource": [
+                    "*"
+                  ]
+                },
+                {
+                  "Effect": "Allow",
+                  "Action": [
+                    "ec2:DescribeHosts",
+                    "ec2:DescribeInstanceAttribute",
+                    "ec2:DescribeInstanceStatus",
+                    "ec2:DescribeInstances"
+                  ],
+                  "Resource": [
+                    "*"
+                  ]
+                },
+                {
+                  "Effect": "Allow",
+                  "Action": [
+                    "ecs:DescribeContainerInstances",
+                    "ecs:DescribeTasks",
+                    "ecs:ListTasks",
+                    "ecs:SubmitContainerStateChange",
+                    "ecs:SubmitTaskStateChange",
+                    "ecs:ListContainerInstances",
+                    "ecs:UpdateContainerInstancesState"
+                  ],
+                  "Resource": [
+                    "*"
+                  ]
+                },
+                {
+                  "Effect": "Allow",
+                  "Action": [
+                    "sns:ListSubscriptions",
+                    "sns:Publish"
+                  ],
+                  "Resource": [
+                    "*"
+                  ]
+                }
+              ]
+            },
+            "PolicyName": {
+              "Fn::Join": [
+                "-",
+                [
+                  {
+                    "Ref": "AWS::StackName"
+                  },
+                  "AscalegroupHookTermLbRolePolicy"
+                ]
+              ]
+            }
+          }
+        ],
+        "Path": "/",
+        "RoleName": {
+          "Fn::Join": [
+            "-",
+            [
+              {
+                "Ref": "AWS::StackName"
+              },
+              "AscalegroupHookTermLbRole"
+            ]
+          ]
+        }
+      }
+    },
+    "LambdaLiveprojectsLogGroup": {
+      "Type": "AWS::Logs::LogGroup",
+      "Properties": {
+        "LogGroupName": {
+          "Fn::Join": [
+            "/",
+            [
+              "/aws",
+              "lambda",
+              {
+                "Fn::Join": [
+                  "-",
+                  [
+                    {
+                      "Ref": "AWS::StackName"
+                    },
+                    "AscalegroupHookTermLb"
+                  ]
+                ]
+              }
+            ]
+          ]
+        },
+        "RetentionInDays": 14
+      }
+    },
+    "AscalegroupHookTermLb": {
+      "Type": "AWS::Lambda::Function",
+      "Properties": {
+        "Code": {
+          "ZipFile": {
+            "Fn::Join": [
+              "",
+              [
+                "from __future__ import print_function\n",
+                "import boto3\n",
+                "from urlparse import urlparse\n",
+                "import base64\n",
+                "import json\n",
+                "import datetime\n",
+                "import time\n",
+                "\n",
+                "session = boto3.session.Session()\n",
+                "\n",
+                "ec2C = session.client(service_name='ec2')\n",
+                "ecsC = session.client(service_name='ecs')\n",
+                "asgC = session.client('autoscaling')\n",
+                "snsC = session.client('sns')\n",
+                "\n",
+                "def publishToSNS(m, tARN):\n",
+                "\tsnsR = snsC.publish(\n",
+                "\t\tTopicArn=tARN,\n",
+                "\t\tMessage=json.dumps(m),\n",
+                "\t\tSubject='Invoke lambda again'\n",
+                "\t)\n",
+                "\treturn \"published\"\n",
+                "\n",
+                "def checkContainerInstanceTaskStatus(ec2Id):\n",
+                "\tconId = None\n",
+                "\tclN = None\n",
+                "\ttmpM = None\n",
+                "\n",
+                "\tec2Resp = ec2C.describe_instance_attribute(InstanceId=ec2Id, Attribute='userData')\n",
+                "\tudEnc = ec2Resp['UserData']\n",
+                "\tudDec = base64.b64decode(udEnc['Value'])\n",
+                "\n",
+                "\ttmpList = udDec.split()\n",
+                "\tfor token in tmpList:\n",
+                "\t\tif token.find(\"ECS_CLUSTER\") > -1:\n",
+                "\t\t\tclN = token.split('=')[1]\n",
+                "\n",
+                "\tclusterListResp = ecsC.list_container_instances(cluster=clN)\n",
+                "\tcontainerDetResp = ecsC.describe_container_instances(cluster=clN, containerInstances=clusterListResp[\n",
+                "\t\t'containerInstanceArns'])\n",
+                "\n",
+                "\tfor containerInstances in containerDetResp['containerInstances']:\n",
+                "\t\tif containerInstances['ec2InstanceId'] == ec2Id:\n",
+                "\t\t\tconId = containerInstances['containerInstanceArn']\n",
+                "\n",
+                "\t\t\tcontainerStatus = containerInstances['status']\n",
+                "\t\t\tif containerStatus == 'DRAINING':\n",
+                "\t\t\t\ttmpM = {\"containerInstanceId\": conId}\n",
+                "\t\t\telse:\n",
+                "\t\t\t\tecsResponse = ecsC.update_container_instances_state(cluster=clN,containerInstances=[conId],status='DRAINING')\n",
+                "\t\t\t\ttmpM = {\"containerInstanceId\": conId}\n",
+                "\n",
+                "\tif conId != None:\n",
+                "\t\tlistTaskResp = ecsC.list_tasks(cluster=clN, containerInstance=conId)\n",
+                "\n",
+                "\t\tif len(listTaskResp['taskArns']) > 0:\n",
+                "\t\t\treturn 1, tmpM\n",
+                "\t\telse:\n",
+                "\t\t\treturn 0, tmpM\n",
+                "\telse:\n",
+                "\t\treturn 0, tmpM\n",
+                "\n",
+                "def lambda_handler(event, context):\n",
+                "\tline = event['Records'][0]['Sns']['Message']\n",
+                "\tmessage = json.loads(line)\n",
+                "\tec2Id = message['detail']['EC2InstanceId']\n",
+                "\tasgGroupName = message['detail']['AutoScalingGroupName']\n",
+                "\tsnsArn = event['Records'][0]['EventSubscriptionArn']\n",
+                "\tTopicArn = event['Records'][0]['Sns']['TopicArn']\n",
+                "\n",
+                "\tlifecyclehookname = None\n",
+                "\tclN = None\n",
+                "\ttmpM = None\n",
+                "\tcompleteHook = 0\n",
+                "\n",
+                "\tec2Resp = ec2C.describe_instance_attribute(InstanceId=ec2Id, Attribute='userData')\n",
+                "\tudEnc = ec2Resp['UserData']\n",
+                "\tudDec = base64.b64decode(udEnc['Value'])\n",
+                "\n",
+                "\ttmpList = udDec.split()\n",
+                "\tfor token in tmpList:\n",
+                "\t\tif token.find(\"ECS_CLUSTER\") > -1:\n",
+                "\t\t\tclN = token.split('=')[1]\n",
+                "\n",
+                "\tclusterListResp = ecsC.list_container_instances(cluster=clN)\n",
+                "\n",
+                "\tif 'LifecycleTransition' in message['detail'].keys():\n",
+                "\t\tif message['detail']['LifecycleTransition'].find('autoscaling:EC2_INSTANCE_TERMINATING') > -1:\n",
+                "\t\t\tlifecycleHookName = message['detail']['LifecycleHookName']\n",
+                "\t\t\t\n",
+                "\t\t\ttasksRunning, tmpM = checkContainerInstanceTaskStatus(ec2Id)\n",
+                "\t\t\tif tmpM != None:\n",
+                "\t\t\t\tmessage.update(tmpM)\n",
+                "\n",
+                "\t\t\tif tasksRunning == 1:\n",
+                "\t\t\t\tmsgResponse = publishToSNS(message, TopicArn)\n",
+                "\t\t\telif tasksRunning == 0:\n",
+                "\t\t\t\tcompleteHook = 1\n",
+                "\n",
+                "\t\t\t\ttry:\n",
+                "\t\t\t\t\tresponse = asgC.complete_lifecycle_action(\n",
+                "\t\t\t\t\t\tLifecycleHookName=lifecycleHookName,\n",
+                "\t\t\t\t\t\tAutoScalingGroupName=asgGroupName,\n",
+                "\t\t\t\t\t\tLifecycleActionResult='CONTINUE',\n",
+                "\t\t\t\t\t\tInstanceId=ec2Id)\n",
+                "\t\t\t\texcept Exception, e:\n",
+                "\t\t\t\t\tprint(str(e))\n"
+              ]
+            ]
+          }
+        },
+        "Description": {
+          "Fn::Join": [
+            "-",
+            [
+              {
+                "Ref": "AWS::StackName"
+              },
+              "AscalegroupHookTermLb"
+            ]
+          ]
+        },
+        "FunctionName": {
+          "Fn::Join": [
+            "-",
+            [
+              {
+                "Ref": "AWS::StackName"
+              },
+              "AscalegroupHookTermLb"
+            ]
+          ]
+        },
+        "Handler": "index.lambda_handler",
+        "MemorySize": 128,
+        "Role": {
+          "Fn::GetAtt": [
+            "AscalegroupHookTermLbRole",
+            "Arn"
+          ]
+        },
+        "Runtime": "python3.9",
+        "Timeout": 30,
+        "Tags": [
+          {
+            "Key": "Name",
+            "Value": {
+              "Fn::Join": [
+                "-",
+                [
+                  {
+                    "Ref": "AWS::StackName"
+                  },
+                  "AscalegroupHookTermLb"
+                ]
+              ]
+            }
+          }
+        ]
+      },
+      "DependsOn": [
+        "AscalegroupHookTermLbRole"
+      ]
+    },
+    "AscalegroupHookTermTopic": {
+      "Type": "AWS::SNS::Topic",
+      "Properties": {
+        "DisplayName": {
+          "Fn::Join": [
+            "-",
+            [
+              {
+                "Ref": "AWS::StackName"
+              },
+              "AscalegroupHookTermTopic"
+            ]
+          ]
+        },
+        "Subscription": [
+          {
+            "Endpoint": {
+              "Fn::GetAtt": [
+                "AscalegroupHookTermLb",
+                "Arn"
+              ]
+            },
+            "Protocol": "lambda"
+          }
+        ],
+        "TopicName": {
+          "Fn::Join": [
+            "-",
+            [
+              {
+                "Ref": "AWS::StackName"
+              },
+              "AscalegroupHookTermTopic"
+            ]
+          ]
+        }
+      },
+      "DependsOn": [
+        "AscalegroupHookTermLb"
+      ]
+    },
+    "AscalegroupHookTermLbInvokePermission": {
+      "Type": "AWS::Lambda::Permission",
+      "Properties": {
+        "Action": "lambda:InvokeFunction",
+        "Principal": "sns.amazonaws.com",
+        "SourceArn": {
+          "Ref": "AscalegroupHookTermTopic"
+        },
+        "FunctionName": {
+          "Fn::GetAtt": [
+            "AscalegroupHookTermLb",
+            "Arn"
+          ]
+        }
+      },
+      "DependsOn": [
+        "AscalegroupHookTermTopic",
+        "AscalegroupHookTermLb"
+      ]
+    },
+    "AscalegroupHookTermRule": {
+      "Type": "AWS::Events::Rule",
+      "Properties": {
+        "Description": {
+          "Fn::Join": [
+            "-",
+            [
+              {
+                "Ref": "AWS::StackName"
+              },
+              "AscalegroupHookTermRule"
+            ]
+          ]
+        },
+        "EventPattern": {
+          "source": [
+            "aws.autoscaling"
+          ],
+          "detail-type": [
+            "EC2 Instance-terminate Lifecycle Action"
+          ],
+          "detail": {
+            "AutoScalingGroupName": [
+              {
+                "Ref": "Ascalegroup"
+              }
+            ]
+          }
+        },
+        "Name": {
+          "Fn::Join": [
+            "-",
+            [
+              {
+                "Ref": "AWS::StackName"
+              },
+              "AscalegroupHookTermRule"
+            ]
+          ]
+        },
+        "State": "ENABLED",
+        "Targets": [
+          {
+            "Arn": {
+              "Ref": "AscalegroupHookTermTopic"
+            },
+            "Id": {
+              "Fn::Join": [
+                "-",
+                [
+                  {
+                    "Ref": "AWS::StackName"
+                  },
+                  "AscalegroupHookTermRuleTarget"
+                ]
+              ]
+            }
+          }
+        ]
+      },
+      "DependsOn": [
+        "Ascalegroup",
+        "AscalegroupHookTermTopic"
+      ]
+    },
+    "AscalegroupHookTermTopicPolicy": {
+      "Type": "AWS::SNS::TopicPolicy",
+      "Properties": {
+        "PolicyDocument": {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Effect": "Allow",
+              "Principal": {
+                "Service": "events.amazonaws.com"
+              },
+              "Action": "sns:Publish",
+              "Resource": {
+                "Ref": "AscalegroupHookTermTopic"
+              }
+            }
+          ]
+        },
+        "Topics": [
+          {
+            "Ref": "AscalegroupHookTermTopic"
+          }
+        ]
+      },
+      "DependsOn": [
+        "AscalegroupHookTermTopic"
+      ]
+    },
+    "AscalegroupScaleDown": {
+      "Type": "AWS::AutoScaling::ScalingPolicy",
+      "Properties": {
+        "AdjustmentType": "ChangeInCapacity",
+        "AutoScalingGroupName": {
+          "Ref": "Ascalegroup"
+        },
+        "Cooldown": "300",
+        "PolicyType": "SimpleScaling",
+        "ScalingAdjustment": -1
+      },
+      "DependsOn": [
+        "Ascalegroup"
+      ]
+    },
+    "AlarmAscalegroupScaleDown": {
+      "Type": "AWS::CloudWatch::Alarm",
+      "Properties": {
+        "AlarmActions": [
+          {
+            "Ref": "AscalegroupScaleDown"
+          }
+        ],
+        "AlarmName": {
+          "Fn::Join": [
+            "-",
+            [
+              {
+                "Ref": "AWS::StackName"
+              },
+              "AlarmAscalegroupScaleDown"
+            ]
+          ]
+        },
+        "ComparisonOperator": "LessThanThreshold",
+        "Dimensions": [
+          {
+            "Name": "ClusterName",
+            "Value": {
+              "Ref": "Ecscluster"
+            }
+          }
+        ],
+        "EvaluationPeriods": "1",
+        "MetricName": "MemoryReservation",
+        "Namespace": "AWS/ECS",
+        "Period": 60,
+        "Statistic": "Average",
+        "Threshold": 43
+      },
+      "DependsOn": [
+        "AscalegroupScaleDown",
+        "Ecscluster"
+      ]
+    },
+    "AscalegroupScaleUp": {
+      "Type": "AWS::AutoScaling::ScalingPolicy",
+      "Properties": {
+        "AdjustmentType": "ChangeInCapacity",
+        "AutoScalingGroupName": {
+          "Ref": "Ascalegroup"
+        },
+        "Cooldown": "300",
+        "PolicyType": "SimpleScaling",
+        "ScalingAdjustment": 1
+      },
+      "DependsOn": [
+        "Ascalegroup"
+      ]
+    },
+    "AlarmAscalegroupScaleUp": {
+      "Type": "AWS::CloudWatch::Alarm",
+      "Properties": {
+        "AlarmActions": [
+          {
+            "Ref": "AscalegroupScaleUp"
+          }
+        ],
+        "AlarmName": {
+          "Fn::Join": [
+            "-",
+            [
+              {
+                "Ref": "AWS::StackName"
+              },
+              "AlarmAscalegroupScaleUp"
+            ]
+          ]
+        },
+        "ComparisonOperator": "GreaterThanThreshold",
+        "Dimensions": [
+          {
+            "Name": "ClusterName",
+            "Value": {
+              "Ref": "Ecscluster"
+            }
+          }
+        ],
+        "EvaluationPeriods": "1",
+        "MetricName": "MemoryReservation",
+        "Namespace": "AWS/ECS",
+        "Period": 60,
+        "Statistic": "Average",
+        "Threshold": 65
+      },
+      "DependsOn": [
+        "AscalegroupScaleUp",
+        "Ecscluster"
+      ]
+    },
+    "Loadbalancer": {
+      "Type": "AWS::ElasticLoadBalancingV2::LoadBalancer",
+      "Properties": {
+        "LoadBalancerAttributes": [
+          {
+            "Key": "deletion_protection.enabled",
+            "Value": "false"
+          },
+          {
+            "Key": "idle_timeout.timeout_seconds",
+            "Value": "60"
+          },
+          {
+            "Key": "access_logs.s3.enabled",
+            "Value": "false"
+          },
+          {
+            "Key": "routing.http2.enabled",
+            "Value": true
+          }
+        ],
+        "Name": {
+          "Fn::Join": [
+            "-",
+            [
+              {
+                "Ref": "AWS::StackName"
+              },
+              "Loadbalancer"
+            ]
+          ]
+        },
+        "Scheme": "internet-facing",
+        "SecurityGroups": [
+          {
+            "Ref": "SgVpcLoadbalancerportsAccess"
+          },
+          {
+            "Ref": "SgPublicHttps"
+          }
+        ],
+        "Subnets": [
+          {
+            "Ref": "Subnet1"
+          },
+          {
+            "Ref": "Subnet2"
+          }
+        ],
+        "Tags": [
+          {
+            "Key": "Name",
+            "Value": {
+              "Fn::Join": [
+                "-",
+                [
+                  {
+                    "Ref": "AWS::StackName"
+                  },
+                  "Loadbalancer"
+                ]
+              ]
+            }
+          }
+        ],
+        "Type": "application",
+        "IpAddressType": "ipv4"
+      },
+      "DependsOn": [
+        "SgVpcLoadbalancerportsAccess",
+        "SgPublicHttps",
+        "Subnet1",
+        "Subnet2"
+      ]
+    },
+    "Deftarget": {
+      "Type": "AWS::ElasticLoadBalancingV2::TargetGroup",
+      "Properties": {
+        "HealthCheckIntervalSeconds": 30,
+        "HealthCheckPath": "/",
+        "HealthCheckPort": "traffic-port",
+        "HealthCheckProtocol": "HTTPS",
+        "HealthCheckTimeoutSeconds": 5,
+        "HealthyThresholdCount": 5,
+        "Matcher": {
+          "HttpCode": "200"
+        },
+        "Name": {
+          "Fn::Join": [
+            "-",
+            [
+              {
+                "Ref": "AWS::StackName"
+              },
+              "Deftarget"
+            ]
+          ]
+        },
+        "Port": 443,
+        "Protocol": "HTTPS",
+        "Tags": [
+          {
+            "Key": "Name",
+            "Value": {
+              "Fn::Join": [
+                "-",
+                [
+                  {
+                    "Ref": "AWS::StackName"
+                  },
+                  "Deftarget"
+                ]
+              ]
+            }
+          }
+        ],
+        "TargetGroupAttributes": [
+          {
+            "Key": "deregistration_delay.timeout_seconds",
+            "Value": "300"
+          },
+          {
+            "Key": "stickiness.enabled",
+            "Value": "false"
+          }
+        ],
+        "TargetType": "instance",
+        "UnhealthyThresholdCount": 2,
+        "VpcId": {
+          "Ref": "Vpc"
+        }
+      },
+      "DependsOn": [
+        "Vpc"
+      ]
+    },
+    "Httpdefaultlistener": {
+      "Type": "AWS::ElasticLoadBalancingV2::Listener",
+      "Properties": {
+        "DefaultActions": [
+          {
+            "Type": "forward",
+            "TargetGroupArn": {
+              "Ref": "Deftarget"
+            }
+          }
+        ],
+        "LoadBalancerArn": {
+          "Ref": "Loadbalancer"
+        },
+        "Port": 80,
+        "Protocol": "HTTP"
+      },
+      "DependsOn": [
+        "Deftarget",
+        "Loadbalancer"
+      ]
+    },
+    "Httpsdefaultlistener": {
+      "Type": "AWS::ElasticLoadBalancingV2::Listener",
+      "Properties": {
+        "Certificates": [
+          {
+            "CertificateArn": {
+              "Ref": "HttpsdefaultlistenerCertificate"
+            }
+          }
+        ],
+        "DefaultActions": [
+          {
+            "Type": "forward",
+            "TargetGroupArn": {
+              "Ref": "Deftarget"
+            }
+          }
+        ],
+        "LoadBalancerArn": {
+          "Ref": "Loadbalancer"
+        },
+        "Port": 443,
+        "Protocol": "HTTPS"
+      },
+      "DependsOn": [
+        "Deftarget",
+        "Loadbalancer"
+      ]
+    },
+    "BackupRole": {
+      "Type": "AWS::IAM::Role",
+      "Properties": {
+        "AssumeRolePolicyDocument": {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Effect": "Allow",
+              "Principal": {
+                "Service": [
+                  "backup.amazonaws.com"
+                ]
+              },
+              "Action": [
+                "sts:AssumeRole"
+              ]
+            }
+          ]
+        },
+        "ManagedPolicyArns": [
+          "arn:aws:iam::aws:policy/service-role/AWSBackupServiceRolePolicyForBackup"
+        ],
+        "Path": "/",
+        "RoleName": {
+          "Fn::Join": [
+            "-",
+            [
+              {
+                "Ref": "AWS::StackName"
+              },
+              "BackupRole"
+            ]
+          ]
+        }
+      }
+    },
+    "BackupVault": {
+      "Type": "AWS::Backup::BackupVault",
+      "Properties": {
+        "BackupVaultName": {
+          "Fn::Join": [
+            "-",
+            [
+              {
+                "Ref": "AWS::StackName"
+              },
+              "BackupVault"
+            ]
+          ]
+        }
+      }
+    },
+    "BackupPlan": {
+      "Type": "AWS::Backup::BackupPlan",
+      "Properties": {
+        "BackupPlan": {
+          "BackupPlanName": {
+            "Fn::Join": [
+              "-",
+              [
+                {
+                  "Ref": "AWS::StackName"
+                },
+                "BackupPlan"
+              ]
+            ]
+          },
+          "BackupPlanRule": [
+            {
+              "Lifecycle": {
+                "DeleteAfterDays": 35
+              },
+              "RuleName": {
+                "Fn::Join": [
+                  "-",
+                  [
+                    {
+                      "Ref": "AWS::StackName"
+                    },
+                    "BackupPlanRule"
+                  ]
+                ]
+              },
+              "ScheduleExpression": "cron(0 5 ? * * *)",
+              "StartWindowMinutes": 480,
+              "TargetBackupVault": {
+                "Ref": "BackupVault"
+              }
+            }
+          ]
+        }
+      },
+      "DependsOn": [
+        "BackupVault"
+      ]
+    },
+    "BackupSelectionEfs": {
+      "Type": "AWS::Backup::BackupSelection",
+      "Properties": {
+        "BackupPlanId": {
+          "Ref": "BackupPlan"
+        },
+        "BackupSelection": {
+          "SelectionName": {
+            "Fn::Join": [
+              "-",
+              [
+                {
+                  "Ref": "AWS::StackName"
+                },
+                "BackupSelectionEfs"
+              ]
+            ]
+          },
+          "IamRoleArn": {
+            "Fn::GetAtt": [
+              "BackupRole",
+              "Arn"
+            ]
+          },
+          "Resources": [
+            {
+              "Fn::Join": [
+                "",
+                [
+                  "arn:aws:elasticfilesystem:",
+                  {
+                    "Ref": "AWS::Region"
+                  },
+                  ":",
+                  {
+                    "Ref": "AWS::AccountId"
+                  },
+                  ":file-system/",
+                  {
+                    "Ref": "Efs"
+                  }
+                ]
+              ]
+            }
+          ]
+        }
+      },
+      "DependsOn": [
+        "BackupPlan",
+        "BackupRole",
+        "Efs"
+      ]
+    }
+  },
+  "Outputs": {
+    "MyName": {
+      "Value": {
+        "Fn::Sub": "${AWS::StackName}"
+      },
+      "Export": {
+        "Name": {
+          "Fn::Sub": "${AWS::StackName}-MyName"
+        }
+      }
+    },
+    "ImageId": {
+      "Value": { "Ref" :  "EC2MachineImage" },
+      "Export": {
+        "Name": {
+          "Fn::Sub": "${AWS::StackName}-ImageId"
+        }
+      }
+    },
+    "Subnet1": {
+      "Value": {
+        "Ref": "Subnet1"
+      },
+      "Export": {
+        "Name": {
+          "Fn::Sub": "${AWS::StackName}-Subnet1"
+        }
+      }
+    },
+    "Subnet2": {
+      "Value": {
+        "Ref": "Subnet2"
+      },
+      "Export": {
+        "Name": {
+          "Fn::Sub": "${AWS::StackName}-Subnet2"
+        }
+      }
+    },
+    "InstanceroleProfile": {
+      "Value": {
+        "Ref": "InstanceroleProfile"
+      },
+      "Export": {
+        "Name": {
+          "Fn::Sub": "${AWS::StackName}-InstanceroleProfile"
+        }
       }
     },
     "KeypairName": {
-      "Value": { "Ref": "KeypairName" },
-      "Export" : {
-        "Name" : {"Fn::Sub": "${AWS::StackName}-KeypairName" }
+      "Value": {
+        "Ref": "KeypairName"
+      },
+      "Export": {
+        "Name": {
+          "Fn::Sub": "${AWS::StackName}-KeypairName"
+        }
       }
     },
     "Efs": {
-      "Value": { "Ref":  "Efs" },
-      "Export" : {
-        "Name" : {"Fn::Sub": "${AWS::StackName}-Efs" }
+      "Value": {
+        "Ref": "Efs"
+      },
+      "Export": {
+        "Name": {
+          "Fn::Sub": "${AWS::StackName}-Efs"
+        }
       }
     },
     "SgVpcMysqlAccess": {
-      "Value": { "Ref":  "SgVpcMysqlAccess" },
-      "Export" : {
-        "Name" : {"Fn::Sub": "${AWS::StackName}-SgVpcMysqlAccess" }
+      "Value": {
+        "Ref": "SgVpcMysqlAccess"
+      },
+      "Export": {
+        "Name": {
+          "Fn::Sub": "${AWS::StackName}-SgVpcMysqlAccess"
+        }
       }
     },
     "SgVpcLoadbalancerports": {
-      "Value": { "Ref":  "SgVpcLoadbalancerports" },
-      "Export" : {
-        "Name" : {"Fn::Sub": "${AWS::StackName}-SgVpcLoadbalancerports" }
+      "Value": {
+        "Ref": "SgVpcLoadbalancerports"
+      },
+      "Export": {
+        "Name": {
+          "Fn::Sub": "${AWS::StackName}-SgVpcLoadbalancerports"
+        }
       }
     },
     "SgVpcEfsAccess": {
-      "Value": { "Ref":  "SgVpcEfsAccess" },
-      "Export" : {
-        "Name" : {"Fn::Sub": "${AWS::StackName}-SgVpcEfsAccess" }
+      "Value": {
+        "Ref": "SgVpcEfsAccess"
+      },
+      "Export": {
+        "Name": {
+          "Fn::Sub": "${AWS::StackName}-SgVpcEfsAccess"
+        }
       }
     },
     "SgLaborSsh": {
-      "Value": { "Ref":  "SgLaborSsh" },
-      "Export" : {
-        "Name" : {"Fn::Sub": "${AWS::StackName}-SgLaborSsh" }
+      "Value": {
+        "Ref": "SgLaborSsh"
+      },
+      "Export": {
+        "Name": {
+          "Fn::Sub": "${AWS::StackName}-SgLaborSsh"
+        }
       }
     },
     "AscalegroupHookTermTopic": {
-      "Value": { "Ref":  "AscalegroupHookTermTopic" },
-      "Export" : {
-        "Name" : {"Fn::Sub": "${AWS::StackName}-AscalegroupHookTermTopic" }
+      "Value": {
+        "Ref": "AscalegroupHookTermTopic"
+      },
+      "Export": {
+        "Name": {
+          "Fn::Sub": "${AWS::StackName}-AscalegroupHookTermTopic"
+        }
       }
     }
   }
