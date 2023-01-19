@@ -35,12 +35,6 @@
       "Type" : "AWS::EC2::VPC::Id",
       "MinLength" : 1
     },
-    "ContainerCommand" : {
-      "Description" : "The startup command for the container.",
-      "Default": "/opt/bootstrap.sh",
-      "Type" : "String",
-      "MinLength" : 1
-    },
     "InitialDockerImage" : {
       "Description" : "The initial Docker image for the container.",
       "Type" : "String",
@@ -90,63 +84,25 @@
       "Description" : "Path in the container, where the EFS-Volume should be mounted",
       "Default" : "/var/www/html_data",
       "Type" : "String"
+    },
+    "ProjectNameShort": {
+      "Description" : "Project name in our shorthand version with underscores (e.g. kun_pro_app). This one is used to identify the doppler project to fetch secrets from.",
+      "Type" : "String",
+      "AllowedPattern" : "[a-z]{3}_[a-z]{3}_[a-z]{3}"
+    },
+    "ProjectEnv": {
+      "Description" : "The environment in which this project should run. This one is also used to determine the correct doppler config to fetch secrets from. But it may be used in the code as well. So, unless you really know, what you´re doing keep the default 'prd' or 'stg' for staging environments.",
+      "Default" : "prd",
+      "Type" : "String"
+    },
+    "ProjectToken": {
+      "Description" : "This token is used to fetch secrets from doppler. Make sure to only use service tokens, which have only read access. No personal or other tokens.",
+      "AllowedPattern" : "dp\\.st\\.[a-zA-Z_]*\\.[a-zA-Z0-9]{43}",
+      "NoEcho" : "true",
+      "Type" : "String"
     }
   },
   "Resources" : {
-    "Key" : {
-      "Type" : "AWS::KMS::Key",
-      "Properties" : {
-        "Description" : {
-          "Fn::Join" : [ "-", [
-            { "Ref" : "AWS::StackName" },
-            "Key" ]
-          ]
-        },
-        "Enabled" : "true",
-        "EnableKeyRotation" : "false",
-        "KeyPolicy" : {
-          "Version" : "2012-10-17",
-          "Statement" : [ {
-            "Sid" : "Enable IAM User Permissions",
-            "Effect" : "Allow",
-            "Principal" : {
-              "AWS" : {
-                "Fn::Join" : [ "", [ "arn:aws:iam::",
-                  { "Ref" : "AWS::AccountId" },
-                  ":root" ]
-                ]
-              }
-            },
-            "Action" : "kms:*",
-            "Resource" : "*"
-          } ]
-        },
-        "Tags" : [ {
-          "Key" : "Name",
-          "Value" : {
-            "Fn::Join" : [ "-", [
-              { "Ref" : "AWS::StackName" },
-              "Key" ]
-            ]
-          }
-        } ]
-      }
-    },
-    "KeyAlias" : {
-      "Type" : "AWS::KMS::Alias",
-      "Properties" : {
-        "AliasName" : {
-          "Fn::Join" : [ "/", [ "alias", {
-            "Fn::Join" : [ "-", [
-              { "Ref" : "AWS::StackName" },
-              "KeyAlias" ]
-            ]
-          } ] ]
-        },
-        "TargetKeyId" : { "Ref" : "Key" }
-      },
-      "DependsOn" : [ "Key" ]
-    },
     "ServiceRole" : {
       "Type" : "AWS::IAM::Role",
       "Properties" : {
@@ -220,31 +176,6 @@
                 } ]
               },
               {
-                "Effect" : "Allow",
-                "Action" : [ "ssm:DescribeParameters" ],
-                "Resource" : "*"
-              },
-              {
-                "Effect" : "Allow",
-                "Action" : [ "ssm:GetParameters" ],
-                "Resource" : [ {
-                  "Fn::Join" : [ "", [
-                    "arn:aws:ssm:",
-                    { "Ref" : "AWS::Region" },
-                    ":",
-                    { "Ref" : "AWS::AccountId" },
-                    ":parameter/",
-                    { "Ref" : "AWS::StackName" },
-                    "/*" ]
-                  ]
-                } ]
-              },
-              {
-                "Effect" : "Allow",
-                "Action" : [ "kms:Decrypt" ],
-                "Resource" : [ { "Fn::GetAtt" : [ "Key", "Arn" ] } ]
-              },
-              {
                 "Effect": "Allow",
                 "Action": [
                   "ecr:GetAuthorizationToken",
@@ -269,8 +200,7 @@
             { "Ref" : "AWS::StackName" }, "TaskRole" ]
           ]
         }
-      },
-      "DependsOn" : [ "Key" ]
+      }
     },
     "Task" : {
       "Type" : "AWS::ECS::TaskDefinition",
@@ -296,16 +226,21 @@
         "ExecutionRoleArn" : { "Fn::GetAtt" : [ "TaskRole", "Arn" ] },
         "TaskRoleArn" : { "Fn::GetAtt" : [ "TaskRole", "Arn" ] },
         "ContainerDefinitions" : [ {
-          "Command" : [ {
-            "Ref" : "ContainerCommand"
-          } ],
-          "EntryPoint" : [ "sh", "-c" ],
           "Environment" : [ {
             "Name" : "PROJECT_ENV",
-            "Value" : "prod"
+            "Value" : { "Ref" : "ProjectEnv" }
           }, {
             "Name" : "PROJECT_ENV_HOSTER",
             "Value" : "aws"
+          }, {
+            "Name" : "DOPPLER_PROJECT",
+            "Value" : { "Ref" : "ProjectNameShort" }
+          }, {
+            "Name" : "DOPPLER_CONFIG",
+            "Value" : { "Ref" : "ProjectEnv" }
+          }, {
+            "Name" : "DOPPLER_TOKEN",
+            "Value" : { "Ref" : "ProjectToken" }
           } ],
           "Essential" : true,
           "Image" : { "Ref" : "InitialDockerImage" },
