@@ -958,7 +958,7 @@
           "Ref": "RdsclSubnetgroup"
         },
         "Engine": "aurora-mysql",
-        "EngineVersion": "8.0",
+        "EngineVersion": "8.0.mysql_aurora.3.02.2",
         "MasterUsername": {
           "Ref": "RdsMasterUsername"
         },
@@ -1031,7 +1031,7 @@
           "Ref": "RdsclSubnetgroup"
         },
         "Engine": "aurora-mysql",
-        "EngineVersion": "8.0",
+        "EngineVersion": "8.0.mysql_aurora.3.02.2",
         "MultiAZ": "false",
         "PubliclyAccessible": "false",
         "StorageEncrypted": "false",
