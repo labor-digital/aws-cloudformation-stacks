@@ -924,7 +924,8 @@
         "Description": "Aurora 8.0 Parameter Group with increased connection limit",
         "Family": "aurora-mysql8.0",
         "Parameters": {
-          "max_connections": "{log(DBInstanceClassMemory/805306368)*60}"
+          "max_connections": "{log(DBInstanceClassMemory/805306368)*60}",
+          "sort_buffer_size": 1048576
         }
       }
     },
