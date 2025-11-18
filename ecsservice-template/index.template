@@ -205,17 +205,6 @@
     "Task" : {
       "Type" : "AWS::ECS::TaskDefinition",
       "Properties" : {
-        "Volumes" : [ {
-          "Host" : {
-            "SourcePath" : {
-              "Fn::Join" : [ "", [
-                "/mnt/efs/",
-                { "Ref" : "AWS::StackName"} ]
-              ]
-            }
-          },
-          "Name" : "data"
-        } ],
         "Family" : {
           "Fn::Join" : [ "-", [
             { "Ref" : "AWS::StackName" },
@@ -245,11 +234,6 @@
           "Essential" : true,
           "Image" : { "Ref" : "InitialDockerImage" },
           "MemoryReservation" : { "Ref" : "TaskMemory" },
-          "MountPoints" : [ {
-            "ReadOnly" : "false",
-            "ContainerPath" : { "Ref" : "VolumeMountPath" },
-            "SourceVolume" : "data"
-          } ],
           "Name" : {
             "Fn::Join" : [ "-", [
               { "Ref" : "AWS::StackName" },

@@ -8,36 +8,36 @@
     "RdsMasterUsername": {
       "Description": "MasterUsername which is applied to RDS cluster/instances.",
       "Type": "String",
-      "MinLength": 4
+      "MinLength": "4"
     },
     "RdsMasterPassword": {
       "Description": "MasterPassword which is applied to RDS cluster/instances.",
       "Type": "String",
-      "MinLength": 32,
-      "NoEcho": "true"
+      "MinLength": "32",
+      "NoEcho": true
     },
     "HttpsdefaultlistenerCertificate": {
       "Description": "The certificate-arn which is used for the default listener of the loadbalancer. Add using Certificate Manage (4096-bit keys are not supported!)",
       "Type": "String",
-      "MinLength": 1
+      "MinLength": "1"
     },
     "AscalegroupMinSize": {
       "Type": "Number",
       "Description": "The min count of EC2-Instances (for Autoscaling).",
-      "MinValue": 1,
-      "MaxValue": 10
+      "MinValue": "1",
+      "MaxValue": "10"
     },
     "AscalegroupMaxSize": {
       "Type": "Number",
       "Description": "The max count of EC2-Instances (for Autoscaling).",
-      "MinValue": 5,
-      "MaxValue": 10
+      "MinValue": "5",
+      "MaxValue": "10"
     },
     "AscalegroupDesSize": {
       "Type": "Number",
       "Description": "The desired count of EC2-Instances (for Autoscaling).",
-      "MinValue": 1,
-      "MaxValue": 10
+      "MinValue": "1",
+      "MaxValue": "10"
     },
     "EC2MachineImage": {
       "Type": "AWS::EC2::Image::Id",
@@ -66,8 +66,8 @@
       "Type": "AWS::EC2::VPC",
       "Properties": {
         "CidrBlock": "10.1.0.0/16",
-        "EnableDnsSupport": "true",
-        "EnableDnsHostnames": "true",
+        "EnableDnsSupport": true,
+        "EnableDnsHostnames": true,
         "InstanceTenancy": "default",
         "Tags": [
           {
@@ -101,7 +101,7 @@
             }
           ]
         },
-        "MapPublicIpOnLaunch": "false",
+        "MapPublicIpOnLaunch": false,
         "Tags": [
           {
             "Key": "Name",
@@ -140,7 +140,7 @@
             }
           ]
         },
-        "MapPublicIpOnLaunch": "false",
+        "MapPublicIpOnLaunch": false,
         "Tags": [
           {
             "Key": "Name",
@@ -345,11 +345,11 @@
       "Type": "AWS::EC2::NetworkAclEntry",
       "Properties": {
         "CidrBlock": "0.0.0.0/0",
-        "Egress": "false",
+        "Egress": false,
         "NetworkAclId": {
           "Ref": "Netacl"
         },
-        "Protocol": "-1",
+        "Protocol": -1,
         "RuleAction": "allow",
         "RuleNumber": 100
       }
@@ -358,11 +358,11 @@
       "Type": "AWS::EC2::NetworkAclEntry",
       "Properties": {
         "CidrBlock": "0.0.0.0/0",
-        "Egress": "true",
+        "Egress": true,
         "NetworkAclId": {
           "Ref": "Netacl"
         },
-        "Protocol": "-1",
+        "Protocol": -1,
         "RuleAction": "allow",
         "RuleNumber": 100
       }
@@ -918,14 +918,24 @@
         "Subnet2"
       ]
     },
-    "RdsParameterGroup": {
+    "Rdsinstance1ParameterGroup": {
       "Type": "AWS::RDS::DBParameterGroup",
       "Properties": {
-        "Description": "Aurora 8.0 Parameter Group with increased connection limit",
+        "Description": "Aurora 8.0 Instance Parameter Group with increased connection limit",
         "Family": "aurora-mysql8.0",
         "Parameters": {
           "max_connections": "{log(DBInstanceClassMemory/805306368)*60}",
           "sort_buffer_size": 1048576
+        }
+      }
+    },
+    "RdsclParameterGroup": {
+      "Type": "AWS::RDS::DBClusterParameterGroup",
+      "Properties": {
+        "Description": "Aurora 8.0 Cluster Parameter Group with secure connection required",
+        "Family": "aurora-mysql8.0",
+        "Parameters": {
+          "require_secure_transport": "ON"
         }
       }
     },
@@ -955,11 +965,14 @@
           }
         ],
         "BackupRetentionPeriod": 35,
+        "DBClusterParameterGroupName": {
+          "Ref": "RdsclParameterGroup"
+        },
         "DBSubnetGroupName": {
           "Ref": "RdsclSubnetgroup"
         },
         "Engine": "aurora-mysql",
-        "EngineVersion": "8.0.mysql_aurora.3.02.2",
+        "EngineVersion": "8.0.mysql_aurora.3.08.2",
         "MasterUsername": {
           "Ref": "RdsMasterUsername"
         },
@@ -982,6 +995,7 @@
             }
           }
         ],
+        "StorageEncrypted": true,
         "VpcSecurityGroupIds": [
           {
             "Ref": "SgVpcMysql"
@@ -992,6 +1006,7 @@
         ]
       },
       "DependsOn": [
+        "RdsclParameterGroup",
         "RdsclSubnetgroup",
         "SgVpcMysql"
       ]
@@ -999,8 +1014,8 @@
     "Rdsinstance1": {
       "Type": "AWS::RDS::DBInstance",
       "Properties": {
-        "AllowMajorVersionUpgrade": "false",
-        "AutoMinorVersionUpgrade": "true",
+        "AllowMajorVersionUpgrade": false,
+        "AutoMinorVersionUpgrade": true,
         "AvailabilityZone": {
           "Fn::Select": [
             "0",
@@ -1032,12 +1047,12 @@
           "Ref": "RdsclSubnetgroup"
         },
         "Engine": "aurora-mysql",
-        "EngineVersion": "8.0.mysql_aurora.3.02.2",
-        "MultiAZ": "false",
-        "PubliclyAccessible": "false",
-        "StorageEncrypted": "false",
+        "EngineVersion": "8.0.mysql_aurora.3.08.2",
+        "MultiAZ": false,
+        "PubliclyAccessible": true,
+        "StorageEncrypted": true,
         "DBParameterGroupName": {
-          "Ref": "RdsParameterGroup"
+          "Ref": "Rdsinstance1ParameterGroup"
         },
         "Tags": [
           {
@@ -1059,13 +1074,13 @@
       "DependsOn": [
         "Rdscl",
         "RdsclSubnetgroup",
-        "RdsParameterGroup"
+        "Rdsinstance1ParameterGroup"
       ]
     },
     "Efs": {
       "Type": "AWS::EFS::FileSystem",
       "Properties": {
-        "Encrypted": "false",
+        "Encrypted": false,
         "FileSystemTags": [
           {
             "Key": "Name",
@@ -1204,77 +1219,69 @@
         "Instancerole"
       ]
     },
-    "Launchconfiguration": {
-      "Type": "AWS::AutoScaling::LaunchConfiguration",
+    "Launchtemplate": {
+      "Type" : "AWS::EC2::LaunchTemplate",
       "Properties": {
-        "AssociatePublicIpAddress": "true",
-        "BlockDeviceMappings": [
-          {
-            "DeviceName": "/dev/xvda",
-            "Ebs": {
-              "VolumeSize": "30",
-              "VolumeType": "gp2",
-              "DeleteOnTermination": "true"
+        "LaunchTemplateData": {
+          "BlockDeviceMappings": [
+            {
+              "DeviceName": "/dev/xvda",
+              "Ebs": {
+                "VolumeSize": 30,
+                "VolumeType": "gp2",
+                "DeleteOnTermination": true
+              }
             }
-          }
-        ],
-        "EbsOptimized": "false",
-        "IamInstanceProfile": {
-          "Ref": "InstanceroleProfile"
-        },
-        "ImageId": {
-          "Ref": "EC2MachineImage"
-        },
-        "InstanceMonitoring": "true",
-        "InstanceType": {
-          "Ref": "EC2InstanceType"
-        },
-        "KeyName": {
-          "Ref": "KeypairName"
-        },
-        "SecurityGroups": [
-          {
-            "Ref": "SgVpcMysqlAccess"
+          ],
+          "EbsOptimized": false,
+          "IamInstanceProfile": {
+            "Name": {
+              "Ref": "InstanceroleProfile"
+            }
           },
-          {
-            "Ref": "SgVpcLoadbalancerports"
+          "ImageId": {
+            "Ref": "EC2MachineImage"
           },
-          {
-            "Ref": "SgVpcEfsAccess"
+          "InstanceType": {
+            "Ref": "EC2InstanceType"
           },
-          {
-            "Ref": "SgLaborSsh"
-          }
-        ],
-        "UserData": {
-          "Fn::Base64": {
-            "Fn::Join": [
-              "",
-              [
-                "#!/bin/bash\n",
-                "echo ECS_CLUSTER=",
-                {
-                  "Ref": "Ecscluster"
-                },
-                " >> /etc/ecs/ecs.config\n",
-                "\n",
-                "sudo yum install -y nfs-utils\n",
-                "\n",
-                "sudo stop ecs\n",
-                "sudo mkdir /mnt/efs\n",
-                "sudo mount -t nfs4 -o nfsvers=4.1,rsize=1048576,wsize=1048576,hard,timeo=600,retrans=2 ",
-                {
-                  "Ref": "Efs"
-                },
-                ".efs.",
-                {
-                  "Ref": "AWS::Region"
-                },
-                ".amazonaws.com:/ /mnt/efs\n",
-                "sudo service docker restart\n",
-                "sudo start ecs\n"
+          "Monitoring": {
+            "Enabled": true
+          },
+          "KeyName": {
+            "Ref": "KeypairName"
+          },
+          "SecurityGroupIds": [
+            {
+              "Ref": "SgVpcMysqlAccess"
+            },
+            {
+              "Ref": "SgVpcLoadbalancerports"
+            },
+            {
+              "Ref": "SgVpcEfsAccess"
+            },
+            {
+              "Ref": "SgLaborSsh"
+            }
+          ],
+          "UserData": {
+            "Fn::Base64": {
+              "Fn::Join": [
+                "",
+                [
+                  "#!/bin/bash\n",
+                  "echo ECS_CLUSTER=",
+                  {
+                    "Ref": "Ecscluster"
+                  },
+                  " >> /etc/ecs/ecs.config\n",
+                  "\n",
+                  "sudo service docker restart\n",
+                  "sudo start ecs\n"
+                ]
               ]
-            ]
+            }
           }
         }
       },
@@ -1283,10 +1290,8 @@
         "SgVpcMysqlAccess",
         "SgVpcLoadbalancerports",
         "SgVpcEfsAccess",
-        "Ecscluster",
-        "Efs",
-        "EfsMounttarget1",
-        "EfsMounttarget2"
+        "SgLaborSsh",
+        "Ecscluster"
       ]
     },
     "Ascalegroup": {
@@ -1298,8 +1303,13 @@
         },
         "HealthCheckGracePeriod": 300,
         "HealthCheckType": "EC2",
-        "LaunchConfigurationName": {
-          "Ref": "Launchconfiguration"
+        "LaunchTemplate": {
+          "LaunchTemplateId": {
+            "Ref": "Launchtemplate"
+          },
+          "Version": {
+            "Fn::GetAtt": ["Launchtemplate", "LatestVersionNumber"]
+          }
         },
         "LifecycleHookSpecificationList": [
           {
@@ -1339,7 +1349,7 @@
                 ]
               ]
             },
-            "PropagateAtLaunch": "true"
+            "PropagateAtLaunch": true
           }
         ],
         "TerminationPolicies": [
@@ -1355,7 +1365,7 @@
         ]
       },
       "DependsOn": [
-        "Launchconfiguration",
+        "Launchtemplate",
         "Subnet1",
         "Subnet2"
       ]
@@ -1460,32 +1470,6 @@
             ]
           ]
         }
-      }
-    },
-    "LambdaLiveprojectsLogGroup": {
-      "Type": "AWS::Logs::LogGroup",
-      "Properties": {
-        "LogGroupName": {
-          "Fn::Join": [
-            "/",
-            [
-              "/aws",
-              "lambda",
-              {
-                "Fn::Join": [
-                  "-",
-                  [
-                    {
-                      "Ref": "AWS::StackName"
-                    },
-                    "AscalegroupHookTermLb"
-                  ]
-                ]
-              }
-            ]
-          ]
-        },
-        "RetentionInDays": 14
       }
     },
     "AscalegroupHookTermLb": {
@@ -1857,7 +1841,7 @@
             }
           }
         ],
-        "EvaluationPeriods": "1",
+        "EvaluationPeriods": 1,
         "MetricName": "MemoryReservation",
         "Namespace": "AWS/ECS",
         "Period": 60,
@@ -1912,7 +1896,7 @@
             }
           }
         ],
-        "EvaluationPeriods": "1",
+        "EvaluationPeriods": 1,
         "MetricName": "MemoryReservation",
         "Namespace": "AWS/ECS",
         "Period": 60,
@@ -1942,7 +1926,7 @@
           },
           {
             "Key": "routing.http2.enabled",
-            "Value": true
+            "Value": "true"
           }
         ],
         "Name": {
