@@ -2255,6 +2255,59 @@
         "BackupRole",
         "Efs"
       ]
+    },
+    "BackupSelectionRds": {
+      "Type": "AWS::Backup::BackupSelection",
+      "Properties": {
+        "BackupPlanId": {
+          "Ref": "BackupPlan"
+        },
+        "BackupSelection": {
+          "SelectionName": {
+            "Fn::Join": [
+              "-",
+              [
+                {
+                  "Ref": "AWS::StackName"
+                },
+                "BackupSelectionRds"
+              ]
+            ]
+          },
+          "IamRoleArn": {
+            "Fn::GetAtt": [
+              "BackupRole",
+              "Arn"
+            ]
+          },
+          "Resources": [
+            {
+              "Fn::Join": [
+                "",
+                [
+                  "arn:aws:rds:",
+                  {
+                    "Ref": "AWS::Region"
+                  },
+                  ":",
+                  {
+                    "Ref": "AWS::AccountId"
+                  },
+                  ":cluster:",
+                  {
+                    "Ref": "Rdscl"
+                  }
+                ]
+              ]
+            }
+          ]
+        }
+      },
+      "DependsOn": [
+        "BackupPlan",
+        "BackupRole",
+        "Rdscl"
+      ]
     }
   },
   "Outputs": {
