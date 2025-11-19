@@ -2246,61 +2246,43 @@
     }
   },
   "Outputs": {
-    "MyName": {
+    "Ecscluster": {
       "Value": {
-        "Fn::Sub": "${AWS::StackName}"
+        "Ref" : "Ecscluster"
       },
       "Export": {
         "Name": {
-          "Fn::Sub": "${AWS::StackName}-MyName"
+          "Fn::Sub": "${AWS::StackName}-Ecscluster"
         }
       }
     },
-    "ImageId": {
-      "Value": { "Ref" :  "EC2MachineImage" },
-      "Export": {
-        "Name": {
-          "Fn::Sub": "${AWS::StackName}-ImageId"
-        }
-      }
-    },
-    "Subnet1": {
+    "ListenerArnHttps": {
       "Value": {
-        "Ref": "Subnet1"
+        "Ref" : "Httpsdefaultlistener"
       },
       "Export": {
         "Name": {
-          "Fn::Sub": "${AWS::StackName}-Subnet1"
+          "Fn::Sub": "${AWS::StackName}-ListenerArnHttps"
         }
       }
     },
-    "Subnet2": {
+    "ListenerArnHttp": {
       "Value": {
-        "Ref": "Subnet2"
+        "Ref" : "Httpdefaultlistener"
       },
       "Export": {
         "Name": {
-          "Fn::Sub": "${AWS::StackName}-Subnet2"
+          "Fn::Sub": "${AWS::StackName}-ListenerArnHttp"
         }
       }
     },
-    "InstanceroleProfile": {
+    "Vpc": {
       "Value": {
-        "Ref": "InstanceroleProfile"
+        "Ref" : "Vpc"
       },
       "Export": {
         "Name": {
-          "Fn::Sub": "${AWS::StackName}-InstanceroleProfile"
-        }
-      }
-    },
-    "KeypairName": {
-      "Value": {
-        "Ref": "KeypairName"
-      },
-      "Export": {
-        "Name": {
-          "Fn::Sub": "${AWS::StackName}-KeypairName"
+          "Fn::Sub": "${AWS::StackName}-Vpc"
         }
       }
     },
@@ -2311,56 +2293,6 @@
       "Export": {
         "Name": {
           "Fn::Sub": "${AWS::StackName}-Efs"
-        }
-      }
-    },
-    "SgVpcMysqlAccess": {
-      "Value": {
-        "Ref": "SgVpcMysqlAccess"
-      },
-      "Export": {
-        "Name": {
-          "Fn::Sub": "${AWS::StackName}-SgVpcMysqlAccess"
-        }
-      }
-    },
-    "SgVpcLoadbalancerports": {
-      "Value": {
-        "Ref": "SgVpcLoadbalancerports"
-      },
-      "Export": {
-        "Name": {
-          "Fn::Sub": "${AWS::StackName}-SgVpcLoadbalancerports"
-        }
-      }
-    },
-    "SgVpcEfsAccess": {
-      "Value": {
-        "Ref": "SgVpcEfsAccess"
-      },
-      "Export": {
-        "Name": {
-          "Fn::Sub": "${AWS::StackName}-SgVpcEfsAccess"
-        }
-      }
-    },
-    "SgLaborSsh": {
-      "Value": {
-        "Ref": "SgLaborSsh"
-      },
-      "Export": {
-        "Name": {
-          "Fn::Sub": "${AWS::StackName}-SgLaborSsh"
-        }
-      }
-    },
-    "AscalegroupHookTermTopic": {
-      "Value": {
-        "Ref": "AscalegroupHookTermTopic"
-      },
-      "Export": {
-        "Name": {
-          "Fn::Sub": "${AWS::StackName}-AscalegroupHookTermTopic"
         }
       }
     }

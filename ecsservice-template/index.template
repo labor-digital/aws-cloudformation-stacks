@@ -1,17 +1,7 @@
 {
   "Parameters" : {
-    "Cluster" : {
-      "Description" : "Name of the cluster, where this service should run.",
-      "Type" : "String",
-      "MinLength" : 1
-    },
-    "ListenerArn" : {
-      "Description" : "ARN of the https-listener we should register with.",
-      "Type" : "String",
-      "MinLength" : 1
-    },
-    "ListenerArnHttp" : {
-      "Description" : "ARN of the http-listener we should register with.",
+    "ClusterStackName" : {
+      "Description" : "Name of the cloudformation stack of the cluster, where this service should run.",
       "Type" : "String",
       "MinLength" : 1
     },
@@ -29,11 +19,6 @@
       "Description" : "The Priority for the ListenerRule",
       "Type" : "Number",
       "MinValue" : 1
-    },
-    "Vpc" : {
-      "Description" : "Vpc to start this service in.",
-      "Type" : "AWS::EC2::VPC::Id",
-      "MinLength" : 1
     },
     "InitialDockerImage" : {
       "Description" : "The initial Docker image for the container.",
@@ -298,7 +283,7 @@
         } ],
         "TargetType" : "instance",
         "UnhealthyThresholdCount" : 4,
-        "VpcId" : { "Ref" : "Vpc" }
+        "VpcId" : { "Fn::ImportValue" : { "Fn::Sub" : "${ClusterStackName}-Vpc" } }
       }
     },
     "LoadbalancerRuleHttp" : {
@@ -322,7 +307,7 @@
           "Field" : "path-pattern",
           "Values" : [ { "Ref" : "ListenerRulePath" } ]
         } ],
-        "ListenerArn" : { "Ref" : "ListenerArnHttp" },
+        "ListenerArn" : { "Fn::ImportValue" : { "Fn::Sub" : "${ClusterStackName}-ListenerArnHttp" } },
         "Priority" : { "Ref" : "ListenerRulePriority" }
       }
     },
@@ -340,7 +325,7 @@
           "Field" : "path-pattern",
           "Values" : [ { "Ref" : "ListenerRulePath" } ]
         } ],
-        "ListenerArn" : { "Ref" : "ListenerArn" },
+        "ListenerArn" : { "Fn::ImportValue" : { "Fn::Sub" : "${ClusterStackName}-ListenerArnHttps" } },
         "Priority" : { "Ref" : "ListenerRulePriority" }
       },
       "DependsOn" : [ "Target" ]
@@ -348,7 +333,7 @@
     "Service" : {
       "Type" : "AWS::ECS::Service",
       "Properties" : {
-        "Cluster" : { "Ref" : "Cluster" },
+        "Cluster" : { "Fn::ImportValue" : { "Fn::Sub" : "${ClusterStackName}-Ecscluster" } },
         "DeploymentConfiguration" : {
           "MaximumPercent" : 200,
           "MinimumHealthyPercent" : 50
@@ -414,7 +399,7 @@
         "ResourceId" : {
           "Fn::Join" : [ "/", [
             "service",
-            { "Ref" : "Cluster" },
+            { "Fn::ImportValue" : { "Fn::Sub" : "${ClusterStackName}-Ecscluster" } },
             { "Fn::GetAtt" : [ "Service", "Name" ] }]
           ]
         },
@@ -462,7 +447,7 @@
         "ComparisonOperator" : "GreaterThanThreshold",
         "Dimensions" : [ {
           "Name" : "ClusterName",
-          "Value" : { "Ref" : "Cluster" }
+          "Value" : { "Fn::ImportValue" : { "Fn::Sub" : "${ClusterStackName}-Ecscluster" } }
         }, {
           "Name" : "ServiceName",
           "Value" : {
@@ -514,7 +499,7 @@
         "ComparisonOperator" : "LessThanThreshold",
         "Dimensions" : [ {
           "Name" : "ClusterName",
-          "Value" : { "Ref" : "Cluster" }
+          "Value" : { "Fn::ImportValue" : { "Fn::Sub" : "${ClusterStackName}-Ecscluster" } }
         }, {
           "Name" : "ServiceName",
           "Value" : { "Fn::GetAtt" : [ "Service", "Name" ] }
