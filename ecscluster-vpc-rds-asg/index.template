@@ -1277,6 +1277,19 @@
                   },
                   " >> /etc/ecs/ecs.config\n",
                   "\n",
+                  "sudo yum install -y nfs-utils\n",
+                  "\n",
+                  "sudo stop ecs\n",
+                  "sudo mkdir /mnt/efs\n",
+                  "sudo mount -t nfs4 -o nfsvers=4.1,rsize=1048576,wsize=1048576,hard,timeo=600,retrans=2 ",
+                  {
+                    "Ref": "Efs"
+                  },
+                  ".efs.",
+                  {
+                    "Ref": "AWS::Region"
+                  },
+                  ".amazonaws.com:/ /mnt/efs\n",
                   "sudo service docker restart\n",
                   "sudo start ecs\n"
                 ]
@@ -1479,10 +1492,9 @@
           "ZipFile": {
             "Fn::Join": [
               "",
-              [
-                "from __future__ import print_function\n",
+              ["from __future__ import print_function\n",
                 "import boto3\n",
-                "from urlparse import urlparse\n",
+                "from urllib.parse import urlparse\n",
                 "import base64\n",
                 "import json\n",
                 "import datetime\n",
@@ -1514,8 +1526,8 @@
                 "\n",
                 "\ttmpList = udDec.split()\n",
                 "\tfor token in tmpList:\n",
-                "\t\tif token.find(\"ECS_CLUSTER\") > -1:\n",
-                "\t\t\tclN = token.split('=')[1]\n",
+                "\t\tif token.find(b\"ECS_CLUSTER\") > -1:\n",
+                "\t\t\tclN = token.split(b'=')[1].decode(\"utf-8\")\n",
                 "\n",
                 "\tclusterListResp = ecsC.list_container_instances(cluster=clN)\n",
                 "\tcontainerDetResp = ecsC.describe_container_instances(cluster=clN, containerInstances=clusterListResp[\n",
@@ -1561,8 +1573,8 @@
                 "\n",
                 "\ttmpList = udDec.split()\n",
                 "\tfor token in tmpList:\n",
-                "\t\tif token.find(\"ECS_CLUSTER\") > -1:\n",
-                "\t\t\tclN = token.split('=')[1]\n",
+                "\t\tif token.find(b\"ECS_CLUSTER\") > -1:\n",
+                "\t\t\tclN = token.split(b'=')[1].decode(\"utf-8\")\n",
                 "\n",
                 "\tclusterListResp = ecsC.list_container_instances(cluster=clN)\n",
                 "\n",
@@ -1585,7 +1597,7 @@
                 "\t\t\t\t\t\tAutoScalingGroupName=asgGroupName,\n",
                 "\t\t\t\t\t\tLifecycleActionResult='CONTINUE',\n",
                 "\t\t\t\t\t\tInstanceId=ec2Id)\n",
-                "\t\t\t\texcept Exception, e:\n",
+                "\t\t\t\texcept Exception as e:\n",
                 "\t\t\t\t\tprint(str(e))\n"
               ]
             ]
