@@ -1080,7 +1080,7 @@
     "Efs": {
       "Type": "AWS::EFS::FileSystem",
       "Properties": {
-        "Encrypted": false,
+        "Encrypted": true,
         "FileSystemTags": [
           {
             "Key": "Name",
