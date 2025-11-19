@@ -13,6 +13,7 @@
     "ListenerRulePath" : {
       "Description" : "PathPattern for the ListenerRule. Normally you should use * here.",
       "Type" : "String",
+      "Default" : "*",
       "MinLength" : 1
     },
     "ListenerRulePriority" : {
@@ -27,9 +28,10 @@
     },
     "TaskMemory" : {
       "Type" : "Number",
-      "Description" : "The Memory soft limit for one Task-Instance. [128-2048]",
-      "MinValue" : 128,
-      "MaxValue" : 2048
+      "Description" : "The Memory soft limit for one Task-Instance. If your cluster is running on t3.small ec2 instances you should consider the values 485, 970 and 1940 [485-1940]",
+      "Default" : 485,
+      "MinValue" : 485,
+      "MaxValue" : 1940
     },
     "ServiceDesiredCount" : {
       "Type" : "Number",
@@ -76,7 +78,7 @@
       "AllowedPattern" : "[a-z]{3}_[a-z]{3}_[a-z]{3}"
     },
     "ProjectEnv": {
-      "Description" : "The environment in which this project should run. This one is also used to determine the correct doppler config to fetch secrets from. But it may be used in the code as well. So, unless you really know, what you´re doing keep the default 'prd' or 'stg' for staging environments.",
+      "Description" : "The environment in which this project should run. This one is also used to determine the correct doppler config to fetch secrets from. But it may be used in the code as well. So, unless you really know what you´re doing, keep the default 'prd' - or 'stg' for staging environments.",
       "Default" : "prd",
       "Type" : "String"
     },
@@ -190,6 +192,19 @@
     "Task" : {
       "Type" : "AWS::ECS::TaskDefinition",
       "Properties" : {
+        "Volumes" : [ {
+          "EFSVolumeConfiguration" : {
+            "FilesystemId" : { "Fn::ImportValue" : { "Fn::Sub" : "${ClusterStackName}-Efs" } },
+            "RootDirectory" : {
+              "Fn::Join" : [ "", [
+                "/",
+                { "Ref" : "AWS::StackName"} ]
+              ]
+            },
+            "TransitEncryption" : "ENABLED"
+          },
+          "Name" : "data"
+        } ],
         "Family" : {
           "Fn::Join" : [ "-", [
             { "Ref" : "AWS::StackName" },
@@ -219,6 +234,11 @@
           "Essential" : true,
           "Image" : { "Ref" : "InitialDockerImage" },
           "MemoryReservation" : { "Ref" : "TaskMemory" },
+          "MountPoints" : [ {
+            "ReadOnly" : "false",
+            "ContainerPath" : { "Ref" : "VolumeMountPath" },
+            "SourceVolume" : "data"
+          } ],
           "Name" : {
             "Fn::Join" : [ "-", [
               { "Ref" : "AWS::StackName" },
