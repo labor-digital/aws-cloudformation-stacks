@@ -1291,7 +1291,7 @@
                   },
                   ".amazonaws.com:/ /mnt/efs\n",
                   "sudo service docker restart\n",
-                  "sudo start ecs\n"
+                  "sudo systemctl start ecs\n"
                 ]
               ]
             }
