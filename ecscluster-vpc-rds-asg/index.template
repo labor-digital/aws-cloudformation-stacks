@@ -1223,6 +1223,26 @@
       "Type" : "AWS::EC2::LaunchTemplate",
       "Properties": {
         "LaunchTemplateData": {
+          "NetworkInterfaces": [
+            {
+              "DeviceIndex": 0,
+              "AssociatePublicIpAddress": true,
+              "Groups": [
+                {
+                  "Ref": "SgVpcMysqlAccess"
+                },
+                {
+                  "Ref": "SgVpcLoadbalancerports"
+                },
+                {
+                  "Ref": "SgVpcEfsAccess"
+                },
+                {
+                  "Ref": "SgLaborSsh"
+                }
+              ]
+            }
+          ],
           "BlockDeviceMappings": [
             {
               "DeviceName": "/dev/xvda",
@@ -1251,20 +1271,6 @@
           "KeyName": {
             "Ref": "KeypairName"
           },
-          "SecurityGroupIds": [
-            {
-              "Ref": "SgVpcMysqlAccess"
-            },
-            {
-              "Ref": "SgVpcLoadbalancerports"
-            },
-            {
-              "Ref": "SgVpcEfsAccess"
-            },
-            {
-              "Ref": "SgLaborSsh"
-            }
-          ],
           "UserData": {
             "Fn::Base64": {
               "Fn::Join": [
@@ -1290,8 +1296,9 @@
                     "Ref": "AWS::Region"
                   },
                   ".amazonaws.com:/ /mnt/efs\n",
-                  "sudo service docker restart\n",
-                  "sudo systemctl start ecs\n"
+                  "sudo systemctl restart docker\n",
+                  "sudo systemctl restart cloud-final\n",
+                  "sudo systemctl restart ecs\n"
                 ]
               ]
             }
