@@ -1,0 +1,30 @@
+{
+  "Parameters": {
+    "ClusterName": {
+      "Type": "String",
+      "MinLength": "4",
+      "MaxLength": "64",
+      "AllowedPattern": "[a-zA-Z0-9_-]+",
+      "ConstraintDescription": "Must contain only alphanumeric characters, hyphens and underscores.",
+      "Description": "Name of the cluster which will use these backup vaults"
+    }
+  },
+  "Resources": {
+    "BackupVault": {
+      "Type": "AWS::Backup::BackupVault",
+      "Properties": {
+        "BackupVaultName": {
+          "Fn::Sub": "${ClusterName}-BackupVault-Mirror"
+        }
+      }
+    },
+    "LongTermBackupVault": {
+      "Type": "AWS::Backup::BackupVault",
+      "Properties": {
+        "BackupVaultName": {
+          "Fn::Sub": "${ClusterName}-BackupLongTermVault-Mirror"
+        }
+      }
+    }
+  }
+}

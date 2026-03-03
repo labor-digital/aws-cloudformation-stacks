@@ -59,6 +59,11 @@
       "AllowedValues": [
         "db.t3.medium"
       ]
+    },
+    "BackupCopyDestinationRegion": {
+      "Type": "String",
+      "Default": "eu-north-1",
+      "Description": "Destination region for backup copy (leave empty to disable copy)"
     }
   },
   "Resources": {
@@ -964,7 +969,7 @@
             ]
           }
         ],
-        "BackupRetentionPeriod": 35,
+        "BackupRetentionPeriod": 1,
         "DBClusterParameterGroupName": {
           "Ref": "RdsclParameterGroup"
         },
@@ -2166,6 +2171,22 @@
         }
       }
     },
+    "BackupLongTermVault": {
+      "Type": "AWS::Backup::BackupVault",
+      "Properties": {
+        "BackupVaultName": {
+          "Fn::Join": [
+            "-",
+            [
+              {
+                "Ref": "AWS::StackName"
+              },
+              "BackupLongTermVault"
+            ]
+          ]
+        }
+      }
+    },
     "BackupPlan": {
       "Type": "AWS::Backup::BackupPlan",
       "Properties": {
@@ -2197,10 +2218,59 @@
                   ]
                 ]
               },
-              "ScheduleExpression": "cron(0 5 ? * * *)",
-              "StartWindowMinutes": 480,
+              "ScheduleExpression": "cron(30 0/6 ? * * *)",
+              "StartWindowMinutes": 120,
+              "CompletionWindowMinutes": 360,
               "TargetBackupVault": {
                 "Ref": "BackupVault"
+              },
+              "CopyActions": {
+                "Fn::If": [
+                  "EnableCrossRegionCopy",
+                  [
+                    {
+                      "DestinationBackupVaultArn": {
+                        "Fn::Sub": "arn:aws:backup:${BackupCopyDestinationRegion}:${AWS::AccountId}:backup-vault:${AWS::StackName}-BackupVault-Mirror"
+                      }
+                    }
+                  ],
+                  { "Ref": "AWS::NoValue" }
+                ]
+              }
+            },
+            {
+              "Lifecycle": {
+                "DeleteAfterDays": 365
+              },
+              "RuleName": {
+                "Fn::Join": [
+                  "-",
+                  [
+                    {
+                      "Ref": "AWS::StackName"
+                    },
+                    "BackupLongTermPlanRule"
+                  ]
+                ]
+              },
+              "ScheduleExpression": "cron(0 5 ? * 1 *)",
+              "StartWindowMinutes": 120,
+              "CompletionWindowMinutes": 360,
+              "TargetBackupVault": {
+                "Ref": "BackupLongTermVault"
+              },
+              "CopyActions": {
+                "Fn::If": [
+                  "EnableCrossRegionCopy",
+                  [
+                    {
+                      "DestinationBackupVaultArn": {
+                        "Fn::Sub": "arn:aws:backup:${BackupCopyDestinationRegion}:${AWS::AccountId}:backup-vault:${AWS::StackName}-BackupLongTermVault-Mirror"
+                      }
+                    }
+                  ],
+                  { "Ref": "AWS::NoValue" }
+                ]
               }
             }
           ]
@@ -2367,6 +2437,13 @@
           "Fn::Sub": "${AWS::StackName}-Efs"
         }
       }
+    }
+  },
+  "Conditions": {
+    "EnableCrossRegionCopy": {
+      "Fn::Not": [
+        { "Fn::Equals": [ { "Ref": "BackupCopyDestinationRegion" }, "" ] }
+      ]
     }
   }
 }
