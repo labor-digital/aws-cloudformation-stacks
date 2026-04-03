@@ -164,15 +164,28 @@
                   "logs:GetLogEvents",
                   "logs:PutLogEvents"
                 ],
-                "Resource" : [ {
-                  "Fn::Join" : [ "", [
-                    "arn:aws:logs:",
-                    { "Ref" : "AWS::Region" },
-                    ":",
-                    { "Ref" : "AWS::AccountId" },
-                    ":*" ]
-                  ]
-                } ]
+                "Resource" : [
+                  {
+                    "Fn::Join" : [ ":", [
+                      "arn:aws:logs",
+                      { "Ref" : "AWS::Region" },
+                      { "Ref" : "AWS::AccountId" },
+                      "log-group",
+                      { "Fn::Join" : [ "-", [ { "Ref" : "AWS::StackName" }, "LogGroup" ] ] }
+                    ] ]
+                  },
+                  {
+                    "Fn::Join" : [ ":", [
+                      "arn:aws:logs",
+                      { "Ref" : "AWS::Region" },
+                      { "Ref" : "AWS::AccountId" },
+                      "log-group",
+                      { "Fn::Join" : [ "-", [ { "Ref" : "AWS::StackName" }, "LogGroup" ] ] },
+                      "log-stream",
+                      "*"
+                    ] ]
+                  }
+                ]
               },
               {
                 "Effect": "Allow",
