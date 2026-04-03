@@ -394,8 +394,8 @@
           "Type" : "spread",
           "Field" : "attribute:ecs.availability-zone"
         }, {
-          "Type" : "spread",
-          "Field" : "instanceId"
+          "Type" : "binpack",
+          "Field" : "memory"
         } ],
         "ServiceName" : {
           "Fn::Join" : [ "-", [
@@ -493,7 +493,7 @@
             "Fn::GetAtt" : [ "Service", "Name" ]
           }
         } ],
-        "EvaluationPeriods" : "1",
+        "EvaluationPeriods" : "3",
         "MetricName" : "CPUUtilization",
         "Namespace" : "AWS/ECS",
         "Period" : 60,
@@ -543,7 +543,7 @@
           "Name" : "ServiceName",
           "Value" : { "Fn::GetAtt" : [ "Service", "Name" ] }
         } ],
-        "EvaluationPeriods" : "1",
+        "EvaluationPeriods" : "3",
         "MetricName" : "CPUUtilization",
         "Namespace" : "AWS/ECS",
         "Period" : 60,

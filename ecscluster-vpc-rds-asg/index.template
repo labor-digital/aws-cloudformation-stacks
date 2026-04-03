@@ -1160,8 +1160,25 @@
               "Ecscluster"
             ]
           ]
-        }
-      }
+        },
+        "CapacityProviders": [
+          {
+            "Ref": "CapacityProvider"
+          }
+        ],
+        "DefaultCapacityProviderStrategy": [
+          {
+            "CapacityProvider": {
+              "Ref": "CapacityProvider"
+            },
+            "Weight": 1,
+            "Base": 1
+          }
+        ]
+      },
+      "DependsOn": [
+        "CapacityProvider"
+      ]
     },
     "Instancerole": {
       "Type": "AWS::IAM::Role",
@@ -1253,7 +1270,7 @@
               "DeviceName": "/dev/xvda",
               "Ebs": {
                 "VolumeSize": 30,
-                "VolumeType": "gp2",
+                "VolumeType": "gp3",
                 "DeleteOnTermination": true
               }
             }
@@ -1322,7 +1339,6 @@
     "Ascalegroup": {
       "Type": "AWS::AutoScaling::AutoScalingGroup",
       "Properties": {
-        "Cooldown": "300",
         "DesiredCapacity": {
           "Ref": "AscalegroupDesSize"
         },
@@ -1336,24 +1352,6 @@
             "Fn::GetAtt": ["Launchtemplate", "LatestVersionNumber"]
           }
         },
-        "LifecycleHookSpecificationList": [
-          {
-            "DefaultResult": "ABANDON",
-            "HeartbeatTimeout": 3600,
-            "LifecycleHookName": {
-              "Fn::Join": [
-                "-",
-                [
-                  {
-                    "Ref": "AWS::StackName"
-                  },
-                  "AscalegroupHookTerm"
-                ]
-              ]
-            },
-            "LifecycleTransition": "autoscaling:EC2_INSTANCE_TERMINATING"
-          }
-        ],
         "MaxSize": {
           "Ref": "AscalegroupMaxSize"
         },
@@ -1378,7 +1376,7 @@
           }
         ],
         "TerminationPolicies": [
-          "OldestInstance"
+          "OldestLaunchTemplate"
         ],
         "VPCZoneIdentifier": [
           {
@@ -1395,541 +1393,24 @@
         "Subnet2"
       ]
     },
-    "AscalegroupHookTermLbRole": {
-      "Type": "AWS::IAM::Role",
+    "CapacityProvider": {
+      "Type": "AWS::ECS::CapacityProvider",
       "Properties": {
-        "AssumeRolePolicyDocument": {
-          "Version": "2012-10-17",
-          "Statement": [
-            {
-              "Effect": "Allow",
-              "Principal": {
-                "Service": [
-                  "lambda.amazonaws.com"
-                ]
-              },
-              "Action": [
-                "sts:AssumeRole"
-              ]
-            }
-          ]
-        },
-        "ManagedPolicyArns": [
-          "arn:aws:iam::aws:policy/CloudWatchLogsFullAccess"
-        ],
-        "Policies": [
-          {
-            "PolicyDocument": {
-              "Version": "2012-10-17",
-              "Statement": [
-                {
-                  "Effect": "Allow",
-                  "Action": [
-                    "autoscaling:CompleteLifecycleAction"
-                  ],
-                  "Resource": [
-                    "*"
-                  ]
-                },
-                {
-                  "Effect": "Allow",
-                  "Action": [
-                    "ec2:DescribeHosts",
-                    "ec2:DescribeInstanceAttribute",
-                    "ec2:DescribeInstanceStatus",
-                    "ec2:DescribeInstances"
-                  ],
-                  "Resource": [
-                    "*"
-                  ]
-                },
-                {
-                  "Effect": "Allow",
-                  "Action": [
-                    "ecs:DescribeContainerInstances",
-                    "ecs:DescribeTasks",
-                    "ecs:ListTasks",
-                    "ecs:SubmitContainerStateChange",
-                    "ecs:SubmitTaskStateChange",
-                    "ecs:ListContainerInstances",
-                    "ecs:UpdateContainerInstancesState"
-                  ],
-                  "Resource": [
-                    "*"
-                  ]
-                },
-                {
-                  "Effect": "Allow",
-                  "Action": [
-                    "sns:ListSubscriptions",
-                    "sns:Publish"
-                  ],
-                  "Resource": [
-                    "*"
-                  ]
-                }
-              ]
-            },
-            "PolicyName": {
-              "Fn::Join": [
-                "-",
-                [
-                  {
-                    "Ref": "AWS::StackName"
-                  },
-                  "AscalegroupHookTermLbRolePolicy"
-                ]
-              ]
-            }
-          }
-        ],
-        "Path": "/",
-        "RoleName": {
-          "Fn::Join": [
-            "-",
-            [
-              {
-                "Ref": "AWS::StackName"
-              },
-              "AscalegroupHookTermLbRole"
-            ]
-          ]
+        "AutoScalingGroupProvider": {
+          "AutoScalingGroupArn": {
+            "Ref": "Ascalegroup"
+          },
+          "ManagedScaling": {
+            "Status": "ENABLED",
+            "TargetCapacity": 80,
+            "MinimumScalingStepSize": 1,
+            "MaximumScalingStepSize": 2
+          },
+          "ManagedTerminationProtection": "ENABLED"
         }
-      }
-    },
-    "AscalegroupHookTermLb": {
-      "Type": "AWS::Lambda::Function",
-      "Properties": {
-        "Code": {
-          "ZipFile": {
-            "Fn::Join": [
-              "",
-              ["from __future__ import print_function\n",
-                "import boto3\n",
-                "from urllib.parse import urlparse\n",
-                "import base64\n",
-                "import json\n",
-                "import datetime\n",
-                "import time\n",
-                "\n",
-                "session = boto3.session.Session()\n",
-                "\n",
-                "ec2C = session.client(service_name='ec2')\n",
-                "ecsC = session.client(service_name='ecs')\n",
-                "asgC = session.client('autoscaling')\n",
-                "snsC = session.client('sns')\n",
-                "\n",
-                "def publishToSNS(m, tARN):\n",
-                "\tsnsR = snsC.publish(\n",
-                "\t\tTopicArn=tARN,\n",
-                "\t\tMessage=json.dumps(m),\n",
-                "\t\tSubject='Invoke lambda again'\n",
-                "\t)\n",
-                "\treturn \"published\"\n",
-                "\n",
-                "def checkContainerInstanceTaskStatus(ec2Id):\n",
-                "\tconId = None\n",
-                "\tclN = None\n",
-                "\ttmpM = None\n",
-                "\n",
-                "\tec2Resp = ec2C.describe_instance_attribute(InstanceId=ec2Id, Attribute='userData')\n",
-                "\tudEnc = ec2Resp['UserData']\n",
-                "\tudDec = base64.b64decode(udEnc['Value'])\n",
-                "\n",
-                "\ttmpList = udDec.split()\n",
-                "\tfor token in tmpList:\n",
-                "\t\tif token.find(b\"ECS_CLUSTER\") > -1:\n",
-                "\t\t\tclN = token.split(b'=')[1].decode(\"utf-8\")\n",
-                "\n",
-                "\tclusterListResp = ecsC.list_container_instances(cluster=clN)\n",
-                "\tcontainerDetResp = ecsC.describe_container_instances(cluster=clN, containerInstances=clusterListResp[\n",
-                "\t\t'containerInstanceArns'])\n",
-                "\n",
-                "\tfor containerInstances in containerDetResp['containerInstances']:\n",
-                "\t\tif containerInstances['ec2InstanceId'] == ec2Id:\n",
-                "\t\t\tconId = containerInstances['containerInstanceArn']\n",
-                "\n",
-                "\t\t\tcontainerStatus = containerInstances['status']\n",
-                "\t\t\tif containerStatus == 'DRAINING':\n",
-                "\t\t\t\ttmpM = {\"containerInstanceId\": conId}\n",
-                "\t\t\telse:\n",
-                "\t\t\t\tecsResponse = ecsC.update_container_instances_state(cluster=clN,containerInstances=[conId],status='DRAINING')\n",
-                "\t\t\t\ttmpM = {\"containerInstanceId\": conId}\n",
-                "\n",
-                "\tif conId != None:\n",
-                "\t\tlistTaskResp = ecsC.list_tasks(cluster=clN, containerInstance=conId)\n",
-                "\n",
-                "\t\tif len(listTaskResp['taskArns']) > 0:\n",
-                "\t\t\treturn 1, tmpM\n",
-                "\t\telse:\n",
-                "\t\t\treturn 0, tmpM\n",
-                "\telse:\n",
-                "\t\treturn 0, tmpM\n",
-                "\n",
-                "def lambda_handler(event, context):\n",
-                "\tline = event['Records'][0]['Sns']['Message']\n",
-                "\tmessage = json.loads(line)\n",
-                "\tec2Id = message['detail']['EC2InstanceId']\n",
-                "\tasgGroupName = message['detail']['AutoScalingGroupName']\n",
-                "\tsnsArn = event['Records'][0]['EventSubscriptionArn']\n",
-                "\tTopicArn = event['Records'][0]['Sns']['TopicArn']\n",
-                "\n",
-                "\tlifecyclehookname = None\n",
-                "\tclN = None\n",
-                "\ttmpM = None\n",
-                "\tcompleteHook = 0\n",
-                "\n",
-                "\tec2Resp = ec2C.describe_instance_attribute(InstanceId=ec2Id, Attribute='userData')\n",
-                "\tudEnc = ec2Resp['UserData']\n",
-                "\tudDec = base64.b64decode(udEnc['Value'])\n",
-                "\n",
-                "\ttmpList = udDec.split()\n",
-                "\tfor token in tmpList:\n",
-                "\t\tif token.find(b\"ECS_CLUSTER\") > -1:\n",
-                "\t\t\tclN = token.split(b'=')[1].decode(\"utf-8\")\n",
-                "\n",
-                "\tclusterListResp = ecsC.list_container_instances(cluster=clN)\n",
-                "\n",
-                "\tif 'LifecycleTransition' in message['detail'].keys():\n",
-                "\t\tif message['detail']['LifecycleTransition'].find('autoscaling:EC2_INSTANCE_TERMINATING') > -1:\n",
-                "\t\t\tlifecycleHookName = message['detail']['LifecycleHookName']\n",
-                "\t\t\t\n",
-                "\t\t\ttasksRunning, tmpM = checkContainerInstanceTaskStatus(ec2Id)\n",
-                "\t\t\tif tmpM != None:\n",
-                "\t\t\t\tmessage.update(tmpM)\n",
-                "\n",
-                "\t\t\tif tasksRunning == 1:\n",
-                "\t\t\t\tmsgResponse = publishToSNS(message, TopicArn)\n",
-                "\t\t\telif tasksRunning == 0:\n",
-                "\t\t\t\tcompleteHook = 1\n",
-                "\n",
-                "\t\t\t\ttry:\n",
-                "\t\t\t\t\tresponse = asgC.complete_lifecycle_action(\n",
-                "\t\t\t\t\t\tLifecycleHookName=lifecycleHookName,\n",
-                "\t\t\t\t\t\tAutoScalingGroupName=asgGroupName,\n",
-                "\t\t\t\t\t\tLifecycleActionResult='CONTINUE',\n",
-                "\t\t\t\t\t\tInstanceId=ec2Id)\n",
-                "\t\t\t\texcept Exception as e:\n",
-                "\t\t\t\t\tprint(str(e))\n"
-              ]
-            ]
-          }
-        },
-        "Description": {
-          "Fn::Join": [
-            "-",
-            [
-              {
-                "Ref": "AWS::StackName"
-              },
-              "AscalegroupHookTermLb"
-            ]
-          ]
-        },
-        "FunctionName": {
-          "Fn::Join": [
-            "-",
-            [
-              {
-                "Ref": "AWS::StackName"
-              },
-              "AscalegroupHookTermLb"
-            ]
-          ]
-        },
-        "Handler": "index.lambda_handler",
-        "MemorySize": 128,
-        "Role": {
-          "Fn::GetAtt": [
-            "AscalegroupHookTermLbRole",
-            "Arn"
-          ]
-        },
-        "Runtime": "python3.9",
-        "Timeout": 30,
-        "Tags": [
-          {
-            "Key": "Name",
-            "Value": {
-              "Fn::Join": [
-                "-",
-                [
-                  {
-                    "Ref": "AWS::StackName"
-                  },
-                  "AscalegroupHookTermLb"
-                ]
-              ]
-            }
-          }
-        ]
-      },
-      "DependsOn": [
-        "AscalegroupHookTermLbRole"
-      ]
-    },
-    "AscalegroupHookTermTopic": {
-      "Type": "AWS::SNS::Topic",
-      "Properties": {
-        "DisplayName": {
-          "Fn::Join": [
-            "-",
-            [
-              {
-                "Ref": "AWS::StackName"
-              },
-              "AscalegroupHookTermTopic"
-            ]
-          ]
-        },
-        "Subscription": [
-          {
-            "Endpoint": {
-              "Fn::GetAtt": [
-                "AscalegroupHookTermLb",
-                "Arn"
-              ]
-            },
-            "Protocol": "lambda"
-          }
-        ],
-        "TopicName": {
-          "Fn::Join": [
-            "-",
-            [
-              {
-                "Ref": "AWS::StackName"
-              },
-              "AscalegroupHookTermTopic"
-            ]
-          ]
-        }
-      },
-      "DependsOn": [
-        "AscalegroupHookTermLb"
-      ]
-    },
-    "AscalegroupHookTermLbInvokePermission": {
-      "Type": "AWS::Lambda::Permission",
-      "Properties": {
-        "Action": "lambda:InvokeFunction",
-        "Principal": "sns.amazonaws.com",
-        "SourceArn": {
-          "Ref": "AscalegroupHookTermTopic"
-        },
-        "FunctionName": {
-          "Fn::GetAtt": [
-            "AscalegroupHookTermLb",
-            "Arn"
-          ]
-        }
-      },
-      "DependsOn": [
-        "AscalegroupHookTermTopic",
-        "AscalegroupHookTermLb"
-      ]
-    },
-    "AscalegroupHookTermRule": {
-      "Type": "AWS::Events::Rule",
-      "Properties": {
-        "Description": {
-          "Fn::Join": [
-            "-",
-            [
-              {
-                "Ref": "AWS::StackName"
-              },
-              "AscalegroupHookTermRule"
-            ]
-          ]
-        },
-        "EventPattern": {
-          "source": [
-            "aws.autoscaling"
-          ],
-          "detail-type": [
-            "EC2 Instance-terminate Lifecycle Action"
-          ],
-          "detail": {
-            "AutoScalingGroupName": [
-              {
-                "Ref": "Ascalegroup"
-              }
-            ]
-          }
-        },
-        "Name": {
-          "Fn::Join": [
-            "-",
-            [
-              {
-                "Ref": "AWS::StackName"
-              },
-              "AscalegroupHookTermRule"
-            ]
-          ]
-        },
-        "State": "ENABLED",
-        "Targets": [
-          {
-            "Arn": {
-              "Ref": "AscalegroupHookTermTopic"
-            },
-            "Id": {
-              "Fn::Join": [
-                "-",
-                [
-                  {
-                    "Ref": "AWS::StackName"
-                  },
-                  "AscalegroupHookTermRuleTarget"
-                ]
-              ]
-            }
-          }
-        ]
-      },
-      "DependsOn": [
-        "Ascalegroup",
-        "AscalegroupHookTermTopic"
-      ]
-    },
-    "AscalegroupHookTermTopicPolicy": {
-      "Type": "AWS::SNS::TopicPolicy",
-      "Properties": {
-        "PolicyDocument": {
-          "Version": "2012-10-17",
-          "Statement": [
-            {
-              "Effect": "Allow",
-              "Principal": {
-                "Service": "events.amazonaws.com"
-              },
-              "Action": "sns:Publish",
-              "Resource": {
-                "Ref": "AscalegroupHookTermTopic"
-              }
-            }
-          ]
-        },
-        "Topics": [
-          {
-            "Ref": "AscalegroupHookTermTopic"
-          }
-        ]
-      },
-      "DependsOn": [
-        "AscalegroupHookTermTopic"
-      ]
-    },
-    "AscalegroupScaleDown": {
-      "Type": "AWS::AutoScaling::ScalingPolicy",
-      "Properties": {
-        "AdjustmentType": "ChangeInCapacity",
-        "AutoScalingGroupName": {
-          "Ref": "Ascalegroup"
-        },
-        "Cooldown": "300",
-        "PolicyType": "SimpleScaling",
-        "ScalingAdjustment": -1
       },
       "DependsOn": [
         "Ascalegroup"
-      ]
-    },
-    "AlarmAscalegroupScaleDown": {
-      "Type": "AWS::CloudWatch::Alarm",
-      "Properties": {
-        "AlarmActions": [
-          {
-            "Ref": "AscalegroupScaleDown"
-          }
-        ],
-        "AlarmName": {
-          "Fn::Join": [
-            "-",
-            [
-              {
-                "Ref": "AWS::StackName"
-              },
-              "AlarmAscalegroupScaleDown"
-            ]
-          ]
-        },
-        "ComparisonOperator": "LessThanThreshold",
-        "Dimensions": [
-          {
-            "Name": "ClusterName",
-            "Value": {
-              "Ref": "Ecscluster"
-            }
-          }
-        ],
-        "EvaluationPeriods": 1,
-        "MetricName": "MemoryReservation",
-        "Namespace": "AWS/ECS",
-        "Period": 60,
-        "Statistic": "Average",
-        "Threshold": 43
-      },
-      "DependsOn": [
-        "AscalegroupScaleDown",
-        "Ecscluster"
-      ]
-    },
-    "AscalegroupScaleUp": {
-      "Type": "AWS::AutoScaling::ScalingPolicy",
-      "Properties": {
-        "AdjustmentType": "ChangeInCapacity",
-        "AutoScalingGroupName": {
-          "Ref": "Ascalegroup"
-        },
-        "Cooldown": "300",
-        "PolicyType": "SimpleScaling",
-        "ScalingAdjustment": 1
-      },
-      "DependsOn": [
-        "Ascalegroup"
-      ]
-    },
-    "AlarmAscalegroupScaleUp": {
-      "Type": "AWS::CloudWatch::Alarm",
-      "Properties": {
-        "AlarmActions": [
-          {
-            "Ref": "AscalegroupScaleUp"
-          }
-        ],
-        "AlarmName": {
-          "Fn::Join": [
-            "-",
-            [
-              {
-                "Ref": "AWS::StackName"
-              },
-              "AlarmAscalegroupScaleUp"
-            ]
-          ]
-        },
-        "ComparisonOperator": "GreaterThanThreshold",
-        "Dimensions": [
-          {
-            "Name": "ClusterName",
-            "Value": {
-              "Ref": "Ecscluster"
-            }
-          }
-        ],
-        "EvaluationPeriods": 1,
-        "MetricName": "MemoryReservation",
-        "Namespace": "AWS/ECS",
-        "Period": 60,
-        "Statistic": "Average",
-        "Threshold": 65
-      },
-      "DependsOn": [
-        "AscalegroupScaleUp",
-        "Ecscluster"
       ]
     },
     "Loadbalancer": {
