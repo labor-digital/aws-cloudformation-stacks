@@ -1305,19 +1305,16 @@
                   },
                   " >> /etc/ecs/ecs.config\n",
                   "\n",
-                  "sudo yum install -y nfs-utils\n",
+                  "sudo yum install -y amazon-efs-utils\n",
                   "\n",
-                  "sudo stop ecs\n",
-                  "sudo mkdir /mnt/efs\n",
-                  "sudo mount -t nfs4 -o nfsvers=4.1,rsize=1048576,wsize=1048576,hard,timeo=600,retrans=2 ",
+                  "sudo systemctl stop ecs\n",
+                  "sudo mkdir -p /mnt/efs\n",
+                  "echo \"",
                   {
                     "Ref": "Efs"
                   },
-                  ".efs.",
-                  {
-                    "Ref": "AWS::Region"
-                  },
-                  ".amazonaws.com:/ /mnt/efs\n",
+                  ":/ /mnt/efs efs _netdev,tls 0 0\" >> /etc/fstab\n",
+                  "sudo mount -a\n",
                   "sudo systemctl restart docker\n",
                   "sudo systemctl restart cloud-final\n",
                   "sudo systemctl restart ecs\n"
