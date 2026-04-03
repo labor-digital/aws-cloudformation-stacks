@@ -1,15 +1,18 @@
-# aws-cloudformation-stacks
+# AWS CloudFormation Stacks
 
-This repository contains all AWS CloudFormation stack templates used by LABOR.
+Dieses Repository enthält die AWS CloudFormation Stack-Templates, die von LABOR für die Bereitstellung von Infrastruktur und Anwendungen verwendet werden.
 
 ---
 
-## Overview
+## Übersicht
 
-| Template | Description |
+| Template | Beschreibung |
 |---|---|
-| `ecscluster-vpc-rds-asg` | Full ECS cluster stack with VPC, RDS, Auto Scaling Group and Load Balancer |
-| `ecsservice-template` | ECS service stack to deploy a containerized application onto an existing cluster |
+| `ecscluster-vpc-rds-asg` | Vollständiger ECS-Cluster-Stack mit VPC, RDS, Auto Scaling Group und Load Balancer. |
+| `ecscluster-vpc-rds-asg/backup` | Erstellt zusätzliche Backup-Vaults für regionsübergreifende Backups. |
+| `ecsservice-template` | ECS-Service-Stack zur Bereitstellung einer containerisierten Anwendung auf einem bestehenden Cluster. |
+
+> **Hinweis:** Das Template in `ecscluster-ext-additional-cluster` ist veraltet und wird nicht mehr aktiv unterstützt oder dokumentiert.
 
 ---
 
@@ -17,80 +20,94 @@ This repository contains all AWS CloudFormation stack templates used by LABOR.
 
 ### ecscluster-vpc-rds-asg
 
-Creates a complete, self-contained infrastructure stack to run ECS services. The stack provisions:
+Erstellt eine vollständige, eigenständige Infrastruktur für den Betrieb von ECS-Services. Dieser Stack umfasst:
 
-- **VPC** with subnets across multiple availability zones
-- **ECS Cluster** with EC2 launch type
-- **Auto Scaling Group** for EC2 instances (default: `t3.small`)
-- **Application Load Balancer** with HTTPS listener
-- **RDS** database instance (default: `db.t3.medium`) inside the VPC
-- **CloudWatch Alarms** for memory-based autoscaling (`ECS.MemoryReservation > 65%` → scale out, `< 43%` → scale in)
-- **Lambda function** via SNS topic to set EC2 instances into draining state before removal (safe scale-in)
-- **AWS Backup** with optional cross-region copy for RDS snapshots
+- **VPC** mit Subnetzen über mehrere Availability Zones (AZs).
+- **ECS-Cluster** (EC2 Launch Type).
+- **Auto Scaling Group** für EC2-Instanzen (Standard: `t3.small`).
+- **Application Load Balancer (ALB)** mit HTTPS-Listener.
+- **RDS-Instanz** (Standard: `db.t3.medium`) innerhalb der VPC.
+- **ECS Capacity Provider** mit verwalteter Skalierung (Zielkapazität: 80%).
+- **Lambda-Funktion** zur sicheren Instanz-Entfernung (Draining über SNS-Topic).
+- **AWS Backup** mit optionaler regionsübergreifender Kopie für RDS-Snapshots.
 
-#### Parameters
+#### Wichtige Parameter
 
-| Parameter | Description |
+| Parameter | Beschreibung |
 |---|---|
-| `KeypairName` | EC2 KeyPair name for SSH access |
-| `RdsMasterUsername` | Master username for the RDS instance |
-| `RdsMasterPassword` | Master password for the RDS instance (min. 32 characters, hidden) |
-| `HttpsdefaultlistenerCertificate` | ACM certificate ARN for the ALB HTTPS default listener (4096-bit keys not supported) |
-| `AscalegroupMinSize` | Minimum number of EC2 instances in the Auto Scaling Group |
-| `AscalegroupMaxSize` | Maximum number of EC2 instances in the Auto Scaling Group |
-| `AscalegroupDesSize` | Desired number of EC2 instances in the Auto Scaling Group |
-| `EC2MachineImage` | EC2 AMI ID to use for cluster instances |
-| `EC2InstanceType` | EC2 instance type (`t3.small` or `t3.micro`, default: `t3.small`) |
-| `RdsInstanceType` | RDS instance type (default: `db.t3.medium`) |
-| `BackupCopyDestinationRegion` | AWS region for cross-region RDS backup copy (default: `eu-north-1`) |
+| `KeypairName` | Name des EC2-KeyPairs für SSH-Zugriff. |
+| `RdsMasterUsername` | Master-Benutzername für die RDS-Instanz. |
+| `RdsMasterPassword` | Master-Passwort für die RDS-Instanz (mind. 32 Zeichen, wird nicht im Log ausgegeben). |
+| `HttpsdefaultlistenerCertificate` | ACM-Zertifikats-ARN für den ALB HTTPS-Listener. |
+| `EC2MachineImage` | AMI-ID für die ECS-Instanzen. |
+| `BackupCopyDestinationRegion` | Zielregion für RDS-Backup-Kopien (Standard: `eu-north-1`). |
+| `AscalegroupMinSize` | Minimale Anzahl der EC2-Instanzen im Cluster. |
+| `AscalegroupMaxSize` | Maximale Anzahl der EC2-Instanzen im Cluster. |
+
+---
+
+### ecscluster-vpc-rds-asg/backup
+
+Erstellt zusätzliche Backup-Vaults, die für die Spiegelung von Backups in eine andere Region (z. B. `eu-north-1`) benötigt werden. Dieser Stack umfasst:
+
+- **BackupVault**: Ein Standard-Backup-Vault (`${ClusterName}-BackupVault-Mirror`).
+- **LongTermBackupVault**: Ein Backup-Vault für Langzeitaufbewahrung (`${ClusterName}-BackupLongTermVault-Mirror`).
+
+#### Wichtige Parameter
+
+| Parameter | Beschreibung |
+|---|---|
+| `ClusterName` | Name des Clusters, für den die Backup-Vaults erstellt werden. |
 
 ---
 
 ### ecsservice-template
 
-Deploys a single ECS service onto an existing cluster created by `ecscluster-vpc-rds-asg`. The stack provisions:
+Dient zur Bereitstellung eines einzelnen ECS-Services auf einem Cluster, der mit `ecscluster-vpc-rds-asg` erstellt wurde. Der Stack umfasst:
 
-- **ECS Task Definition** with a single container, EFS volume mount and Doppler secret injection
-- **ECS Service** with ALB integration and configurable health checks
-- **ALB Listener Rule** based on hostname and path pattern
-- **Task-level Auto Scaling** based on CPU and memory utilization
-- **EFS Access Point** for persistent storage
-- **IAM Roles** for the ECS task and service
+- **ECS Task Definition** (Einzelcontainer mit EFS-Mount und Doppler-Secret-Injektion).
+- **ECS Service** mit ALB-Integration.
+- **ALB Listener Rule** basierend auf Hostname und Pfad.
+- **Autoscaling** auf Task-Ebene (CPU/Speicher).
+- **EFS Access Point** für persistenten Speicher.
+- **IAM-Rollen** für Task und Service.
 
-#### Parameters
+#### Wichtige Parameter
 
-| Parameter | Description |
+| Parameter | Beschreibung |
 |---|---|
-| `ClusterStackName` | Name of the existing cluster CloudFormation stack |
-| `ListenerRuleHost` | Hostname for the ALB listener rule |
-| `ListenerRulePath` | Path pattern for the ALB listener rule (default: `*`) |
-| `ListenerRulePriority` | Priority for the ALB listener rule |
-| `InitialDockerImage` | Docker image to use for the initial deployment |
-| `TaskMemory` | Soft memory limit per task in MB. Recommended values for `t3.small`: `485`, `970`, `1940` |
-| `ServiceDesiredCount` | Desired (and minimum) number of running task instances [0–4] |
-| `ServiceMaxCapacity` | Maximum number of running task instances for autoscaling [1–10] |
-| `ECSHealthCheckGracePeriod` | Seconds ECS waits before health-checking a newly started container |
-| `ServiceTrafficPort` | Port the container serves traffic on (also used for health checks) |
-| `ServiceTrafficProtocol` | Protocol the container uses (`HTTP` or `HTTPS`) |
-| `ECSHealthCheckPath` | HTTP path used for the health check (default: `/test.php`) |
-| `VolumeMountPath` | Container path where the EFS volume is mounted (default: `/var/www/html_data`) |
-| `ProjectNameShort` | Short project identifier in the format `xxx_xxx_xxx` — used to resolve the Doppler project |
-| `ProjectEnv` | Deployment environment, used for Doppler config resolution (default: `prd`) |
-| `ProjectToken` | Doppler service token for secret injection (read-only service token required, hidden) |
-| `ContainerCommand` | Optional command override for the container as a comma-separated list (e.g. `python,app.py`) |
+| `ClusterStackName` | Name des bestehenden CloudFormation-Stacks des Clusters. |
+| `ListenerRuleHost` | Hostname für die ALB-Listener-Regel. |
+| `InitialDockerImage` | Docker-Image für das initiale Deployment. |
+| `TaskMemory` | Soft Limit für den Arbeitsspeicher pro Task (Empfehlung für `t3.small`: `485`, `970` oder `1940`). |
+| `ProjectNameShort` | Projekt-Kurzname (Format: `xxx_xxx_xxx`) für die Doppler-Zuordnung. |
+| `ProjectToken` | Doppler Service-Token (Read-only) für die Secret-Injektion. |
 
 ---
 
-## General Notes
+## Service-Template Update Best Practice
 
-### Stack Role
+Bevor ein Service-CloudFormation-Stack mit einem neuen Template aktualisiert wird, sollte der aktuelle Drift dieses Stacks so weit wie möglich reduziert werden.
 
-Always use a dedicated IAM role for stack creation and updates.
-See the [AWS documentation](http://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/using-iam-servicerole.html) for details.
+Normalerweise driftet ein Service-Stack nicht signifikant ab, abgesehen von der Task-Definition des Services. Im Falle eines Fehlers während des Updates löst CloudFormation ein Rollback auf die letzte bekannte Stack-Konfiguration aus. Das Problem dabei ist, dass das Docker-Image in dieser letzten bekannten Konfiguration sehr alt sein könnte – oder schlimmer noch, gar nicht mehr verfügbar ist.
 
-### ECR Access Across Accounts
+**Schritte für ein sicheres Update des Service-Stacks:**
 
-To allow an ECS service in a different AWS account to pull images from your ECR registry, add the following resource-based policy to each relevant ECR repository. Replace `$EXT_ACCOUNT_ID` with the account ID of the external account (visible in the AWS Console under **Support → Support Center**).
+1. Erkennen des Drifts des Stacks.
+2. Falls mehr Änderungen als nur die Task-Definition des Services selbst erkannt werden, sollten diese Einstellungen manuell zurückgesetzt werden.
+3. Den Service-Stack **ohne Austausch des Templates** aktualisieren – dabei nur den Parameter `InitialDockerImage` auf das aktuell laufende Image setzen.
+4. Warten, bis der Stack aktualisiert wurde und wieder in einem bereiten Zustand ist.
+5. Nun den Stack erneut aktualisieren, das Template ersetzen und alle gewünschten Änderungen anwenden.
+
+---
+
+## Allgemeine Hinweise
+
+### Stack-Rolle
+Verwenden Sie immer eine dedizierte IAM-Rolle für die Erstellung und Aktualisierung von Stacks. Weitere Informationen finden Sie in der [AWS-Dokumentation](http://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/using-iam-servicerole.html).
+
+### ECR-Zugriff über Accounts hinweg
+Um einem ECS-Service in einem anderen AWS-Account den Zugriff auf ECR-Images zu ermöglichen, fügen Sie die folgende ressourcenbasierte Richtlinie zum jeweiligen ECR-Repository hinzu. Ersetzen Sie `$EXT_ACCOUNT_ID` durch die ID des externen Accounts.
 
 ```json
 {
@@ -111,19 +128,3 @@ To allow an ECS service in a different AWS account to pull images from your ECR 
   ]
 }
 ```
-
----
-
-## Service-Template Update Best Practice
-
-Before updating a service CloudFormation stack with a new template, reduce the current drift of that stack as much as possible.
-
-Normally a service stack will not drift significantly, apart from the service task definition. In case of a fault during the update, CloudFormation will trigger a rollback to the last known stack configuration. The problem is that the Docker image in this last known configuration could be very old — or worse, no longer available.
-
-**Steps for a safe service stack update:**
-
-1. Detect the drift of the stack
-2. If there are more changes detected than the task definition of the service itself, revert those settings manually
-3. Update the service stack **without replacing the template** — only set the parameter `InitialDockerImage` to the currently running image
-4. Wait until the stack is updated and back in a ready state
-5. Now update the stack, replace the template and apply all desired changes
