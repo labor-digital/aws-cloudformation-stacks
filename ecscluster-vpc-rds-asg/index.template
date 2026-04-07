@@ -40,8 +40,9 @@
       "MaxValue": "10"
     },
     "EC2MachineImage": {
-      "Type": "AWS::EC2::Image::Id",
-      "Description": "EC2 Machine Image we should use to start the EC2 machines in the cluster."
+      "Type": "AWS::SSM::Parameter::Value<AWS::EC2::Image::Id>",
+      "Default": "/aws/service/ecs/optimized-ami/amazon-linux-2023/recommended/image_id",
+      "Description": "SSM path to the ECS-optimized AMI. Change only if you need a specific AMI."
     },
     "EC2InstanceType": {
       "Description": "Instance type which you want to use for the EC2 machines in the cluster.",
@@ -1513,8 +1514,6 @@
                   },
                   " >> /etc/ecs/ecs.config\n",
                   "\n",
-                  "sudo yum install -y amazon-efs-utils\n",
-                  "\n",
                   "sudo systemctl stop ecs\n",
                   "sudo mkdir -p /mnt/efs\n",
                   "echo \"",
@@ -1524,7 +1523,6 @@
                   ":/ /mnt/efs efs _netdev,tls 0 0\" >> /etc/fstab\n",
                   "sudo mount -a\n",
                   "sudo systemctl restart docker\n",
-                  "sudo systemctl restart cloud-final\n",
                   "sudo systemctl restart ecs\n"
                 ]
               ]
