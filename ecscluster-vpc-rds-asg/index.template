@@ -23,26 +23,24 @@
     },
     "AscalegroupMinSize": {
       "Type": "Number",
-      "Description": "The min count of EC2-Instances (for Autoscaling).",
-      "MinValue": "1",
+      "Description": "The min count of EC2-Instances (for Autoscaling). Set to 0 to let ECS Managed Scaling handle capacity — instances will only start when ECS tasks are deployed.",
+      "Default": "0",
+      "MinValue": "0",
       "MaxValue": "10"
     },
     "AscalegroupMaxSize": {
       "Type": "Number",
       "Description": "The max count of EC2-Instances (for Autoscaling).",
-      "MinValue": "5",
+      "Default": "3",
+      "MinValue": "1",
       "MaxValue": "10"
     },
     "AscalegroupDesSize": {
       "Type": "Number",
-      "Description": "The desired count of EC2-Instances (for Autoscaling).",
-      "MinValue": "1",
+      "Description": "The desired count of EC2-Instances (for Autoscaling). Set to 0 initially — ECS Managed Scaling will scale up automatically when tasks are deployed.",
+      "Default": "0",
+      "MinValue": "0",
       "MaxValue": "10"
-    },
-    "EC2MachineImage": {
-      "Type": "AWS::SSM::Parameter::Value<AWS::EC2::Image::Id>",
-      "Default": "/aws/service/ecs/optimized-ami/amazon-linux-2023/recommended/image_id",
-      "Description": "SSM path to the ECS-optimized AMI. Change only if you need a specific AMI."
     },
     "EC2InstanceType": {
       "Description": "Instance type which you want to use for the EC2 machines in the cluster.",
@@ -1368,6 +1366,14 @@
               "Ecscluster"
             ]
           ]
+        }
+      }
+    },
+    "EcsclusterCapacityProviderAssociation": {
+      "Type": "AWS::ECS::ClusterCapacityProviderAssociations",
+      "Properties": {
+        "Cluster": {
+          "Ref": "Ecscluster"
         },
         "CapacityProviders": [
           {
@@ -1385,6 +1391,7 @@
         ]
       },
       "DependsOn": [
+        "Ecscluster",
         "CapacityProvider"
       ]
     },
@@ -1490,9 +1497,7 @@
               "Ref": "InstanceroleProfile"
             }
           },
-          "ImageId": {
-            "Ref": "EC2MachineImage"
-          },
+          "ImageId": "{{resolve:ssm:/aws/service/ecs/optimized-ami/amazon-linux-2023/recommended/image_id}}",
           "InstanceType": {
             "Ref": "EC2InstanceType"
           },
@@ -1609,7 +1614,7 @@
             "MinimumScalingStepSize": 1,
             "MaximumScalingStepSize": 2
           },
-          "ManagedTerminationProtection": "ENABLED"
+          "ManagedTerminationProtection": "DISABLED"
         }
       },
       "DependsOn": [
