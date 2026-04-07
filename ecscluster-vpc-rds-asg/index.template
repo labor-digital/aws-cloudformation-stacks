@@ -170,6 +170,84 @@
         "Vpc"
       ]
     },
+    "SubnetPrivate1": {
+      "Type": "AWS::EC2::Subnet",
+      "Properties": {
+        "CidrBlock": "10.1.3.0/24",
+        "AvailabilityZone": {
+          "Fn::Select": [
+            "0",
+            {
+              "Fn::GetAZs": {
+                "Ref": "AWS::Region"
+              }
+            }
+          ]
+        },
+        "MapPublicIpOnLaunch": false,
+        "Tags": [
+          {
+            "Key": "Name",
+            "Value": {
+              "Fn::Join": [
+                "-",
+                [
+                  {
+                    "Ref": "AWS::StackName"
+                  },
+                  "SubnetPrivate1"
+                ]
+              ]
+            }
+          }
+        ],
+        "VpcId": {
+          "Ref": "Vpc"
+        }
+      },
+      "DependsOn": [
+        "Vpc"
+      ]
+    },
+    "SubnetPrivate2": {
+      "Type": "AWS::EC2::Subnet",
+      "Properties": {
+        "CidrBlock": "10.1.4.0/24",
+        "AvailabilityZone": {
+          "Fn::Select": [
+            "1",
+            {
+              "Fn::GetAZs": {
+                "Ref": "AWS::Region"
+              }
+            }
+          ]
+        },
+        "MapPublicIpOnLaunch": false,
+        "Tags": [
+          {
+            "Key": "Name",
+            "Value": {
+              "Fn::Join": [
+                "-",
+                [
+                  {
+                    "Ref": "AWS::StackName"
+                  },
+                  "SubnetPrivate2"
+                ]
+              ]
+            }
+          }
+        ],
+        "VpcId": {
+          "Ref": "Vpc"
+        }
+      },
+      "DependsOn": [
+        "Vpc"
+      ]
+    },
     "Routetable": {
       "Type": "AWS::EC2::RouteTable",
       "Properties": {
@@ -225,6 +303,135 @@
       "DependsOn": [
         "Routetable",
         "Subnet2"
+      ]
+    },
+    "NatEip": {
+      "Type": "AWS::EC2::EIP",
+      "Properties": {
+        "Domain": "vpc",
+        "Tags": [
+          {
+            "Key": "Name",
+            "Value": {
+              "Fn::Join": [
+                "-",
+                [
+                  {
+                    "Ref": "AWS::StackName"
+                  },
+                  "NatEip"
+                ]
+              ]
+            }
+          }
+        ]
+      },
+      "DependsOn": [
+        "AttachIgw"
+      ]
+    },
+    "NatGateway": {
+      "Type": "AWS::EC2::NatGateway",
+      "Properties": {
+        "AllocationId": {
+          "Fn::GetAtt": ["NatEip", "AllocationId"]
+        },
+        "SubnetId": {
+          "Ref": "Subnet1"
+        },
+        "Tags": [
+          {
+            "Key": "Name",
+            "Value": {
+              "Fn::Join": [
+                "-",
+                [
+                  {
+                    "Ref": "AWS::StackName"
+                  },
+                  "NatGateway"
+                ]
+              ]
+            }
+          }
+        ]
+      },
+      "DependsOn": [
+        "NatEip",
+        "Subnet1"
+      ]
+    },
+    "RoutetablePrivate": {
+      "Type": "AWS::EC2::RouteTable",
+      "Properties": {
+        "VpcId": {
+          "Ref": "Vpc"
+        },
+        "Tags": [
+          {
+            "Key": "Name",
+            "Value": {
+              "Fn::Join": [
+                "-",
+                [
+                  {
+                    "Ref": "AWS::StackName"
+                  },
+                  "RoutetablePrivate"
+                ]
+              ]
+            }
+          }
+        ]
+      },
+      "DependsOn": [
+        "Vpc"
+      ]
+    },
+    "RoutePrivate": {
+      "Type": "AWS::EC2::Route",
+      "Properties": {
+        "DestinationCidrBlock": "0.0.0.0/0",
+        "NatGatewayId": {
+          "Ref": "NatGateway"
+        },
+        "RouteTableId": {
+          "Ref": "RoutetablePrivate"
+        }
+      },
+      "DependsOn": [
+        "NatGateway",
+        "RoutetablePrivate"
+      ]
+    },
+    "AssociateRoutetablePrivate1": {
+      "Type": "AWS::EC2::SubnetRouteTableAssociation",
+      "Properties": {
+        "RouteTableId": {
+          "Ref": "RoutetablePrivate"
+        },
+        "SubnetId": {
+          "Ref": "SubnetPrivate1"
+        }
+      },
+      "DependsOn": [
+        "RoutetablePrivate",
+        "SubnetPrivate1"
+      ]
+    },
+    "AssociateRoutetablePrivate2": {
+      "Type": "AWS::EC2::SubnetRouteTableAssociation",
+      "Properties": {
+        "RouteTableId": {
+          "Ref": "RoutetablePrivate"
+        },
+        "SubnetId": {
+          "Ref": "SubnetPrivate2"
+        }
+      },
+      "DependsOn": [
+        "RoutetablePrivate",
+        "SubnetPrivate2"
       ]
     },
     "Igw": {
@@ -895,10 +1102,10 @@
         },
         "SubnetIds": [
           {
-            "Ref": "Subnet1"
+            "Ref": "SubnetPrivate1"
           },
           {
-            "Ref": "Subnet2"
+            "Ref": "SubnetPrivate2"
           }
         ],
         "Tags": [
@@ -919,8 +1126,8 @@
         ]
       },
       "DependsOn": [
-        "Subnet1",
-        "Subnet2"
+        "SubnetPrivate1",
+        "SubnetPrivate2"
       ]
     },
     "Rdsinstance1ParameterGroup": {
@@ -1054,7 +1261,7 @@
         "Engine": "aurora-mysql",
         "EngineVersion": "8.0.mysql_aurora.3.08.2",
         "MultiAZ": false,
-        "PubliclyAccessible": true,
+        "PubliclyAccessible": false,
         "StorageEncrypted": true,
         "DBParameterGroupName": {
           "Ref": "Rdsinstance1ParameterGroup"
@@ -1117,13 +1324,13 @@
           }
         ],
         "SubnetId": {
-          "Ref": "Subnet1"
+          "Ref": "SubnetPrivate1"
         }
       },
       "DependsOn": [
         "Efs",
         "SgVpcEfs",
-        "Subnet1"
+        "SubnetPrivate1"
       ]
     },
     "EfsMounttarget2": {
@@ -1138,13 +1345,13 @@
           }
         ],
         "SubnetId": {
-          "Ref": "Subnet2"
+          "Ref": "SubnetPrivate2"
         }
       },
       "DependsOn": [
         "Efs",
         "SgVpcEfs",
-        "Subnet2"
+        "SubnetPrivate2"
       ]
     },
     "Ecscluster": {
@@ -1200,7 +1407,8 @@
           ]
         },
         "ManagedPolicyArns": [
-          "arn:aws:iam::aws:policy/service-role/AmazonEC2ContainerServiceforEC2Role"
+          "arn:aws:iam::aws:policy/service-role/AmazonEC2ContainerServiceforEC2Role",
+          "arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore"
         ],
         "Path": "/",
         "RoleName": {
@@ -1248,7 +1456,7 @@
           "NetworkInterfaces": [
             {
               "DeviceIndex": 0,
-              "AssociatePublicIpAddress": true,
+              "AssociatePublicIpAddress": false,
               "Groups": [
                 {
                   "Ref": "SgVpcMysqlAccess"
@@ -1377,17 +1585,17 @@
         ],
         "VPCZoneIdentifier": [
           {
-            "Ref": "Subnet1"
+            "Ref": "SubnetPrivate1"
           },
           {
-            "Ref": "Subnet2"
+            "Ref": "SubnetPrivate2"
           }
         ]
       },
       "DependsOn": [
         "Launchtemplate",
-        "Subnet1",
-        "Subnet2"
+        "SubnetPrivate1",
+        "SubnetPrivate2"
       ]
     },
     "CapacityProvider": {
