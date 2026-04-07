@@ -22,14 +22,13 @@ Dieses Repository enthält die AWS CloudFormation Stack-Templates, die von LABOR
 
 Erstellt eine vollständige, eigenständige Infrastruktur für den Betrieb von ECS-Services. Dieser Stack umfasst:
 
-- **VPC** mit Subnetzen über mehrere Availability Zones (AZs).
+- **VPC** mit öffentlichen und privaten Subnetzen über mehrere Availability Zones (AZs), inkl. NAT Gateway.
 - **ECS-Cluster** (EC2 Launch Type).
-- **Auto Scaling Group** für EC2-Instanzen (Standard: `t3.small`).
+- **Auto Scaling Group** für EC2-Instanzen (Standard: `t3.small`) — startet initial mit 0 Instanzen, ECS Managed Scaling skaliert automatisch bei Bedarf.
 - **Application Load Balancer (ALB)** mit HTTPS-Listener.
 - **RDS-Instanz** (Standard: `db.t3.medium`) innerhalb der VPC.
 - **ECS Capacity Provider** mit verwalteter Skalierung (Zielkapazität: 80%).
-- **Lambda-Funktion** zur sicheren Instanz-Entfernung (Draining über SNS-Topic).
-- **AWS Backup** mit optionaler regionsübergreifender Kopie für RDS-Snapshots.
+- **AWS Backup** mit optionaler regionsübergreifender Kopie für RDS-Snapshots und EFS.
 
 #### Wichtige Parameter
 
@@ -39,10 +38,12 @@ Erstellt eine vollständige, eigenständige Infrastruktur für den Betrieb von E
 | `RdsMasterUsername` | Master-Benutzername für die RDS-Instanz. |
 | `RdsMasterPassword` | Master-Passwort für die RDS-Instanz (mind. 32 Zeichen, wird nicht im Log ausgegeben). |
 | `HttpsdefaultlistenerCertificate` | ACM-Zertifikats-ARN für den ALB HTTPS-Listener. |
-| `EC2MachineImage` | AMI-ID für die ECS-Instanzen. |
-| `BackupCopyDestinationRegion` | Zielregion für RDS-Backup-Kopien (Standard: `eu-north-1`). |
-| `AscalegroupMinSize` | Minimale Anzahl der EC2-Instanzen im Cluster. |
-| `AscalegroupMaxSize` | Maximale Anzahl der EC2-Instanzen im Cluster. |
+| `EC2InstanceType` | Instanztyp für die EC2-Maschinen im Cluster (Standard: `t3.small`). |
+| `RdsInstanceType` | Instanztyp für die RDS-Datenbank (Standard: `db.t3.medium`). |
+| `AscalegroupMinSize` | Minimale Anzahl der EC2-Instanzen (Standard: `0` — ASG startet leer, ECS Managed Scaling übernimmt). |
+| `AscalegroupDesSize` | Gewünschte Anzahl der EC2-Instanzen beim Deployment (Standard: `0`). |
+| `AscalegroupMaxSize` | Maximale Anzahl der EC2-Instanzen im Cluster (Standard: `3`). |
+| `BackupCopyDestinationRegion` | Zielregion für Backup-Kopien (Standard: `eu-north-1`, leer lassen zum Deaktivieren). |
 
 ---
 
