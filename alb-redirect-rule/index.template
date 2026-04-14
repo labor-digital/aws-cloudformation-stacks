@@ -1,0 +1,88 @@
+{
+  "Parameters" : {
+    "ClusterStackName" : {
+      "Description" : "Name of the cloudformation stack of the cluster, where the ALB listeners are defined.",
+      "Type" : "String",
+      "MinLength" : 1
+    },
+    "ListenerRuleHost" : {
+      "Description" : "Hostname for the ListenerRule.",
+      "Type" : "String",
+      "MinLength" : 1
+    },
+    "ListenerRulePath" : {
+      "Description" : "PathPattern for the ListenerRule. Normally you should use * here.",
+      "Type" : "String",
+      "Default" : "*",
+      "MinLength" : 1
+    },
+    "ListenerRulePriority" : {
+      "Description" : "The Priority for the ListenerRule.",
+      "Type" : "Number",
+      "MinValue" : 1
+    },
+    "ListenerRuleUrl" : {
+      "Description" : "The target hostname to redirect to (e.g. www.example.com). Path and query string are kept from the original request.",
+      "Type" : "String",
+      "MinLength" : 1
+    },
+    "ListenerRuleHttpCode" : {
+      "Description" : "The HTTP redirect status code.",
+      "Type" : "String",
+      "AllowedValues" : ["301", "302"],
+      "Default" : "301"
+    }
+  },
+  "Resources" : {
+    "LoadbalancerRuleHttp" : {
+      "Type" : "AWS::ElasticLoadBalancingV2::ListenerRule",
+      "Properties" : {
+        "Actions" : [ {
+          "RedirectConfig" : {
+            "Host" : { "Ref" : "ListenerRuleUrl" },
+            "Path" : "/#{path}",
+            "Port" : "#{port}",
+            "Protocol" : "#{protocol}",
+            "Query" : "#{query}",
+            "StatusCode" : { "Fn::Sub" : "HTTP_${ListenerRuleHttpCode}" }
+          },
+          "Type" : "redirect"
+        } ],
+        "Conditions" : [ {
+          "Field" : "host-header",
+          "Values" : [ { "Ref" : "ListenerRuleHost" } ]
+        }, {
+          "Field" : "path-pattern",
+          "Values" : [ { "Ref" : "ListenerRulePath" } ]
+        } ],
+        "ListenerArn" : { "Fn::ImportValue" : { "Fn::Sub" : "${ClusterStackName}-ListenerArnHttp" } },
+        "Priority" : { "Ref" : "ListenerRulePriority" }
+      }
+    },
+    "LoadbalancerRuleHttps" : {
+      "Type" : "AWS::ElasticLoadBalancingV2::ListenerRule",
+      "Properties" : {
+        "Actions" : [ {
+          "RedirectConfig" : {
+            "Host" : { "Ref" : "ListenerRuleUrl" },
+            "Path" : "/#{path}",
+            "Port" : "#{port}",
+            "Protocol" : "#{protocol}",
+            "Query" : "#{query}",
+            "StatusCode" : { "Fn::Sub" : "HTTP_${ListenerRuleHttpCode}" }
+          },
+          "Type" : "redirect"
+        } ],
+        "Conditions" : [ {
+          "Field" : "host-header",
+          "Values" : [ { "Ref" : "ListenerRuleHost" } ]
+        }, {
+          "Field" : "path-pattern",
+          "Values" : [ { "Ref" : "ListenerRulePath" } ]
+        } ],
+        "ListenerArn" : { "Fn::ImportValue" : { "Fn::Sub" : "${ClusterStackName}-ListenerArnHttps" } },
+        "Priority" : { "Ref" : "ListenerRulePriority" }
+      }
+    }
+  }
+}
