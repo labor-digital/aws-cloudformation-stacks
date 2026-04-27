@@ -183,7 +183,7 @@ Da ACM die Zertifikate per DNS-Validierung ausstellt, **pausiert der CloudFormat
 Erstellt eine CloudFront-Distribution, die eingehenden Traffic für eine Domain an einen Application Load Balancer (ALB) weiterleitet. Der Stack umfasst:
 
 - **CloudFront Distribution** mit HTTP/2+3, IPv6, SNI-only TLS (mind. TLSv1.2) und konfigurierbarer Price Class.
-- **WAF WebACL** (Scope: `CLOUDFRONT`) mit AWS Managed Rules (Common Rule Set, Known Bad Inputs, IP Reputation List) sowie Rate Limiting (2.000 Anfragen/IP/5 min).
+- **WAF WebACL** (Scope: `CLOUDFRONT`, optional) mit AWS Managed Rules (Common Rule Set, Known Bad Inputs, IP Reputation List) sowie Rate Limiting (2.000 Anfragen/IP/5 min). Kann über den Parameter `EnableWAF` deaktiviert werden (z. B. für Staging-Umgebungen).
 - **AWS-managed Cache Policy** (`UseOriginCacheControlHeaders-QueryStrings`): Respektiert Cache-Control-Header des ALB, alle Query Strings im Cache-Key.
 - **AWS-managed Origin Request Policy** (`AllViewer`): Leitet alle Viewer-Header inkl. `Host`-Header, alle Cookies und Query Strings an den ALB weiter — erforderlich, da der ALB anhand des `Host`-Headers routet.
 - **AWS-managed Response Headers Policy** (`SecurityHeadersPolicy`): Setzt Security-Header (HSTS, X-Content-Type-Options, X-Frame-Options, Referrer-Policy, X-XSS-Protection).
@@ -201,6 +201,7 @@ Erstellt eine CloudFront-Distribution, die eingehenden Traffic für eine Domain 
 | `OriginVerifyHeader` | Name des Custom-Headers zur ALB-Absicherung (Standard: `X-Origin-Verify`). |
 | `OriginVerifyValue` | Geheimer Wert für den `OriginVerifyHeader`. ALB-Listener-Rules sollten nur Anfragen mit diesem Header/Wert durchlassen. |
 | `PriceClass` | CloudFront Price Class, bestimmt die genutzten Edge Locations. `PriceClass_100`: Nordamerika & Europa (günstigste Option, Standard). `PriceClass_200`: Nordamerika, Europa, Asien, Naher Osten & Afrika. `PriceClass_All`: Alle Edge Locations weltweit (höchste Abdeckung, höchste Kosten). |
+| `EnableWAF` | WAF WebACL aktivieren (`true`, Standard) oder deaktivieren (`false`). Bei Deaktivierung entfallen die WAF-Kosten (~$9/Monat Fixkosten), jedoch auch der Schutz vor SQLi, XSS, bekannten Bad Inputs, IP-Reputation-Filterung und Rate Limiting. AWS Shield Standard (DDoS-Basisschutz) bleibt immer aktiv. Empfohlen: `true` für Produktionsumgebungen. |
 
 #### Outputs
 
