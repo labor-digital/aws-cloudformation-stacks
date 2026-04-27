@@ -1,0 +1,40 @@
+{
+  "Parameters" : {
+    "CertificateCommonName" : {
+      "Description" : "The common name (domain) for the SSL certificate (e.g. www.example.com or example.com).",
+      "Type" : "String",
+      "MinLength" : 1
+    },
+    "AddWildcardSan" : {
+      "Description" : "Set to 'true' to also add *.CertificateCommonName as a Subject Alternative Name (SAN). Useful when CertificateCommonName is a root domain (e.g. example.com) and you want the certificate to also cover all subdomains (*.example.com). Set to 'false' for subdomain certificates like www.example.com where a wildcard SAN is not needed.",
+      "Type" : "String",
+      "AllowedValues" : ["true", "false"],
+      "Default" : "false"
+    }
+  },
+  "Conditions" : {
+    "ShouldAddWildcardSan" : { "Fn::Equals" : [ { "Ref" : "AddWildcardSan" }, "true" ] }
+  },
+  "Resources" : {
+    "Certificate" : {
+      "Type" : "AWS::CertificateManager::Certificate",
+      "Properties" : {
+        "DomainName" : { "Ref" : "CertificateCommonName" },
+        "SubjectAlternativeNames" : { "Fn::If" : [ "ShouldAddWildcardSan",
+          [ { "Fn::Sub" : "*.${CertificateCommonName}" } ],
+          { "Ref" : "AWS::NoValue" }
+        ] },
+        "ValidationMethod" : "DNS"
+      }
+    }
+  },
+  "Outputs" : {
+    "CertificateArn" : {
+      "Description" : "ARN of the newly created SSL certificate.",
+      "Value" : { "Ref" : "Certificate" },
+      "Export" : {
+        "Name" : { "Fn::Sub" : "${AWS::StackName}-CertificateArn" }
+      }
+    }
+  }
+}
