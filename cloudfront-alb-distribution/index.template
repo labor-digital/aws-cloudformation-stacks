@@ -29,6 +29,12 @@
       "Description": "A secret value for the OriginVerifyHeader. Configure your ALB listener rules to only allow requests with this header/value.",
       "NoEcho": true,
       "MinLength": 1
+    },
+    "PriceClass": {
+      "Type": "String",
+      "Description": "The CloudFront price class, which determines the edge locations used. PriceClass_100: North America and Europe only (lowest cost). PriceClass_200: North America, Europe, Asia, Middle East and Africa. PriceClass_All: all edge locations worldwide (highest coverage, highest cost).",
+      "Default": "PriceClass_100",
+      "AllowedValues": ["PriceClass_100", "PriceClass_200", "PriceClass_All"]
     }
   },
 
@@ -143,7 +149,7 @@
           "Enabled": true,
           "HttpVersion": "http2and3",
           "IPV6Enabled": true,
-          "PriceClass": "PriceClass_100",
+          "PriceClass": {"Ref": "PriceClass"},
           "WebACLId": {"Fn::GetAtt": ["WebACL", "Arn"]},
           "Aliases": [{"Ref": "DomainName"}],
           "ViewerCertificate": {
