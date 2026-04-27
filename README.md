@@ -13,6 +13,7 @@ Dieses Repository enthält die AWS CloudFormation Stack-Templates, die von LABOR
 | `ecsservice-template` | ECS-Service-Stack zur Bereitstellung einer containerisierten Anwendung auf einem bestehenden Cluster. |
 | `alb-redirect-rule` | Erstellt eine URL-Redirect-Regel auf dem Application Load Balancer eines bestehenden Clusters. |
 | `alb-additional-certificate` | Erstellt ein SSL-Zertifikat und weist es als zusätzliches Zertifikat dem HTTPS-Listener eines bestehenden ALB zu. |
+| `certificate` | Erstellt ein SSL-Zertifikat via AWS Certificate Manager (ACM) mit DNS-Validierung. |
 
 > **Hinweis:** Das Template in `ecscluster-ext-additional-cluster` ist veraltet und wird nicht mehr aktiv unterstützt oder dokumentiert.
 
@@ -142,6 +143,37 @@ Da ACM die Zertifikate per DNS-Validierung ausstellt, **pausiert der CloudFormat
 #### Hinweis: Stack-Löschung kann beim ersten Versuch fehlschlagen
 
 Beim Löschen dieses Stacks kann es vorkommen, dass der erste Löschversuch fehlschlägt, da CloudFormation das Zertifikat noch als „in Verwendung" betrachtet (es ist dem ALB-Listener zugewiesen). In diesem Fall einfach einige Minuten warten und den Stack anschließend erneut löschen.
+
+---
+
+### certificate
+
+Erstellt ein SSL-Zertifikat via AWS Certificate Manager (ACM) mit DNS-Validierung. Dieses Template ist nützlich, wenn ein Zertifikat unabhängig von einem Load Balancer erstellt werden soll, um es später manuell oder in anderen Stacks zu verwenden.
+
+- **ACM Certificate**: Erstellt ein neues SSL-Zertifikat für den angegebenen Common Name mit DNS-Validierung.
+
+#### Wichtige Parameter
+
+| Parameter | Beschreibung |
+|---|---|
+| `CertificateCommonName` | Der Common Name (Domain) für das SSL-Zertifikat (z. B. `www.example.com` oder `example.com`). |
+| `AddWildcardSan` | Auf `true` setzen, um `*.CertificateCommonName` als Subject Alternative Name (SAN) hinzuzufügen. Sinnvoll bei Root-Domains (z. B. `example.com`), damit das Zertifikat auch alle Subdomains (`*.example.com`) abdeckt. Standard: `false`. |
+
+#### Exports
+
+| Export | Beschreibung |
+|---|---|
+| `${AWS::StackName}-CertificateArn` | ARN des neu erstellten SSL-Zertifikats. |
+
+#### Hinweis: DNS-Validierung während der Stack-Erstellung
+
+Da ACM die Zertifikate per DNS-Validierung ausstellt, **pausiert der CloudFormation-Stack während der Erstellung**, bis das Zertifikat erfolgreich validiert wurde. Während der Stack den Status `CREATE_IN_PROGRESS` hat, müssen folgende Schritte manuell durchgeführt werden:
+
+1. In der AWS-Konsole zu **AWS Certificate Manager (ACM)** navigieren.
+2. Das neu erstellte Zertifikat (Status: *Ausstehende Validierung*) öffnen.
+3. Die angezeigten **CNAME-Einträge** für die DNS-Validierung kopieren.
+4. Diese CNAME-Einträge in der zuständigen **DNS-Zone** (z. B. Route 53 oder externer DNS-Anbieter) für die Domain `CertificateCommonName` (und ggf. `*.CertificateCommonName`) eintragen.
+5. Warten, bis ACM die Validierung bestätigt — danach setzt CloudFormation die Stack-Erstellung automatisch fort.
 
 ---
 
