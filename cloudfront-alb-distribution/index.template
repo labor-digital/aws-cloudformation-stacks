@@ -35,7 +35,17 @@
       "Description": "The CloudFront price class, which determines the edge locations used. PriceClass_100: North America and Europe only (lowest cost). PriceClass_200: North America, Europe, Asia, Middle East and Africa. PriceClass_All: all edge locations worldwide (highest coverage, highest cost).",
       "Default": "PriceClass_100",
       "AllowedValues": ["PriceClass_100", "PriceClass_200", "PriceClass_All"]
+    },
+    "EnableWAF": {
+      "Type": "String",
+      "Description": "Whether to create and attach a WAF WebACL to the CloudFront distribution. Recommended for production. If disabled, AWS Shield Standard (always active) still provides basic DDoS protection, but application-layer rules (SQLi, XSS, rate limiting, IP reputation) will not be applied.",
+      "Default": "true",
+      "AllowedValues": ["true", "false"]
     }
+  },
+
+  "Conditions": {
+    "WAFEnabled": {"Fn::Equals": [{"Ref": "EnableWAF"}, "true"]}
   },
 
   "Resources": {
@@ -43,6 +53,7 @@
 
     "WebACL": {
       "Type": "AWS::WAFv2::WebACL",
+      "Condition": "WAFEnabled",
       "Properties": {
         "Name": {
           "Fn::Join": ["-", [{"Ref": "AWS::StackName"}, "WebACL"]]
@@ -150,7 +161,7 @@
           "HttpVersion": "http2and3",
           "IPV6Enabled": true,
           "PriceClass": {"Ref": "PriceClass"},
-          "WebACLId": {"Fn::GetAtt": ["WebACL", "Arn"]},
+          "WebACLId": {"Fn::If": ["WAFEnabled", {"Fn::GetAtt": ["WebACL", "Arn"]}, {"Ref": "AWS::NoValue"}]},
           "Aliases": [{"Ref": "DomainName"}],
           "ViewerCertificate": {
             "AcmCertificateArn": {"Ref": "AcmCertificateArn"},
