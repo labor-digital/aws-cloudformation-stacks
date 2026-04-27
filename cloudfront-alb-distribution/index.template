@@ -1,0 +1,289 @@
+{
+  "AWSTemplateFormatVersion": "2010-09-09",
+  "Description": "CloudFront distribution that routes traffic for a domain to an Application Load Balancer. ENFORCE: The ALB must have a valid SSL certificate for the domain, and the ALB listener rules must match the Host header (DomainName parameter). It is recommended to use the OriginVerifyHeader to secure the ALB.",
+
+  "Parameters": {
+    "DomainName": {
+      "Type": "String",
+      "Description": "The fully qualified domain name (FQDN) to serve via this CloudFront distribution (e.g. www.example.com). Must match the SSL certificate.",
+      "MinLength": 1
+    },
+    "AcmCertificateArn": {
+      "Type": "String",
+      "Description": "ARN of the ACM SSL/TLS certificate for the domain. The certificate must be located in us-east-1 (required by CloudFront).",
+      "AllowedPattern": "arn:aws:acm:us-east-1:[0-9]{12}:certificate/[a-f0-9-]+",
+      "ConstraintDescription": "Must be a valid ACM certificate ARN in us-east-1."
+    },
+    "AlbDnsName": {
+      "Type": "String",
+      "Description": "The DNS name of the Application Load Balancer that serves as the origin (e.g. my-alb-123456789.eu-central-1.elb.amazonaws.com).",
+      "MinLength": 1
+    },
+    "OriginVerifyHeader": {
+      "Type": "String",
+      "Description": "The name of a custom header to forward to the ALB for verification (e.g. X-Origin-Verify). Use this to restrict ALB traffic to only CloudFront requests.",
+      "Default": "X-Origin-Verify"
+    },
+    "OriginVerifyValue": {
+      "Type": "String",
+      "Description": "A secret value for the OriginVerifyHeader. Configure your ALB listener rules to only allow requests with this header/value.",
+      "NoEcho": true,
+      "MinLength": 1
+    }
+  },
+
+  "Resources": {
+
+    "CachePolicy": {
+      "Type": "AWS::CloudFront::CachePolicy",
+      "Properties": {
+        "CachePolicyConfig": {
+          "Name": {
+            "Fn::Join": ["-", [{"Ref": "AWS::StackName"}, "CachePolicy"]]
+          },
+          "Comment": "Respects Cache-Control headers from the ALB and includes all query strings in the cache key.",
+          "DefaultTTL": 0,
+          "MinTTL": 0,
+          "MaxTTL": 31536000,
+          "ParametersInCacheKeyAndForwardedToOrigin": {
+            "EnableAcceptEncodingGzip": true,
+            "EnableAcceptEncodingBrotli": true,
+            "HeadersConfig": {
+              "HeaderBehavior": "none"
+            },
+            "CookiesConfig": {
+              "CookieBehavior": "none"
+            },
+            "QueryStringsConfig": {
+              "QueryStringBehavior": "all"
+            }
+          }
+        }
+      }
+    },
+
+    "OriginRequestPolicy": {
+      "Type": "AWS::CloudFront::OriginRequestPolicy",
+      "Properties": {
+        "OriginRequestPolicyConfig": {
+          "Name": {
+            "Fn::Join": ["-", [{"Ref": "AWS::StackName"}, "OriginRequestPolicy"]]
+          },
+          "Comment": "Forwards all viewer headers (including Host), all query strings, and all cookies to the ALB origin.",
+          "HeadersConfig": {
+            "HeaderBehavior": "allViewer"
+          },
+          "CookiesConfig": {
+            "CookieBehavior": "all"
+          },
+          "QueryStringsConfig": {
+            "QueryStringBehavior": "all"
+          }
+        }
+      }
+    },
+
+    "WebACL": {
+      "Type": "AWS::WAFv2::WebACL",
+      "Properties": {
+        "Name": {
+          "Fn::Join": ["-", [{"Ref": "AWS::StackName"}, "WebACL"]]
+        },
+        "Scope": "CLOUDFRONT",
+        "DefaultAction": {
+          "Allow": {}
+        },
+        "Description": {
+          "Fn::Join": ["", ["WAF WebACL for ", {"Ref": "DomainName"}]]
+        },
+        "VisibilityConfig": {
+          "SampledRequestsEnabled": true,
+          "CloudWatchMetricsEnabled": true,
+          "MetricName": {
+            "Fn::Join": ["-", [{"Ref": "AWS::StackName"}, "WebACL"]]
+          }
+        },
+        "Rules": [
+          {
+            "Name": "AWSCommonRules",
+            "Priority": 1,
+            "Statement": {
+              "ManagedRuleGroupStatement": {
+                "VendorName": "AWS",
+                "Name": "AWSManagedRulesCommonRuleSet"
+              }
+            },
+            "OverrideAction": {
+              "None": {}
+            },
+            "VisibilityConfig": {
+              "SampledRequestsEnabled": true,
+              "CloudWatchMetricsEnabled": true,
+              "MetricName": "AWSCommonRules"
+            }
+          },
+          {
+            "Name": "AWSKnownBadInputs",
+            "Priority": 2,
+            "Statement": {
+              "ManagedRuleGroupStatement": {
+                "VendorName": "AWS",
+                "Name": "AWSManagedRulesKnownBadInputsRuleSet"
+              }
+            },
+            "OverrideAction": {
+              "None": {}
+            },
+            "VisibilityConfig": {
+              "SampledRequestsEnabled": true,
+              "CloudWatchMetricsEnabled": true,
+              "MetricName": "AWSKnownBadInputs"
+            }
+          },
+          {
+            "Name": "AWSIPReputation",
+            "Priority": 3,
+            "Statement": {
+              "ManagedRuleGroupStatement": {
+                "VendorName": "AWS",
+                "Name": "AWSManagedRulesAmazonIpReputationList"
+              }
+            },
+            "OverrideAction": {
+              "None": {}
+            },
+            "VisibilityConfig": {
+              "SampledRequestsEnabled": true,
+              "CloudWatchMetricsEnabled": true,
+              "MetricName": "AWSIPReputation"
+            }
+          },
+          {
+            "Name": "RateLimitPerIP",
+            "Priority": 4,
+            "Statement": {
+              "RateBasedStatement": {
+                "Limit": 2000,
+                "AggregateKeyType": "IP"
+              }
+            },
+            "Action": {
+              "Block": {}
+            },
+            "VisibilityConfig": {
+              "SampledRequestsEnabled": true,
+              "CloudWatchMetricsEnabled": true,
+              "MetricName": "RateLimitPerIP"
+            }
+          }
+        ]
+      }
+    },
+
+    "ResponseHeadersPolicy": {
+      "Type": "AWS::CloudFront::ResponseHeadersPolicy",
+      "Properties": {
+        "ResponseHeadersPolicyConfig": {
+          "Name": {
+            "Fn::Join": ["-", [{"Ref": "AWS::StackName"}, "ResponseHeadersPolicy"]]
+          },
+          "Comment": "Security headers for the CloudFront distribution.",
+          "SecurityHeadersConfig": {
+            "StrictTransportSecurity": {
+              "AccessControlMaxAgeSec": 31536000,
+              "IncludeSubdomains": false,
+              "Override": true,
+              "Preload": false
+            },
+            "ContentTypeOptions": {
+              "Override": true
+            },
+            "FrameOptions": {
+              "FrameOption": "SAMEORIGIN",
+              "Override": true
+            },
+            "ReferrerPolicy": {
+              "ReferrerPolicy": "strict-origin-when-cross-origin",
+              "Override": true
+            },
+            "XSSProtection": {
+              "ModeBlock": true,
+              "Override": true,
+              "Protection": true
+            }
+          }
+        }
+      }
+    },
+
+    "Distribution": {
+      "Type": "AWS::CloudFront::Distribution",
+      "Properties": {
+        "DistributionConfig": {
+          "Comment": {
+            "Fn::Join": ["", ["CloudFront distribution for ", {"Ref": "DomainName"}]]
+          },
+          "Enabled": true,
+          "HttpVersion": "http2and3",
+          "IPV6Enabled": true,
+          "PriceClass": "PriceClass_100",
+          "WebACLId": {"Fn::GetAtt": ["WebACL", "Arn"]},
+          "Aliases": [{"Ref": "DomainName"}],
+          "ViewerCertificate": {
+            "AcmCertificateArn": {"Ref": "AcmCertificateArn"},
+            "SslSupportMethod": "sni-only",
+            "MinimumProtocolVersion": "TLSv1.2_2021"
+          },
+          "Origins": [
+            {
+              "Id": "AlbOrigin",
+              "DomainName": {"Ref": "AlbDnsName"},
+              "CustomOriginConfig": {
+                "HTTPSPort": 443,
+                "OriginProtocolPolicy": "https-only",
+                "OriginSSLProtocols": ["TLSv1.2"]
+              },
+              "OriginCustomHeaders": [
+                {
+                  "HeaderName": {"Ref": "OriginVerifyHeader"},
+                  "HeaderValue": {"Ref": "OriginVerifyValue"}
+                }
+              ]
+            }
+          ],
+          "DefaultCacheBehavior": {
+            "TargetOriginId": "AlbOrigin",
+            "ViewerProtocolPolicy": "redirect-to-https",
+            "AllowedMethods": ["DELETE", "GET", "HEAD", "OPTIONS", "PATCH", "POST", "PUT"],
+            "CachedMethods": ["GET", "HEAD"],
+            "Compress": true,
+            "CachePolicyId": {"Ref": "CachePolicy"},
+            "OriginRequestPolicyId": {"Ref": "OriginRequestPolicy"},
+            "ResponseHeadersPolicyId": {"Ref": "ResponseHeadersPolicy"}
+          }
+        },
+        "Tags": [
+          {
+            "Key": "Name",
+            "Value": {
+              "Fn::Join": ["-", [{"Ref": "AWS::StackName"}, "Distribution"]]
+            }
+          }
+        ]
+      },
+      "DependsOn": ["CachePolicy", "OriginRequestPolicy"]
+    }
+
+  },
+
+  "Outputs": {
+    "DistributionId": {
+      "Description": "The ID of the CloudFront distribution.",
+      "Value": {"Ref": "Distribution"}
+    },
+    "DistributionDomainName": {
+      "Description": "The CloudFront domain name of the distribution (e.g. d1234abcdef.cloudfront.net). Create a CNAME or ALIAS record pointing your domain to this value.",
+      "Value": {"Fn::GetAtt": ["Distribution", "DomainName"]}
+    }
+  }
+}
