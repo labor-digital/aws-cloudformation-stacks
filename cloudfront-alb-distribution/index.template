@@ -34,54 +34,6 @@
 
   "Resources": {
 
-    "CachePolicy": {
-      "Type": "AWS::CloudFront::CachePolicy",
-      "Properties": {
-        "CachePolicyConfig": {
-          "Name": {
-            "Fn::Join": ["-", [{"Ref": "AWS::StackName"}, "CachePolicy"]]
-          },
-          "Comment": "Respects Cache-Control headers from the ALB and includes all query strings in the cache key.",
-          "DefaultTTL": 0,
-          "MinTTL": 0,
-          "MaxTTL": 31536000,
-          "ParametersInCacheKeyAndForwardedToOrigin": {
-            "EnableAcceptEncodingGzip": true,
-            "EnableAcceptEncodingBrotli": true,
-            "HeadersConfig": {
-              "HeaderBehavior": "none"
-            },
-            "CookiesConfig": {
-              "CookieBehavior": "none"
-            },
-            "QueryStringsConfig": {
-              "QueryStringBehavior": "all"
-            }
-          }
-        }
-      }
-    },
-
-    "OriginRequestPolicy": {
-      "Type": "AWS::CloudFront::OriginRequestPolicy",
-      "Properties": {
-        "OriginRequestPolicyConfig": {
-          "Name": {
-            "Fn::Join": ["-", [{"Ref": "AWS::StackName"}, "OriginRequestPolicy"]]
-          },
-          "Comment": "Forwards all viewer headers (including Host), all query strings, and all cookies to the ALB origin.",
-          "HeadersConfig": {
-            "HeaderBehavior": "allViewer"
-          },
-          "CookiesConfig": {
-            "CookieBehavior": "all"
-          },
-          "QueryStringsConfig": {
-            "QueryStringBehavior": "all"
-          }
-        }
-      }
-    },
 
     "WebACL": {
       "Type": "AWS::WAFv2::WebACL",
@@ -180,41 +132,6 @@
       }
     },
 
-    "ResponseHeadersPolicy": {
-      "Type": "AWS::CloudFront::ResponseHeadersPolicy",
-      "Properties": {
-        "ResponseHeadersPolicyConfig": {
-          "Name": {
-            "Fn::Join": ["-", [{"Ref": "AWS::StackName"}, "ResponseHeadersPolicy"]]
-          },
-          "Comment": "Security headers for the CloudFront distribution.",
-          "SecurityHeadersConfig": {
-            "StrictTransportSecurity": {
-              "AccessControlMaxAgeSec": 31536000,
-              "IncludeSubdomains": false,
-              "Override": true,
-              "Preload": false
-            },
-            "ContentTypeOptions": {
-              "Override": true
-            },
-            "FrameOptions": {
-              "FrameOption": "SAMEORIGIN",
-              "Override": true
-            },
-            "ReferrerPolicy": {
-              "ReferrerPolicy": "strict-origin-when-cross-origin",
-              "Override": true
-            },
-            "XSSProtection": {
-              "ModeBlock": true,
-              "Override": true,
-              "Protection": true
-            }
-          }
-        }
-      }
-    },
 
     "Distribution": {
       "Type": "AWS::CloudFront::Distribution",
@@ -257,9 +174,9 @@
             "AllowedMethods": ["DELETE", "GET", "HEAD", "OPTIONS", "PATCH", "POST", "PUT"],
             "CachedMethods": ["GET", "HEAD"],
             "Compress": true,
-            "CachePolicyId": {"Ref": "CachePolicy"},
-            "OriginRequestPolicyId": {"Ref": "OriginRequestPolicy"},
-            "ResponseHeadersPolicyId": {"Ref": "ResponseHeadersPolicy"}
+            "CachePolicyId": "4cc15a8a-d715-48a4-82b8-cc0b614638fe",
+            "OriginRequestPolicyId": "216adef6-5c7f-47e4-b989-5492eafa07d3",
+            "ResponseHeadersPolicyId": "67f7725c-6f97-4210-82d7-5512b31e9d03"
           }
         },
         "Tags": [
@@ -270,8 +187,7 @@
             }
           }
         ]
-      },
-      "DependsOn": ["CachePolicy", "OriginRequestPolicy"]
+      }
     }
 
   },
