@@ -14,6 +14,7 @@ Dieses Repository enthält die AWS CloudFormation Stack-Templates, die von LABOR
 | `alb-redirect-rule` | Erstellt eine URL-Redirect-Regel auf dem Application Load Balancer eines bestehenden Clusters. |
 | `alb-additional-certificate` | Erstellt ein SSL-Zertifikat und weist es als zusätzliches Zertifikat dem HTTPS-Listener eines bestehenden ALB zu. |
 | `certificate` | Erstellt ein SSL-Zertifikat via AWS Certificate Manager (ACM) mit DNS-Validierung. |
+| `cloudfront-alb-distribution` | Erstellt eine CloudFront-Distribution, die Traffic für eine Domain an einen Application Load Balancer weiterleitet, inkl. WAF-Integration. |
 
 > **Hinweis:** Das Template in `ecscluster-ext-additional-cluster` ist veraltet und wird nicht mehr aktiv unterstützt oder dokumentiert.
 
@@ -174,6 +175,39 @@ Da ACM die Zertifikate per DNS-Validierung ausstellt, **pausiert der CloudFormat
 3. Die angezeigten **CNAME-Einträge** für die DNS-Validierung kopieren.
 4. Diese CNAME-Einträge in der zuständigen **DNS-Zone** (z. B. Route 53 oder externer DNS-Anbieter) für die Domain `CertificateCommonName` (und ggf. `*.CertificateCommonName`) eintragen.
 5. Warten, bis ACM die Validierung bestätigt — danach setzt CloudFormation die Stack-Erstellung automatisch fort.
+
+---
+
+### cloudfront-alb-distribution
+
+Erstellt eine CloudFront-Distribution, die eingehenden Traffic für eine Domain an einen Application Load Balancer (ALB) weiterleitet. Der Stack umfasst:
+
+- **CloudFront Distribution** mit HTTP/2+3, IPv6, SNI-only TLS (mind. TLSv1.2) und konfigurierbarer Price Class.
+- **WAF WebACL** (Scope: `CLOUDFRONT`) mit AWS Managed Rules (Common Rule Set, Known Bad Inputs, IP Reputation List) sowie Rate Limiting (2.000 Anfragen/IP/5 min).
+- **AWS-managed Cache Policy** (`UseOriginCacheControlHeaders-QueryStrings`): Respektiert Cache-Control-Header des ALB, alle Query Strings im Cache-Key.
+- **AWS-managed Origin Request Policy** (`AllViewer`): Leitet alle Viewer-Header inkl. `Host`-Header, alle Cookies und Query Strings an den ALB weiter — erforderlich, da der ALB anhand des `Host`-Headers routet.
+- **AWS-managed Response Headers Policy** (`SecurityHeadersPolicy`): Setzt Security-Header (HSTS, X-Content-Type-Options, X-Frame-Options, Referrer-Policy, X-XSS-Protection).
+- **Origin Verify Header**: Ein konfigurierbarer Custom-Header, der an den ALB weitergeleitet wird, um sicherzustellen, dass nur CloudFront-Anfragen den ALB erreichen.
+
+> **Hinweis:** Das ALB-Zertifikat muss den im Parameter `DomainName` angegebenen Domain-Namen abdecken (SAN oder Wildcard), da CloudFront den originalen `Host`-Header weiterleitet.
+
+#### Wichtige Parameter
+
+| Parameter | Beschreibung |
+|---|---|
+| `DomainName` | Der vollqualifizierte Domain-Name (FQDN), der über diese Distribution ausgeliefert wird (z. B. `www.example.com`). Muss mit dem ACM-Zertifikat übereinstimmen. |
+| `AcmCertificateArn` | ARN des ACM-Zertifikats für die Domain. **Muss in `us-east-1` liegen** (CloudFront-Anforderung). |
+| `AlbDnsName` | DNS-Name des Application Load Balancers als Origin (z. B. `my-alb-123456789.eu-central-1.elb.amazonaws.com`). |
+| `OriginVerifyHeader` | Name des Custom-Headers zur ALB-Absicherung (Standard: `X-Origin-Verify`). |
+| `OriginVerifyValue` | Geheimer Wert für den `OriginVerifyHeader`. ALB-Listener-Rules sollten nur Anfragen mit diesem Header/Wert durchlassen. |
+| `PriceClass` | CloudFront Price Class, bestimmt die genutzten Edge Locations. `PriceClass_100`: Nordamerika & Europa (günstigste Option, Standard). `PriceClass_200`: Nordamerika, Europa, Asien, Naher Osten & Afrika. `PriceClass_All`: Alle Edge Locations weltweit (höchste Abdeckung, höchste Kosten). |
+
+#### Outputs
+
+| Output | Beschreibung |
+|---|---|
+| `DistributionId` | ID der erstellten CloudFront-Distribution. |
+| `DistributionDomainName` | CloudFront-Domain-Name der Distribution (z. B. `d1234abcdef.cloudfront.net`). Einen CNAME- oder ALIAS-Eintrag für die eigene Domain auf diesen Wert setzen. |
 
 ---
 
