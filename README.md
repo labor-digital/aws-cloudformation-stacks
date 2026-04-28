@@ -15,6 +15,7 @@ Dieses Repository enthält die AWS CloudFormation Stack-Templates, die von LABOR
 | `alb-additional-certificate` | Erstellt ein SSL-Zertifikat und weist es als zusätzliches Zertifikat dem HTTPS-Listener eines bestehenden ALB zu. |
 | `certificate` | Erstellt ein SSL-Zertifikat via AWS Certificate Manager (ACM) mit DNS-Validierung. |
 | `cloudfront-alb-distribution` | Erstellt eine CloudFront-Distribution, die Traffic für eine Domain an einen Application Load Balancer weiterleitet, inkl. WAF-Integration. |
+| `global-accelerator-alb` | Erstellt einen AWS Global Accelerator mit einem ALB als Endpoint. Stellt zwei statische Anycast-IPv4-Adressen bereit, die direkt als A-Records in externen DNS-Providern eingetragen werden können. |
 
 > **Hinweis:** Das Template in `ecscluster-ext-additional-cluster` ist veraltet und wird nicht mehr aktiv unterstützt oder dokumentiert.
 
@@ -48,6 +49,17 @@ Erstellt eine vollständige, eigenständige Infrastruktur für den Betrieb von E
 | `AscalegroupDesSize` | Gewünschte Anzahl der EC2-Instanzen beim Deployment (Standard: `0`). |
 | `AscalegroupMaxSize` | Maximale Anzahl der EC2-Instanzen im Cluster (Standard: `3`). |
 | `BackupCopyDestinationRegion` | Zielregion für Backup-Kopien (Standard: `eu-north-1`, leer lassen zum Deaktivieren). |
+
+#### Exports
+
+| Export | Beschreibung |
+|---|---|
+| `${AWS::StackName}-Ecscluster` | Name des ECS-Clusters. |
+| `${AWS::StackName}-ListenerArnHttps` | ARN des HTTPS-Listeners des ALB. |
+| `${AWS::StackName}-ListenerArnHttp` | ARN des HTTP-Listeners des ALB. |
+| `${AWS::StackName}-Vpc` | ID der VPC. |
+| `${AWS::StackName}-Efs` | ID des EFS-Dateisystems. |
+| `${AWS::StackName}-LoadbalancerArn` | ARN des Application Load Balancers. |
 
 ---
 
@@ -86,7 +98,16 @@ Dient zur Bereitstellung eines einzelnen ECS-Services auf einem Cluster, der mit
 | `InitialDockerImage` | Docker-Image für das initiale Deployment. |
 | `TaskMemory` | Soft Limit für den Arbeitsspeicher pro Task (Empfehlung für `t3.small`: `485`, `970` oder `1940`). |
 | `ProjectNameShort` | Projekt-Kurzname (Format: `xxx_xxx_xxx`) für die Doppler-Zuordnung. |
+| `ServiceDesiredCount` | Gewünschte Anzahl der Task-Instanzen (entspricht auch dem Minimum für Autoscaling). |
+| `ServiceMaxCapacity` | Maximale Anzahl der Task-Instanzen für Autoscaling. |
+| `ECSHealthCheckGracePeriod` | Wartezeit in Sekunden, bevor ECS den Health-Check startet (Standard: `0`). |
+| `ServiceTrafficPort` | Port, auf dem der Container Traffic entgegennimmt (Standard: `443`). |
+| `ServiceTrafficProtocol` | Protokoll des Containers (`HTTP` oder `HTTPS`, Standard: `HTTPS`). |
+| `ECSHealthCheckPath` | Pfad für den Health-Check (Standard: `/test.php`). |
+| `VolumeMountPath` | Pfad im Container, an dem das EFS-Volume gemountet wird (Standard: `/var/www/html_data`). |
+| `ProjectEnv` | Umgebung des Projekts für Doppler-Konfiguration (Standard: `prd`). |
 | `ProjectToken` | Doppler Service-Token (Read-only) für die Secret-Injektion. |
+| `ContainerCommand` | Startbefehl für den Container als kommaseparierte Liste (z. B. `python,app.py`). Leer lassen für den Image-Standard. |
 
 ---
 
@@ -209,6 +230,37 @@ Erstellt eine CloudFront-Distribution, die eingehenden Traffic für eine Domain 
 |---|---|
 | `DistributionId` | ID der erstellten CloudFront-Distribution. |
 | `DistributionDomainName` | CloudFront-Domain-Name der Distribution (z. B. `d1234abcdef.cloudfront.net`). Einen CNAME- oder ALIAS-Eintrag für die eigene Domain auf diesen Wert setzen. |
+
+---
+
+### global-accelerator-alb
+
+Erstellt einen AWS Global Accelerator mit einem Application Load Balancer (ALB) als Endpoint. Der Stack umfasst:
+
+- **Global Accelerator** mit zwei statischen Anycast-IPv4-Adressen, die direkt als **A-Records** in beliebigen externen DNS-Providern eingetragen werden können — ohne CNAME-Abhängigkeit.
+- **Listener** für TCP auf Port 80 und 443 mit konfigurierbarer Client-Affinität.
+- **Endpoint Group** in der Stack-Region mit dem ALB als Endpoint und aktivierter Client-IP-Weiterleitung.
+
+> **Hinweis:** Global Accelerator ist ein globaler Service und wird immer in `us-west-2` (Oregon) verwaltet, unabhängig von der Stack-Region. Die Endpoint Group wird jedoch in der gewählten Stack-Region erstellt.
+
+#### Wichtige Parameter
+
+| Parameter | Beschreibung |
+|---|---|
+| `ClusterStackName` | Name des CloudFormation-Stacks des Clusters (`ecscluster-vpc-rds-asg`), dessen ALB als Endpoint registriert wird. |
+| `EndpointWeight` | Gewichtung des ALB-Endpoints (0–255). Relevant bei mehreren Endpoints in einer Gruppe. Standard: `128`. |
+| `ClientAffinityEnabled` | Client-Affinität (Sticky Sessions) basierend auf der Quell-IP. `SOURCE_IP`: gleiche Client-IP wird konsistent an denselben Endpoint geleitet. `NONE`: keine Affinität (Standard). |
+
+> **Hinweis:** Der Stack kann in derselben Region wie der ALB deployt werden — ein Deployment in `us-east-1` ist, anders als bei CloudFront, nicht erforderlich.
+
+#### Outputs
+
+| Output | Beschreibung |
+|---|---|
+| `AcceleratorArn` | ARN des erstellten Global Accelerators. |
+| `AcceleratorDnsName` | DNS-Name des Global Accelerators (z. B. `xxxxxxxxxxxxxxxx.awsglobalaccelerator.com`). |
+| `StaticIp1` | Erste statische Anycast-IPv4-Adresse — direkt als A-Record eintragen. |
+| `StaticIp2` | Zweite statische Anycast-IPv4-Adresse — direkt als A-Record eintragen. |
 
 ---
 
