@@ -2122,6 +2122,16 @@
           "Fn::Sub": "${AWS::StackName}-Efs"
         }
       }
+    },
+    "LoadbalancerArn": {
+      "Value": {
+        "Ref": "Loadbalancer"
+      },
+      "Export": {
+        "Name": {
+          "Fn::Sub": "${AWS::StackName}-LoadbalancerArn"
+        }
+      }
     }
   },
   "Conditions": {

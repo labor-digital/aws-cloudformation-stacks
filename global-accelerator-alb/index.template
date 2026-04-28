@@ -1,0 +1,97 @@
+{
+  "AWSTemplateFormatVersion": "2010-09-09",
+  "Description": "Creates an AWS Global Accelerator with an Application Load Balancer as endpoint. Provides two static Anycast IPv4 addresses that can be used as A-Records in any external DNS provider.",
+
+  "Parameters": {
+    "ClusterStackName": {
+      "Type": "String",
+      "Description": "The name of the CloudFormation stack of the cluster (ecscluster-vpc-rds-asg) whose ALB is registered as the Global Accelerator endpoint.",
+      "MinLength": 1
+    },
+    "EndpointWeight": {
+      "Type": "Number",
+      "Description": "The weight for the ALB endpoint (0–255). Controls the proportion of traffic routed to this endpoint relative to others in the group.",
+      "Default": 128,
+      "MinValue": 0,
+      "MaxValue": 255
+    },
+    "ClientAffinityEnabled": {
+      "Type": "String",
+      "Description": "Whether to enable client affinity (sticky sessions) based on source IP. SOURCE_IP routes the same client IP consistently to the same endpoint. NONE disables affinity.",
+      "Default": "NONE",
+      "AllowedValues": ["NONE", "SOURCE_IP"]
+    }
+  },
+
+  "Resources": {
+
+    "Accelerator": {
+      "Type": "AWS::GlobalAccelerator::Accelerator",
+      "Properties": {
+        "Name": {"Ref": "AWS::StackName"},
+        "Enabled": true,
+        "Tags": [
+          {
+            "Key": "Name",
+            "Value": {"Fn::Join": ["-", [{"Ref": "AWS::StackName"}, "Accelerator"]]}
+          }
+        ]
+      }
+    },
+
+    "Listener": {
+      "Type": "AWS::GlobalAccelerator::Listener",
+      "Properties": {
+        "AcceleratorArn": {"Ref": "Accelerator"},
+        "Protocol": "TCP",
+        "ClientAffinity": {"Ref": "ClientAffinityEnabled"},
+        "PortRanges": [
+          {
+            "FromPort": 80,
+            "ToPort": 80
+          },
+          {
+            "FromPort": 443,
+            "ToPort": 443
+          }
+        ]
+      }
+    },
+
+    "EndpointGroup": {
+      "Type": "AWS::GlobalAccelerator::EndpointGroup",
+      "Properties": {
+        "ListenerArn": {"Ref": "Listener"},
+        "EndpointGroupRegion": {"Ref": "AWS::Region"},
+        "TrafficDialPercentage": 100,
+        "EndpointConfigurations": [
+          {
+            "EndpointId": {"Fn::ImportValue": {"Fn::Sub": "${ClusterStackName}-LoadbalancerArn"}},
+            "Weight": {"Ref": "EndpointWeight"},
+            "ClientIPPreservationEnabled": true
+          }
+        ]
+      }
+    }
+
+  },
+
+  "Outputs": {
+    "AcceleratorArn": {
+      "Description": "The ARN of the Global Accelerator.",
+      "Value": {"Ref": "Accelerator"}
+    },
+    "AcceleratorDnsName": {
+      "Description": "The DNS name of the Global Accelerator (e.g. xxxxxxxxxxxxxxxx.awsglobalaccelerator.com).",
+      "Value": {"Fn::GetAtt": ["Accelerator", "DnsName"]}
+    },
+    "StaticIp1": {
+      "Description": "First static Anycast IPv4 address. Use this as an A-Record in your DNS provider.",
+      "Value": {"Fn::Select": [0, {"Fn::GetAtt": ["Accelerator", "Ipv4Addresses"]}]}
+    },
+    "StaticIp2": {
+      "Description": "Second static Anycast IPv4 address. Use this as an A-Record in your DNS provider.",
+      "Value": {"Fn::Select": [1, {"Fn::GetAtt": ["Accelerator", "Ipv4Addresses"]}]}
+    }
+  }
+}
