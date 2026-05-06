@@ -21,17 +21,25 @@
       "Type" : "Number",
       "MinValue" : 1
     },
-    "ListenerRuleUrl" : {
+    "ListenerRuleRedirectUrl" : {
       "Description" : "The target hostname to redirect to (e.g. www.example.com). Path and query string are kept from the original request.",
       "Type" : "String",
       "MinLength" : 1
     },
-    "ListenerRuleHttpCode" : {
+    "ListenerRuleRedirectHttpCode" : {
       "Description" : "The HTTP redirect status code.",
       "Type" : "String",
       "AllowedValues" : ["301", "302"],
       "Default" : "301"
+    },
+    "ListenerRuleRedirectPath" : {
+      "Description" : "Optional. If set, the redirect rule will redirect to this fixed path, without query string and without hash. Leave empty to keep the original path and query.",
+      "Type" : "String",
+      "Default" : ""
     }
+  },
+  "Conditions" : {
+    "HasRedirectPath" : { "Fn::Not" : [ { "Fn::Equals" : [ { "Ref" : "ListenerRuleRedirectPath" }, "" ] } ] }
   },
   "Resources" : {
     "LoadbalancerRuleHttp" : {
@@ -39,12 +47,12 @@
       "Properties" : {
         "Actions" : [ {
           "RedirectConfig" : {
-            "Host" : { "Ref" : "ListenerRuleUrl" },
-            "Path" : "/#{path}",
+            "Host" : { "Ref" : "ListenerRuleRedirectUrl" },
+            "Path" : { "Fn::If" : [ "HasRedirectPath", { "Ref" : "ListenerRuleRedirectPath" }, "/#{path}" ] },
             "Port" : "#{port}",
             "Protocol" : "#{protocol}",
-            "Query" : "#{query}",
-            "StatusCode" : { "Fn::Sub" : "HTTP_${ListenerRuleHttpCode}" }
+            "Query" : { "Fn::If" : [ "HasRedirectPath", "", "#{query}" ] },
+            "StatusCode" : { "Fn::Sub" : "HTTP_${ListenerRuleRedirectHttpCode}" }
           },
           "Type" : "redirect"
         } ],
@@ -64,12 +72,12 @@
       "Properties" : {
         "Actions" : [ {
           "RedirectConfig" : {
-            "Host" : { "Ref" : "ListenerRuleUrl" },
-            "Path" : "/#{path}",
+            "Host" : { "Ref" : "ListenerRuleRedirectUrl" },
+            "Path" : { "Fn::If" : [ "HasRedirectPath", { "Ref" : "ListenerRuleRedirectPath" }, "/#{path}" ] },
             "Port" : "#{port}",
             "Protocol" : "#{protocol}",
-            "Query" : "#{query}",
-            "StatusCode" : { "Fn::Sub" : "HTTP_${ListenerRuleHttpCode}" }
+            "Query" : { "Fn::If" : [ "HasRedirectPath", "", "#{query}" ] },
+            "StatusCode" : { "Fn::Sub" : "HTTP_${ListenerRuleRedirectHttpCode}" }
           },
           "Type" : "redirect"
         } ],
