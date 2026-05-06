@@ -21,7 +21,7 @@
       "Type" : "Number",
       "MinValue" : 1
     },
-    "ListenerRuleRedirectUrl" : {
+    "ListenerRuleRedirectHost" : {
       "Description" : "The target hostname to redirect to (e.g. www.example.com). Path and query string are kept from the original request.",
       "Type" : "String",
       "MinLength" : 1
@@ -47,7 +47,7 @@
       "Properties" : {
         "Actions" : [ {
           "RedirectConfig" : {
-            "Host" : { "Ref" : "ListenerRuleRedirectUrl" },
+            "Host" : { "Ref" : "ListenerRuleRedirectHost" },
             "Path" : { "Fn::If" : [ "HasRedirectPath", { "Ref" : "ListenerRuleRedirectPath" }, "/#{path}" ] },
             "Port" : "#{port}",
             "Protocol" : "#{protocol}",
@@ -72,7 +72,7 @@
       "Properties" : {
         "Actions" : [ {
           "RedirectConfig" : {
-            "Host" : { "Ref" : "ListenerRuleRedirectUrl" },
+            "Host" : { "Ref" : "ListenerRuleRedirectHost" },
             "Path" : { "Fn::If" : [ "HasRedirectPath", { "Ref" : "ListenerRuleRedirectPath" }, "/#{path}" ] },
             "Port" : "#{port}",
             "Protocol" : "#{protocol}",
