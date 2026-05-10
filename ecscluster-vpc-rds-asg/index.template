@@ -33,7 +33,7 @@
       "Description": "The max count of EC2-Instances (for Autoscaling).",
       "Default": "3",
       "MinValue": "1",
-      "MaxValue": "10"
+      "MaxValue": "20"
     },
     "AscalegroupDesSize": {
       "Type": "Number",
