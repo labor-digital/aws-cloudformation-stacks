@@ -6,16 +6,16 @@ Dieses Repository enthält die AWS CloudFormation Stack-Templates, die von LABOR
 
 ## Übersicht
 
-| Template | Beschreibung |
-|---|---|
-| `ecscluster-vpc-rds-asg` | Vollständiger ECS-Cluster-Stack mit VPC, RDS, Auto Scaling Group und Load Balancer. |
+| Template                       | Beschreibung |
+|--------------------------------|---|
+| `ecscluster-vpc-rds-asg`       | Vollständiger ECS-Cluster-Stack mit VPC, RDS, Auto Scaling Group und Load Balancer. |
 | `ecscluster-vpc-rds-asg/backup` | Erstellt zusätzliche Backup-Vaults für regionsübergreifende Backups. |
-| `ecsservice-template` | ECS-Service-Stack zur Bereitstellung einer containerisierten Anwendung auf einem bestehenden Cluster. |
-| `alb-redirect-rule` | Erstellt eine URL-Redirect-Regel auf dem Application Load Balancer eines bestehenden Clusters. |
-| `alb-additional-certificate` | Erstellt ein SSL-Zertifikat und weist es als zusätzliches Zertifikat dem HTTPS-Listener eines bestehenden ALB zu. |
-| `certificate` | Erstellt ein SSL-Zertifikat via AWS Certificate Manager (ACM) mit DNS-Validierung. |
-| `cloudfront-alb-distribution` | Erstellt eine CloudFront-Distribution, die Traffic für eine Domain an einen Application Load Balancer weiterleitet, inkl. WAF-Integration. |
-| `global-accelerator-alb` | Erstellt einen AWS Global Accelerator mit einem ALB als Endpoint. Stellt zwei statische Anycast-IPv4-Adressen bereit, die direkt als A-Records in externen DNS-Providern eingetragen werden können. |
+| `ecsservice`                   | ECS-Service-Stack zur Bereitstellung einer containerisierten Anwendung auf einem bestehenden Cluster. |
+| `alb-redirect-rule`            | Erstellt eine URL-Redirect-Regel auf dem Application Load Balancer eines bestehenden Clusters. |
+| `alb-additional-certificate`   | Erstellt ein SSL-Zertifikat und weist es als zusätzliches Zertifikat dem HTTPS-Listener eines bestehenden ALB zu. |
+| `certificate`                  | Erstellt ein SSL-Zertifikat via AWS Certificate Manager (ACM) mit DNS-Validierung. |
+| `cloudfront-alb-distribution`  | Erstellt eine CloudFront-Distribution, die Traffic für eine Domain an einen Application Load Balancer weiterleitet, inkl. WAF-Integration. |
+| `global-accelerator-alb`       | Erstellt einen AWS Global Accelerator mit einem ALB als Endpoint. Stellt zwei statische Anycast-IPv4-Adressen bereit, die direkt als A-Records in externen DNS-Providern eingetragen werden können. |
 
 > **Hinweis:** Das Template in `ecscluster-ext-additional-cluster` ist veraltet und wird nicht mehr aktiv unterstützt oder dokumentiert.
 
@@ -78,7 +78,7 @@ Erstellt zusätzliche Backup-Vaults, die für die Spiegelung von Backups in eine
 
 ---
 
-### ecsservice-template
+### ecsservice
 
 Dient zur Bereitstellung eines einzelnen ECS-Services auf einem Cluster, der mit `ecscluster-vpc-rds-asg` erstellt wurde. Der Stack umfasst:
 
