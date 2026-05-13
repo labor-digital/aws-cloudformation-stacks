@@ -11,6 +11,7 @@ Dieses Repository enthält die AWS CloudFormation Stack-Templates, die von LABOR
 | `ecscluster-vpc-rds-asg`       | Vollständiger ECS-Cluster-Stack mit VPC, RDS, Auto Scaling Group und Load Balancer. |
 | `ecscluster-vpc-rds-asg/backup` | Erstellt zusätzliche Backup-Vaults für regionsübergreifende Backups. |
 | `ecsservice`                   | ECS-Service-Stack zur Bereitstellung einer containerisierten Anwendung auf einem bestehenden Cluster. |
+| `alb-ecsservice-rule`          | Verbindet einen Hostnamen und Pfad mit der Targetgroup eines bestehenden ECS-Services. |
 | `alb-redirect-rule`            | Erstellt eine URL-Redirect-Regel auf dem Application Load Balancer eines bestehenden Clusters. |
 | `alb-additional-certificate`   | Erstellt ein SSL-Zertifikat und weist es als zusätzliches Zertifikat dem HTTPS-Listener eines bestehenden ALB zu. |
 | `certificate`                  | Erstellt ein SSL-Zertifikat via AWS Certificate Manager (ACM) mit DNS-Validierung. |
@@ -108,6 +109,32 @@ Dient zur Bereitstellung eines einzelnen ECS-Services auf einem Cluster, der mit
 | `ProjectEnv` | Umgebung des Projekts für Doppler-Konfiguration (Standard: `prd`). |
 | `ProjectToken` | Doppler Service-Token (Read-only) für die Secret-Injektion. |
 | `ContainerCommand` | Startbefehl für den Container als kommaseparierte Liste (z. B. `python,app.py`). Leer lassen für den Image-Standard. |
+| `ListenerRulePriority` | Priorität der Listener-Regel (muss eindeutig pro Listener sein). |
+
+#### Exports
+
+| Export | Beschreibung |
+|---|---|
+| `${AWS::StackName}-TargetGroupArn` | ARN der TargetGroup. |
+
+---
+
+### alb-ecsservice-rule
+
+Verbindet einen Hostnamen und Pfad mit der Targetgroup eines bestehenden ECS-Services. Dieser Stack umfasst:
+
+- **ALB Listener Rule (HTTP)**: Leitet eingehende HTTP-Anfragen basierend auf Hostname und Pfad zur Targetgroup des ECS-Services weiter.
+- **ALB Listener Rule (HTTPS)**: Leitet eingehende HTTPS-Anfragen basierend auf Hostname und Pfad zur Targetgroup des ECS-Services weiter.
+
+#### Wichtige Parameter
+
+| Parameter | Beschreibung |
+|---|---|
+| `ClusterStackName` | Name des bestehenden CloudFormation-Stacks des Clusters, dessen ALB-Listener verwendet werden. |
+| `EcsServiceStackName` | Name des bestehenden CloudFormation-Stacks des ECS-Services, dessen TargetGroup verwendet wird. |
+| `ListenerRuleHost` | Hostname, auf den die Listener-Regel reagiert (z. B. `www.example.com`). |
+| `ListenerRulePath` | Pfadmuster für die Listener-Regel (Standard: `*`). |
+| `ListenerRulePriority` | Priorität der Listener-Regel (muss eindeutig pro Listener sein). |
 
 ---
 
@@ -115,7 +142,7 @@ Dient zur Bereitstellung eines einzelnen ECS-Services auf einem Cluster, der mit
 
 Erstellt eine URL-Redirect-Regel auf dem Application Load Balancer (ALB) eines bestehenden Clusters. Der Stack umfasst:
 
-- **ALB Listener Rule (HTTP)**: Leitet eingehende HTTP-Anfragen basierend auf Hostname und Pfad zur Ziel-URL weiter, unter Beibehaltung von Pfad und Query-String.
+- **ALB Listener Rule (HTTP)**: Leitet eingehende HTTP-Anfragen basierend auf Hostname und Pfad automatisch zu HTTPS (Port 443) weiter.
 - **ALB Listener Rule (HTTPS)**: Leitet eingehende HTTPS-Anfragen basierend auf Hostname und Pfad zur Ziel-URL weiter, unter Beibehaltung von Pfad und Query-String.
 
 #### Wichtige Parameter
@@ -205,7 +232,7 @@ Erstellt eine CloudFront-Distribution, die eingehenden Traffic für eine Domain 
 
 - **CloudFront Distribution** mit HTTP/2+3, IPv6, SNI-only TLS (mind. TLSv1.2) und konfigurierbarer Price Class.
 - **WAF WebACL** (Scope: `CLOUDFRONT`, optional) mit AWS Managed Rules (Common Rule Set, Known Bad Inputs, IP Reputation List) sowie Rate Limiting (2.000 Anfragen/IP/5 min). Kann über den Parameter `EnableWAF` deaktiviert werden (z. B. für Staging-Umgebungen).
-- **AWS-managed Cache Policy** (`UseOriginCacheControlHeaders-QueryStrings`): Respektiert Cache-Control-Header des ALB, alle Query Strings im Cache-Key.
+- **Custom Cache Policy**: Respektiert Cache-Control-Header des ALB, alle Query Strings im Cache-Key, schließt jedoch alle Cookies vom Cache-Key aus. Leitet zudem spezifische Header (`Host`, `Origin`, `X-Method-Override`, `X-HTTP-Method`, `X-HTTP-Method-Override`) an den Origin weiter und bezieht diese in den Cache-Key ein.
 - **AWS-managed Origin Request Policy** (`AllViewer`): Leitet alle Viewer-Header inkl. `Host`-Header, alle Cookies und Query Strings an den ALB weiter — erforderlich, da der ALB anhand des `Host`-Headers routet.
 - **AWS-managed Response Headers Policy** (`SecurityHeadersPolicy`): Setzt Security-Header (HSTS, X-Content-Type-Options, X-Frame-Options, Referrer-Policy, X-XSS-Protection).
 - **Origin Verify Header**: Ein konfigurierbarer Custom-Header, der an den ALB weitergeleitet wird, um sicherzustellen, dass nur CloudFront-Anfragen den ALB erreichen.

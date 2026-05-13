@@ -148,8 +148,38 @@
         ]
       }
     },
-
-
+    "CachePolicy": {
+      "Type": "AWS::CloudFront::CachePolicy",
+      "Properties": {
+        "CachePolicyConfig": {
+          "Name": { "Fn::Sub": "${AWS::StackName}-CachePolicy" },
+          "Comment": "Custom cache policy to include query strings but exclude cookies and respect origin cache headers.",
+          "DefaultTTL": 0,
+          "MaxTTL": 31536000,
+          "MinTTL": 0,
+          "ParametersInCacheKeyAndForwardedToOrigin": {
+            "CookiesConfig": {
+              "CookieBehavior": "none"
+            },
+            "EnableAcceptEncodingGzip": true,
+            "EnableAcceptEncodingBrotli": true,
+            "HeadersConfig": {
+              "HeaderBehavior": "whitelist",
+              "Headers": [
+                "x-method-override",
+                "origin",
+                "host",
+                "x-http-method",
+                "x-http-method-override"
+              ]
+            },
+            "QueryStringsConfig": {
+              "QueryStringBehavior": "all"
+            }
+          }
+        }
+      }
+    },
     "Distribution": {
       "Type": "AWS::CloudFront::Distribution",
       "Properties": {
@@ -191,7 +221,7 @@
             "AllowedMethods": ["DELETE", "GET", "HEAD", "OPTIONS", "PATCH", "POST", "PUT"],
             "CachedMethods": ["GET", "HEAD"],
             "Compress": true,
-            "CachePolicyId": "4cc15a8a-d715-48a4-82b8-cc0b614638fe",
+            "CachePolicyId": { "Ref": "CachePolicy" },
             "OriginRequestPolicyId": "216adef6-5c7f-47e4-b989-5492eafa07d3",
             "ResponseHeadersPolicyId": "67f7725c-6f97-4210-82d7-5512b31e9d03"
           }
