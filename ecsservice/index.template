@@ -29,9 +29,8 @@
     "TaskMemory" : {
       "Type" : "Number",
       "Description" : "The Memory soft limit for one Task-Instance. If your cluster is running on t3.small ec2 instances you should consider the values 485, 970 and 1940 [485-1940]",
-      "Default" : 485,
-      "MinValue" : 485,
-      "MaxValue" : 1940
+      "Default" : 478,
+      "AllowedValues" : [478, 956, 1434, 1913]
     },
     "ServiceDesiredCount" : {
       "Type" : "Number",
