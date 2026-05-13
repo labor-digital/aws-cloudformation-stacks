@@ -33,14 +33,14 @@
       "Description": "The max count of EC2-Instances (for Autoscaling).",
       "Default": "3",
       "MinValue": "1",
-      "MaxValue": "20"
+      "MaxValue": "30"
     },
     "AscalegroupDesSize": {
       "Type": "Number",
       "Description": "The desired count of EC2-Instances (for Autoscaling). Set to 0 initially — ECS Managed Scaling will scale up automatically when tasks are deployed.",
       "Default": "0",
       "MinValue": "0",
-      "MaxValue": "10"
+      "MaxValue": "15"
     },
     "EC2InstanceType": {
       "Description": "Instance type which you want to use for the EC2 machines in the cluster.",
@@ -1606,7 +1606,7 @@
           },
           "ManagedScaling": {
             "Status": "ENABLED",
-            "TargetCapacity": 80,
+            "TargetCapacity": 100,
             "MinimumScalingStepSize": 1,
             "MaximumScalingStepSize": 2
           },
