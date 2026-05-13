@@ -564,5 +564,12 @@
       },
       "DependsOn" : [ "AutoscaleScaleDown", "Service" ]
     }
+  },
+  "Outputs" : {
+    "TargetGroupArn" : {
+      "Description" : "The Arn of the TargetGroup",
+      "Value" : { "Ref" : "Target" },
+      "Export" : { "Name" : { "Fn::Sub" : "${AWS::StackName}-TargetGroupArn" } }
+    }
   }
 }

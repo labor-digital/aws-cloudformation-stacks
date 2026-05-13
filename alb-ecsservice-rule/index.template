@@ -1,0 +1,75 @@
+{
+  "Parameters" : {
+    "ClusterStackName" : {
+      "Description" : "Name of the cloudformation stack of the cluster, where the ALB listeners are defined.",
+      "Type" : "String",
+      "MinLength" : 1
+    },
+    "EcsServiceStackName" : {
+      "Description" : "Name of the cloudformation stack of the ecsservice, where the TargetGroup is defined.",
+      "Type" : "String",
+      "MinLength" : 1
+    },
+    "ListenerRuleHost" : {
+      "Description" : "Hostname for the ListenerRule.",
+      "Type" : "String",
+      "MinLength" : 1
+    },
+    "ListenerRulePath" : {
+      "Description" : "PathPattern for the ListenerRule. Normally you should use * here.",
+      "Type" : "String",
+      "Default" : "*",
+      "MinLength" : 1
+    },
+    "ListenerRulePriority" : {
+      "Description" : "The Priority for the ListenerRule.",
+      "Type" : "Number",
+      "MinValue" : 1
+    }
+  },
+  "Resources" : {
+    "LoadbalancerRuleHttp" : {
+      "Type" : "AWS::ElasticLoadBalancingV2::ListenerRule",
+      "Properties" : {
+        "Actions" : [ {
+          "RedirectConfig" : {
+            "Host" : "#{host}",
+            "Path" : "/#{path}",
+            "Port" : "443",
+            "Protocol" : "HTTPS",
+            "Query" : "#{query}",
+            "StatusCode" : "HTTP_301"
+          },
+          "Type" : "redirect"
+        } ],
+        "Conditions" : [ {
+          "Field" : "host-header",
+          "Values" : [ { "Ref" : "ListenerRuleHost" } ]
+        }, {
+          "Field" : "path-pattern",
+          "Values" : [ { "Ref" : "ListenerRulePath" } ]
+        } ],
+        "ListenerArn" : { "Fn::ImportValue" : { "Fn::Sub" : "${ClusterStackName}-ListenerArnHttp" } },
+        "Priority" : { "Ref" : "ListenerRulePriority" }
+      }
+    },
+    "LoadbalancerRuleHttps" : {
+      "Type" : "AWS::ElasticLoadBalancingV2::ListenerRule",
+      "Properties" : {
+        "Actions" : [ {
+          "TargetGroupArn" : { "Fn::ImportValue" : { "Fn::Sub" : "${EcsServiceStackName}-TargetGroupArn" } },
+          "Type" : "forward"
+        } ],
+        "Conditions" : [ {
+          "Field" : "host-header",
+          "Values" : [ { "Ref" : "ListenerRuleHost" } ]
+        }, {
+          "Field" : "path-pattern",
+          "Values" : [ { "Ref" : "ListenerRulePath" } ]
+        } ],
+        "ListenerArn" : { "Fn::ImportValue" : { "Fn::Sub" : "${ClusterStackName}-ListenerArnHttps" } },
+        "Priority" : { "Ref" : "ListenerRulePriority" }
+      }
+    }
+  }
+}
