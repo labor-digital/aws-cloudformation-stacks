@@ -1606,7 +1606,7 @@
           },
           "ManagedScaling": {
             "Status": "ENABLED",
-            "TargetCapacity": 100,
+            "TargetCapacity": 80,
             "MinimumScalingStepSize": 1,
             "MaximumScalingStepSize": 2
           },
