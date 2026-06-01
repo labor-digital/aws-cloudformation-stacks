@@ -1,4 +1,30 @@
 {
+  "Metadata" : {
+    "AWS::CloudFormation::Interface" : {
+      "ParameterGroups" : [
+        {
+          "Label" : { "default" : "Cluster" },
+          "Parameters" : [ "ClusterStackName" ]
+        },
+        {
+          "Label" : { "default" : "Docker Image" },
+          "Parameters" : [ "InitialDockerImage", "SkipImageResolver" ]
+        },
+        {
+          "Label" : { "default" : "Load Balancer" },
+          "Parameters" : [ "ListenerRuleHost", "ListenerRulePath", "ListenerRulePriority" ]
+        },
+        {
+          "Label" : { "default" : "Service" },
+          "Parameters" : [ "TaskMemory", "ServiceDesiredCount", "ServiceMaxCapacity", "ECSHealthCheckGracePeriod", "ServiceTrafficPort", "ServiceTrafficProtocol", "ECSHealthCheckPath", "VolumeMountPath", "ContainerCommand" ]
+        },
+        {
+          "Label" : { "default" : "Doppler" },
+          "Parameters" : [ "ProjectNameShort", "ProjectEnv", "ProjectToken" ]
+        }
+      ]
+    }
+  },
   "Parameters" : {
     "ClusterStackName" : {
       "Description" : "Name of the cloudformation stack of the cluster, where this service should run.",
@@ -22,9 +48,15 @@
       "MinValue" : 1
     },
     "InitialDockerImage" : {
-      "Description" : "The initial Docker image for the container.",
+      "Description" : "The Docker image for the container. Always required on first stack creation. On updates, only used when SkipImageResolver is true — otherwise the image is read from the currently running ECS service.",
       "Type" : "String",
       "MinLength" : 1
+    },
+    "SkipImageResolver" : {
+      "Description" : "When true, InitialDockerImage is used directly. When false (default), the image is read from the currently running ECS task definition on stack updates, preventing stale image rollbacks.",
+      "Type" : "String",
+      "Default" : "false",
+      "AllowedValues" : [ "true", "false" ]
     },
     "TaskMemory" : {
       "Type" : "Number",
@@ -134,6 +166,79 @@
           ]
         },
         "RetentionInDays" : 14
+      }
+    },
+    "ImageResolverRole" : {
+      "Type" : "AWS::IAM::Role",
+      "Properties" : {
+        "AssumeRolePolicyDocument" : {
+          "Version" : "2012-10-17",
+          "Statement" : [ {
+            "Effect" : "Allow",
+            "Principal" : { "Service" : "lambda.amazonaws.com" },
+            "Action" : "sts:AssumeRole"
+          } ]
+        },
+        "ManagedPolicyArns" : [ "arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole" ],
+        "Policies" : [ {
+          "PolicyName" : { "Fn::Join" : [ "-", [ { "Ref" : "AWS::StackName" }, "ImageResolverPolicy" ] ] },
+          "PolicyDocument" : {
+            "Version" : "2012-10-17",
+            "Statement" : [
+              {
+                "Effect" : "Allow",
+                "Action" : [ "ecs:DescribeTaskDefinition", "ecs:DescribeServices" ],
+                "Resource" : "*"
+              }
+            ]
+          }
+        } ],
+        "Path" : "/",
+        "RoleName" : { "Fn::Join" : [ "-", [ { "Ref" : "AWS::StackName" }, "ImageResolverRole" ] ] }
+      }
+    },
+    "ImageResolverFunction" : {
+      "Type" : "AWS::Lambda::Function",
+      "Metadata" : {
+        "Note" : "Resolves the Docker image to use in the TaskDefinition. On Create it returns InitialDockerImage directly. On Update it calls ecs:DescribeServices to get the ARN of the task definition the service is actively running, then reads the image from that revision — ensuring CF always uses the currently deployed image rather than the stale value in InitialDockerImage. SkipImageResolver=true bypasses the ECS lookup and uses InitialDockerImage directly, for cases where a specific image must be forced."
+      },
+      "Properties" : {
+        "FunctionName" : { "Fn::Join" : [ "-", [ { "Ref" : "AWS::StackName" }, "ImageResolver" ] ] },
+        "Runtime" : "python3.12",
+        "Handler" : "index.handler",
+        "Role" : { "Fn::GetAtt" : [ "ImageResolverRole", "Arn" ] },
+        "Timeout" : 30,
+        "Code" : {
+          "ZipFile" : "import json\nimport urllib.request\nimport boto3\n\ndef handler(event, context):\n    physical_id = event.get('PhysicalResourceId') or event['StackId']\n    status = 'FAILED'\n    data = {}\n    try:\n        props = event['ResourceProperties']\n        request_type = event['RequestType']\n        if request_type == 'Delete':\n            status = 'SUCCESS'\n        elif request_type == 'Create' or props.get('SkipImageResolver', 'false').lower() == 'true':\n            status = 'SUCCESS'\n            data = {'Value': props['InitialDockerImage']}\n        else:\n            ecs = boto3.client('ecs')\n            svc = ecs.describe_services(cluster=props['EcsCluster'], services=[props['EcsService']])\n            if not svc['services']:\n                raise ValueError(f\"ECS service '{props['EcsService']}' not found in cluster '{props['EcsCluster']}'\")\n            task_def_arn = svc['services'][0].get('taskDefinition')\n            if not task_def_arn:\n                raise ValueError(f\"No active task definition on service '{props['EcsService']}'\")\n            td = ecs.describe_task_definition(taskDefinition=task_def_arn)\n            status = 'SUCCESS'\n            data = {'Value': td['taskDefinition']['containerDefinitions'][0]['image']}\n    except Exception as e:\n        print(f'ImageResolver error: {e}')\n        data = {'Error': str(e)}\n    finally:\n        try:\n            respond(event, status, data, physical_id)\n        except Exception:\n            pass\n\ndef respond(event, status, data, physical_id):\n    body = json.dumps({'Status': status, 'Reason': 'See CloudWatch logs', 'PhysicalResourceId': physical_id, 'StackId': event['StackId'], 'RequestId': event['RequestId'], 'LogicalResourceId': event['LogicalResourceId'], 'Data': data})\n    req = urllib.request.Request(event['ResponseURL'], data=body.encode('utf-8'), method='PUT', headers={'Content-Type': ''})\n    urllib.request.urlopen(req)\n"
+        }
+      }
+    },
+    "ImageResolver" : {
+      "Type" : "Custom::ImageResolver",
+      "Metadata" : {
+        "Note" : "All parameters that should trigger the Lambda on change must be listed as Properties. NoEcho parameters (e.g. ProjectToken) must never be added here — CloudFormation rejects passing NoEcho values to custom resources."
+      },
+      "Properties" : {
+        "ServiceToken" : { "Fn::GetAtt" : [ "ImageResolverFunction", "Arn" ] },
+        "EcsCluster" : { "Fn::ImportValue" : { "Fn::Sub" : "${ClusterStackName}-Ecscluster" } },
+        "EcsService" : { "Fn::Join" : [ "-", [ { "Ref" : "AWS::StackName" }, "Service" ] ] },
+        "InitialDockerImage" : { "Ref" : "InitialDockerImage" },
+        "SkipImageResolver" : { "Ref" : "SkipImageResolver" },
+        "ClusterStackName" : { "Ref" : "ClusterStackName" },
+        "ListenerRuleHost" : { "Ref" : "ListenerRuleHost" },
+        "ListenerRulePath" : { "Ref" : "ListenerRulePath" },
+        "ListenerRulePriority" : { "Ref" : "ListenerRulePriority" },
+        "TaskMemory" : { "Ref" : "TaskMemory" },
+        "ServiceDesiredCount" : { "Ref" : "ServiceDesiredCount" },
+        "ServiceMaxCapacity" : { "Ref" : "ServiceMaxCapacity" },
+        "ECSHealthCheckGracePeriod" : { "Ref" : "ECSHealthCheckGracePeriod" },
+        "ServiceTrafficPort" : { "Ref" : "ServiceTrafficPort" },
+        "ServiceTrafficProtocol" : { "Ref" : "ServiceTrafficProtocol" },
+        "ECSHealthCheckPath" : { "Ref" : "ECSHealthCheckPath" },
+        "VolumeMountPath" : { "Ref" : "VolumeMountPath" },
+        "ContainerCommand" : { "Ref" : "ContainerCommand" },
+        "ProjectNameShort" : { "Ref" : "ProjectNameShort" },
+        "ProjectEnv" : { "Ref" : "ProjectEnv" }
       }
     },
     "TaskRole" : {
@@ -263,7 +368,7 @@
             "Value" : { "Ref" : "ProjectToken" }
           } ],
           "Essential" : true,
-          "Image" : { "Ref" : "InitialDockerImage" },
+          "Image" : { "Fn::GetAtt" : [ "ImageResolver", "Value" ] },
           "MemoryReservation" : { "Ref" : "TaskMemory" },
           "MountPoints" : [ {
             "ReadOnly" : "false",
@@ -387,7 +492,11 @@
         "Cluster" : { "Fn::ImportValue" : { "Fn::Sub" : "${ClusterStackName}-Ecscluster" } },
         "DeploymentConfiguration" : {
           "MaximumPercent" : 200,
-          "MinimumHealthyPercent" : 50
+          "MinimumHealthyPercent" : 50,
+          "DeploymentCircuitBreaker" : {
+            "Enable" : true,
+            "Rollback" : true
+          }
         },
         "DesiredCount" : { "Ref" : "ServiceDesiredCount" },
         "LoadBalancers" : [ {
