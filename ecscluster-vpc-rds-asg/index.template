@@ -902,18 +902,6 @@
             "FromPort": 443,
             "ToPort": 443,
             "CidrIp": "0.0.0.0/0"
-          },
-          {
-            "IpProtocol": "tcp",
-            "FromPort": 80,
-            "ToPort": 80,
-            "CidrIpv6": "::/0"
-          },
-          {
-            "IpProtocol": "tcp",
-            "FromPort": 443,
-            "ToPort": 443,
-            "CidrIpv6": "::/0"
           }
         ],
         "Tags": [
@@ -967,18 +955,6 @@
             "FromPort": 443,
             "ToPort": 443,
             "CidrIp": "0.0.0.0/0"
-          },
-          {
-            "IpProtocol": "tcp",
-            "FromPort": 80,
-            "ToPort": 80,
-            "CidrIpv6": "::/0"
-          },
-          {
-            "IpProtocol": "tcp",
-            "FromPort": 443,
-            "ToPort": 443,
-            "CidrIpv6": "::/0"
           }
         ],
         "Tags": [
@@ -1524,7 +1500,11 @@
                     "Ref": "Efs"
                   },
                   ":/ /mnt/efs efs _netdev,tls 0 0\" >> /etc/fstab\n",
-                  "mount -a || true\n"
+                  "mount -a || true\n",
+                  "dnf install -y dnf-automatic\n",
+                  "sed -i 's/^upgrade_type = .*/upgrade_type = security/' /etc/dnf/automatic.conf\n",
+                  "sed -i 's/^apply_updates = .*/apply_updates = yes/' /etc/dnf/automatic.conf\n",
+                  "systemctl enable --now dnf-automatic.timer\n"
                 ]
               ]
             }
@@ -1623,7 +1603,7 @@
         "LoadBalancerAttributes": [
           {
             "Key": "deletion_protection.enabled",
-            "Value": "false"
+            "Value": "true"
           },
           {
             "Key": "idle_timeout.timeout_seconds",
@@ -2070,6 +2050,79 @@
         "BackupRole",
         "Rdscl"
       ]
+    },
+    "VpcFlowLogGroup": {
+      "Type": "AWS::Logs::LogGroup",
+      "Properties": {
+        "LogGroupName": {
+          "Fn::Join": [
+            "-",
+            [
+              {
+                "Ref": "AWS::StackName"
+              },
+              "VpcFlowLogs"
+            ]
+          ]
+        },
+        "RetentionInDays": 90
+      }
+    },
+    "VpcFlowLogRole": {
+      "Type": "AWS::IAM::Role",
+      "Properties": {
+        "AssumeRolePolicyDocument": {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Effect": "Allow",
+              "Principal": {
+                "Service": "vpc-flow-logs.amazonaws.com"
+              },
+              "Action": "sts:AssumeRole"
+            }
+          ]
+        },
+        "Policies": [
+          {
+            "PolicyName": "VpcFlowLogPolicy",
+            "PolicyDocument": {
+              "Version": "2012-10-17",
+              "Statement": [
+                {
+                  "Effect": "Allow",
+                  "Action": [
+                    "logs:CreateLogStream",
+                    "logs:PutLogEvents",
+                    "logs:DescribeLogGroups",
+                    "logs:DescribeLogStreams"
+                  ],
+                  "Resource": {
+                    "Fn::GetAtt": ["VpcFlowLogGroup", "Arn"]
+                  }
+                }
+              ]
+            }
+          }
+        ]
+      }
+    },
+    "VpcFlowLog": {
+      "Type": "AWS::EC2::FlowLog",
+      "Properties": {
+        "ResourceId": {
+          "Ref": "Vpc"
+        },
+        "ResourceType": "VPC",
+        "TrafficType": "ALL",
+        "LogDestinationType": "cloud-watch-logs",
+        "LogGroupName": {
+          "Ref": "VpcFlowLogGroup"
+        },
+        "DeliverLogsPermissionArn": {
+          "Fn::GetAtt": ["VpcFlowLogRole", "Arn"]
+        }
+      }
     }
   },
   "Outputs": {
