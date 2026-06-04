@@ -940,151 +940,6 @@
         "Vpc"
       ]
     },
-    "SgPublicHttps": {
-      "Type": "AWS::EC2::SecurityGroup",
-      "Properties": {
-        "GroupName": {
-          "Fn::Join": [
-            "-",
-            [
-              {
-                "Ref": "AWS::StackName"
-              },
-              "SgPublicHttps"
-            ]
-          ]
-        },
-        "GroupDescription": "Securitygroup to access http and https from everywhere",
-        "SecurityGroupIngress": [
-          {
-            "IpProtocol": "tcp",
-            "FromPort": 80,
-            "ToPort": 80,
-            "CidrIp": "0.0.0.0/0"
-          },
-          {
-            "IpProtocol": "tcp",
-            "FromPort": 443,
-            "ToPort": 443,
-            "CidrIp": "0.0.0.0/0"
-          },
-          {
-            "IpProtocol": "tcp",
-            "FromPort": 80,
-            "ToPort": 80,
-            "CidrIpv6": "::/0"
-          },
-          {
-            "IpProtocol": "tcp",
-            "FromPort": 443,
-            "ToPort": 443,
-            "CidrIpv6": "::/0"
-          }
-        ],
-        "Tags": [
-          {
-            "Key": "Name",
-            "Value": {
-              "Fn::Join": [
-                "-",
-                [
-                  {
-                    "Ref": "AWS::StackName"
-                  },
-                  "SgPublicHttps"
-                ]
-              ]
-            }
-          }
-        ],
-        "VpcId": {
-          "Ref": "Vpc"
-        }
-      },
-      "DependsOn": [
-        "Vpc"
-      ]
-    },
-    "SgLaborSsh": {
-      "Type": "AWS::EC2::SecurityGroup",
-      "Properties": {
-        "GroupName": {
-          "Fn::Join": [
-            "-",
-            [
-              {
-                "Ref": "AWS::StackName"
-              },
-              "SgLaborSsh"
-            ]
-          ]
-        },
-        "GroupDescription": "Securitygroup to access ssh from labor",
-        "SecurityGroupIngress": [],
-        "Tags": [
-          {
-            "Key": "Name",
-            "Value": {
-              "Fn::Join": [
-                "-",
-                [
-                  {
-                    "Ref": "AWS::StackName"
-                  },
-                  "SgLaborSsh"
-                ]
-              ]
-            }
-          }
-        ],
-        "VpcId": {
-          "Ref": "Vpc"
-        }
-      },
-      "DependsOn": [
-        "Vpc"
-      ]
-    },
-    "SgLaborMysql": {
-      "Type": "AWS::EC2::SecurityGroup",
-      "Properties": {
-        "GroupName": {
-          "Fn::Join": [
-            "-",
-            [
-              {
-                "Ref": "AWS::StackName"
-              },
-              "SgLaborMysql"
-            ]
-          ]
-        },
-        "GroupDescription": "Securitygroup to access MySQL from labor",
-        "SecurityGroupIngress": [],
-        "Tags": [
-          {
-            "Key": "Name",
-            "Value": {
-              "Fn::Join": [
-                "-",
-                [
-                  {
-                    "Ref": "AWS::StackName"
-                  },
-                  "SgLaborMysql"
-                ]
-              ]
-            }
-          }
-        ],
-        "VpcId": {
-          "Ref": "Vpc"
-        }
-      },
-      "DependsOn": [
-        "Vpc"
-      ]
-    },
     "RdsclSubnetgroup": {
       "Type": "AWS::RDS::DBSubnetGroup",
       "Properties": {
@@ -1210,9 +1065,6 @@
         "VpcSecurityGroupIds": [
           {
             "Ref": "SgVpcMysql"
-          },
-          {
-            "Ref": "SgLaborMysql"
           }
         ]
       },
@@ -1474,9 +1326,6 @@
                 },
                 {
                   "Ref": "SgVpcEfsAccess"
-                },
-                {
-                  "Ref": "SgLaborSsh"
                 }
               ]
             }
@@ -1536,7 +1385,6 @@
         "SgVpcMysqlAccess",
         "SgVpcLoadbalancerports",
         "SgVpcEfsAccess",
-        "SgLaborSsh",
         "Ecscluster"
       ]
     },
@@ -1655,7 +1503,7 @@
             "Ref": "SgVpcLoadbalancerportsAccess"
           },
           {
-            "Ref": "SgPublicHttps"
+            "Ref": "SgPublicHttpHttps"
           }
         ],
         "Subnets": [
@@ -1687,7 +1535,7 @@
       },
       "DependsOn": [
         "SgVpcLoadbalancerportsAccess",
-        "SgPublicHttps",
+        "SgPublicHttpHttps",
         "Subnet1",
         "Subnet2"
       ]
@@ -2130,6 +1978,36 @@
       "Export": {
         "Name": {
           "Fn::Sub": "${AWS::StackName}-LoadbalancerArn"
+        }
+      }
+    },
+    "Subnet1": {
+      "Value": {
+        "Ref": "Subnet1"
+      },
+      "Export": {
+        "Name": {
+          "Fn::Sub": "${AWS::StackName}-Subnet1"
+        }
+      }
+    },
+    "Subnet2": {
+      "Value": {
+        "Ref": "Subnet2"
+      },
+      "Export": {
+        "Name": {
+          "Fn::Sub": "${AWS::StackName}-Subnet2"
+        }
+      }
+    },
+    "SgVpcLoadbalancerportsAccess": {
+      "Value": {
+        "Ref": "SgVpcLoadbalancerportsAccess"
+      },
+      "Export": {
+        "Name": {
+          "Fn::Sub": "${AWS::StackName}-SgVpcLoadbalancerportsAccess"
         }
       }
     }
