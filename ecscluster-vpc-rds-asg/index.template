@@ -5,6 +5,11 @@
       "Type": "AWS::EC2::KeyPair::KeyName",
       "ConstraintDescription": "must be the name of an existing EC2 KeyPair."
     },
+    "LogsBucketName": {
+      "Description": "Name of the shared ALB access logs S3 bucket (alb-logs-bucket stack). Leave empty to disable access logging.",
+      "Type": "String",
+      "Default": ""
+    },
     "RdsMasterUsername": {
       "Description": "MasterUsername which is applied to RDS cluster/instances.",
       "Type": "String",
@@ -845,139 +850,6 @@
         "Vpc"
       ]
     },
-    "SgPublicHttps": {
-      "Type": "AWS::EC2::SecurityGroup",
-      "Properties": {
-        "GroupName": {
-          "Fn::Join": [
-            "-",
-            [
-              {
-                "Ref": "AWS::StackName"
-              },
-              "SgPublicHttps"
-            ]
-          ]
-        },
-        "GroupDescription": "Securitygroup to access http and https from everywhere",
-        "SecurityGroupIngress": [
-          {
-            "IpProtocol": "tcp",
-            "FromPort": 80,
-            "ToPort": 80,
-            "CidrIp": "0.0.0.0/0"
-          },
-          {
-            "IpProtocol": "tcp",
-            "FromPort": 443,
-            "ToPort": 443,
-            "CidrIp": "0.0.0.0/0"
-          }
-        ],
-        "Tags": [
-          {
-            "Key": "Name",
-            "Value": {
-              "Fn::Join": [
-                "-",
-                [
-                  {
-                    "Ref": "AWS::StackName"
-                  },
-                  "SgPublicHttps"
-                ]
-              ]
-            }
-          }
-        ],
-        "VpcId": {
-          "Ref": "Vpc"
-        }
-      },
-      "DependsOn": [
-        "Vpc"
-      ]
-    },
-    "SgLaborSsh": {
-      "Type": "AWS::EC2::SecurityGroup",
-      "Properties": {
-        "GroupName": {
-          "Fn::Join": [
-            "-",
-            [
-              {
-                "Ref": "AWS::StackName"
-              },
-              "SgLaborSsh"
-            ]
-          ]
-        },
-        "GroupDescription": "Securitygroup to access ssh from labor",
-        "SecurityGroupIngress": [],
-        "Tags": [
-          {
-            "Key": "Name",
-            "Value": {
-              "Fn::Join": [
-                "-",
-                [
-                  {
-                    "Ref": "AWS::StackName"
-                  },
-                  "SgLaborSsh"
-                ]
-              ]
-            }
-          }
-        ],
-        "VpcId": {
-          "Ref": "Vpc"
-        }
-      },
-      "DependsOn": [
-        "Vpc"
-      ]
-    },
-    "SgLaborMysql": {
-      "Type": "AWS::EC2::SecurityGroup",
-      "Properties": {
-        "GroupName": {
-          "Fn::Join": [
-            "-",
-            [
-              {
-                "Ref": "AWS::StackName"
-              },
-              "SgLaborMysql"
-            ]
-          ]
-        },
-        "GroupDescription": "Securitygroup to access MySQL from labor",
-        "SecurityGroupIngress": [],
-        "Tags": [
-          {
-            "Key": "Name",
-            "Value": {
-              "Fn::Join": [
-                "-",
-                [
-                  {
-                    "Ref": "AWS::StackName"
-                  },
-                  "SgLaborMysql"
-                ]
-              ]
-            }
-          }
-        ],
-        "VpcId": {
-          "Ref": "Vpc"
-        }
-      },
-      "DependsOn": [
-        "Vpc"
-      ]
-    },
     "RdsclSubnetgroup": {
       "Type": "AWS::RDS::DBSubnetGroup",
       "Properties": {
@@ -1103,9 +975,6 @@
         "VpcSecurityGroupIds": [
           {
             "Ref": "SgVpcMysql"
-          },
-          {
-            "Ref": "SgLaborMysql"
           }
         ]
       },
@@ -1367,9 +1236,6 @@
                 },
                 {
                   "Ref": "SgVpcEfsAccess"
-                },
-                {
-                  "Ref": "SgLaborSsh"
                 }
               ]
             }
@@ -1433,7 +1299,6 @@
         "SgVpcMysqlAccess",
         "SgVpcLoadbalancerports",
         "SgVpcEfsAccess",
-        "SgLaborSsh",
         "Ecscluster"
       ]
     },
@@ -1528,8 +1393,16 @@
           },
           {
             "Key": "access_logs.s3.enabled",
-            "Value": "false"
+            "Value": { "Fn::If": ["AccessLogsEnabled", "true", "false"] }
           },
+          { "Fn::If": ["AccessLogsEnabled", {
+            "Key": "access_logs.s3.bucket",
+            "Value": { "Ref": "LogsBucketName" }
+          }, { "Ref": "AWS::NoValue" }] },
+          { "Fn::If": ["AccessLogsEnabled", {
+            "Key": "access_logs.s3.prefix",
+            "Value": { "Ref": "AWS::StackName" }
+          }, { "Ref": "AWS::NoValue" }] },
           {
             "Key": "routing.http2.enabled",
             "Value": "true"
@@ -1552,7 +1425,7 @@
             "Ref": "SgVpcLoadbalancerportsAccess"
           },
           {
-            "Ref": "SgPublicHttps"
+            "Ref": "SgPublicHttpHttps"
           }
         ],
         "Subnets": [
@@ -1584,7 +1457,7 @@
       },
       "DependsOn": [
         "SgVpcLoadbalancerportsAccess",
-        "SgPublicHttps",
+        "SgPublicHttpHttps",
         "Subnet1",
         "Subnet2"
       ]
@@ -2102,12 +1975,67 @@
           "Fn::Sub": "${AWS::StackName}-LoadbalancerArn"
         }
       }
+    },
+    "SubnetPrivate1": {
+      "Value": {
+        "Ref": "SubnetPrivate1"
+      },
+      "Export": {
+        "Name": {
+          "Fn::Sub": "${AWS::StackName}-SubnetPrivate1"
+        }
+      }
+    },
+    "SubnetPrivate2": {
+      "Value": {
+        "Ref": "SubnetPrivate2"
+      },
+      "Export": {
+        "Name": {
+          "Fn::Sub": "${AWS::StackName}-SubnetPrivate2"
+        }
+      }
+    },
+    "Subnet1": {
+      "Value": {
+        "Ref": "Subnet1"
+      },
+      "Export": {
+        "Name": {
+          "Fn::Sub": "${AWS::StackName}-Subnet1"
+        }
+      }
+    },
+    "Subnet2": {
+      "Value": {
+        "Ref": "Subnet2"
+      },
+      "Export": {
+        "Name": {
+          "Fn::Sub": "${AWS::StackName}-Subnet2"
+        }
+      }
+    },
+    "SgVpcLoadbalancerportsAccess": {
+      "Value": {
+        "Ref": "SgVpcLoadbalancerportsAccess"
+      },
+      "Export": {
+        "Name": {
+          "Fn::Sub": "${AWS::StackName}-SgVpcLoadbalancerportsAccess"
+        }
+      }
     }
   },
   "Conditions": {
     "EnableCrossRegionCopy": {
       "Fn::Not": [
         { "Fn::Equals": [ { "Ref": "BackupCopyDestinationRegion" }, "" ] }
+      ]
+    },
+    "AccessLogsEnabled": {
+      "Fn::Not": [
+        { "Fn::Equals": [ { "Ref": "LogsBucketName" }, "" ] }
       ]
     }
   }
