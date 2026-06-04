@@ -1981,6 +1981,26 @@
         }
       }
     },
+    "SubnetPrivate1": {
+      "Value": {
+        "Ref": "SubnetPrivate1"
+      },
+      "Export": {
+        "Name": {
+          "Fn::Sub": "${AWS::StackName}-SubnetPrivate1"
+        }
+      }
+    },
+    "SubnetPrivate2": {
+      "Value": {
+        "Ref": "SubnetPrivate2"
+      },
+      "Export": {
+        "Name": {
+          "Fn::Sub": "${AWS::StackName}-SubnetPrivate2"
+        }
+      }
+    },
     "Subnet1": {
       "Value": {
         "Ref": "Subnet1"
