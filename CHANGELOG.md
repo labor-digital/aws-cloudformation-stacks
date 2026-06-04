@@ -2,19 +2,21 @@
 
 ## Summary
     
-**Uncommitted**
-- [Shared ALB access logs bucket — new template](#shared-alb-access-logs-bucket) — pending deployment
-- [ALB Access Logs — optional via `LogsBucketName`](#alb-access-logs--optional-via-logsbucketname-parameter) — pending `alb-logs-bucket` deployment
-- Rename `ecscluster-vpc-rds-asg/backup` → `ecscluster-vpc-rds-asg/backup-vaults-mirror`
-
-**`41c330f` · 2026-06-03 — remove unused Network ACL and associated resources**
+**`677019e` · 2026-06-05 — remove unused Network ACL, IPv6 cleanup, VPC Flow Logs, ALB hardening, dnf-automatic, optional ALB access logs**
 - [NACL removed](#nacl-removed)
-
-**`197fd7b` · 2026-06-03 — remove IPv6 open access, enable VPC flow logs, enforce ALB deletion protection, add automated security updates**
 - [Dead IPv6 rules removed from security groups](#dead-ipv6-rules-removed-from-security-groups)
 - [VPC Flow Logs added](#vpc-flow-logs-added)
 - [ALB Deletion Protection enabled](#alb-deletion-protection-enabled)
 - [`dnf-automatic` added to EC2 UserData](#dnf-automatic-added-to-ec2-userdata)
+- [ALB Access Logs — optional via `LogsBucketName`](#alb-access-logs--optional-via-logsbucketname-parameter)
+
+**`f299faa` · 2026-06-05 — export private subnets for cross-stack references**
+
+**`1d66894` · 2026-06-04 — remove unused security groups and rename `SgPublicHttps` to `SgPublicHttpHttps`**
+
+**`41c330f` · 2026-06-03 — remove unused Network ACL and associated resources**
+
+**`197fd7b` · 2026-06-03 — remove IPv6 open access, enable VPC flow logs, enforce ALB deletion protection, add automated security updates**
 
 **`c58bee4` · 2026-06-02 — add ImageResolver Lambda for ECS task image management, support SkipImageResolver, enable circuit breaker rollback**
 - [`InitialDockerImage` stale image fix — Lambda custom resource](#initialdockerimage-stale-image-fix--lambda-custom-resource)
