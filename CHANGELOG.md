@@ -2,6 +2,9 @@
 
 ## Summary
     
+**Uncommitted**
+- [VPC Flow Logs `TrafficType` changed to `REJECT`](#vpc-flow-logs-added)
+
 **`677019e` · 2026-06-05 — remove unused Network ACL, IPv6 cleanup, VPC Flow Logs, ALB hardening, dnf-automatic, optional ALB access logs**
 - [NACL removed](#nacl-removed)
 - [Dead IPv6 rules removed from security groups](#dead-ipv6-rules-removed-from-security-groups)
@@ -119,7 +122,7 @@ The alternative of making the NACL restrictive was rejected: NACLs are stateless
 Three new stack-managed resources:
 - **`VpcFlowLogGroup`** (`AWS::Logs::LogGroup`) — 90-day retention. IP addresses are personal data under DSGVO; retention period and legal basis (typically Art. 6(1)(f) legitimate interest) should be documented in the VVT. Note: log group and its data are lost on stack deletion — consider `DeletionPolicy: Retain` if continuity across stack recreations is needed.
 - **`VpcFlowLogRole`** (`AWS::IAM::Role`) — scoped to write access on the specific log group only, assumed by `vpc-flow-logs.amazonaws.com`
-- **`VpcFlowLog`** (`AWS::EC2::FlowLog`) — `TrafficType: ALL`, delivers to CloudWatch. Useful for debugging blocked traffic, security audits, and tracing what reaches or leaves the VPC.
+- **`VpcFlowLog`** (`AWS::EC2::FlowLog`) — `TrafficType: REJECT`, delivers to CloudWatch. Only logs dropped traffic — accepted traffic is not recorded. `ALL` was considered but rejected due to cost: a small cluster generates ~87 GB/month uncompressed with `ALL`, costing ~$40-45/month in CloudWatch ingestion alone. `REJECT` reduces volume by ~95% and brings cost to a few dollars per month, while still covering the primary use case of detecting blocked traffic and security incidents.
 
 ### ALB Deletion Protection enabled
 `deletion_protection.enabled` flipped from `false` to `true`. Prevents accidental stack deletion or manual ALB deletion — CloudFormation will error on delete until the flag is explicitly disabled first.

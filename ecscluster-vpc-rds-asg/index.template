@@ -1904,7 +1904,7 @@
           "Ref": "Vpc"
         },
         "ResourceType": "VPC",
-        "TrafficType": "ALL",
+        "TrafficType": "REJECT",
         "LogDestinationType": "cloud-watch-logs",
         "LogGroupName": {
           "Ref": "VpcFlowLogGroup"
