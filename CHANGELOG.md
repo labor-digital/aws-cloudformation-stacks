@@ -181,3 +181,11 @@ Jun 03 12:37:34 ip-<private-ip>.ec2.internal systemd[1]: Finished dnf-automatic.
 - `TaskDefinition` uses `Fn::GetAtt: [ImageResolver, Value]` for its image
 
 **`DeploymentCircuitBreaker`** added to the `Service` resource (`Enable: true`, `Rollback: true`) — ECS detects failing tasks quickly and automatically rolls back to the previous task definition.
+
+**Migration caveat — existing service stacks:** service stacks deployed before `c58bee4` don't have the Lambda yet. When the cluster stack is updated (for any reason), CF may re-evaluate task definitions on those older service stacks and roll back to `InitialDockerImage` — causing a `CannotPullContainerError` if that image no longer exists in ECR.
+
+**Migration procedure for each affected service stack:**
+1. Redeploy via the pipeline first to get the service running with a known good image
+2. Find the latest image tag in ECR: `aws ecr describe-images --repository-name <repo> --region eu-central-1 --query 'sort_by(imageDetails, &imagePushedAt)[-1].imageTags[0]' --output text`
+3. Deploy the updated `ecsservice/index.template` with `InitialDockerImage` set to that tag — on first deploy the Lambda runs as `Create` and uses `InitialDockerImage`, so it must be current
+4. After this first update, subsequent stack updates use the Lambda's `Update` path which reads the running image from ECS automatically
