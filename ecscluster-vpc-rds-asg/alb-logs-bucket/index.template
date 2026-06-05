@@ -1,10 +1,18 @@
 {
   "AWSTemplateFormatVersion": "2010-09-09",
-  "Description": "Shared ALB access logs bucket. One stack per region. Bucket is retained on stack deletion.",
+  "Description": "Shared ALB access logs bucket. One stack per cluster. Bucket is retained on stack deletion.",
   "Parameters": {
+    "ClusterName": {
+      "Type": "String",
+      "MinLength": "4",
+      "MaxLength": "64",
+      "AllowedPattern": "[a-zA-Z0-9-]+",
+      "ConstraintDescription": "Must contain only alphanumeric characters and hyphens.",
+      "Description": "Name of the cluster stack this bucket belongs to (e.g. labc-eu-w3). The bucket will be named <ClusterName>-alb-logs. E.g.: labc-eu-w3-alb-logs"
+    },
     "RetentionDays": {
       "Type": "Number",
-      "Default": 90,
+      "Default": 14,
       "Description": "Days before log objects are permanently deleted. Set to match your DSGVO retention policy."
     }
   },
@@ -14,6 +22,9 @@
       "DeletionPolicy": "Retain",
       "UpdateReplacePolicy": "Retain",
       "Properties": {
+        "BucketName": {
+          "Fn::Sub": "${ClusterName}-alb-logs"
+        },
         "BucketEncryption": {
           "ServerSideEncryptionConfiguration": [
             {
@@ -68,7 +79,7 @@
               },
               "Action": "s3:PutObject",
               "Resource": {
-                "Fn::Sub": "${AlbLogsBucket.Arn}/AWSLogs/${AWS::AccountId}/*"
+                "Fn::Sub": "${AlbLogsBucket.Arn}/*/AWSLogs/${AWS::AccountId}/*"
               }
             }
           ]

@@ -1855,7 +1855,7 @@
             ]
           ]
         },
-        "RetentionInDays": 90
+        "RetentionInDays": 14
       }
     },
     "VpcFlowLogRole": {

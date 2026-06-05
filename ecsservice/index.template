@@ -197,6 +197,13 @@
         "RoleName" : { "Fn::Join" : [ "-", [ { "Ref" : "AWS::StackName" }, "ImageResolverRole" ] ] }
       }
     },
+    "ImageResolverLogGroup" : {
+      "Type" : "AWS::Logs::LogGroup",
+      "Properties" : {
+        "LogGroupName" : { "Fn::Join" : [ "", [ "/aws/lambda/", { "Ref" : "AWS::StackName" }, "-ImageResolver" ] ] },
+        "RetentionInDays" : 14
+      }
+    },
     "ImageResolverFunction" : {
       "Type" : "AWS::Lambda::Function",
       "Metadata" : {

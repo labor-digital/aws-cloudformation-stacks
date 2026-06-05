@@ -4,6 +4,10 @@
     
 **Uncommitted**
 - [VPC Flow Logs `TrafficType` changed to `REJECT`](#vpc-flow-logs-added)
+- VPC Flow Logs retention changed from 90 to 14 days
+- `alb-logs-bucket` — bucket name now derived from `ClusterName` parameter (`<ClusterName>-alb-logs`); bucket policy fixed to allow any prefix (`*/AWSLogs/<account>/*`); retention changed from 90 to 14 days
+- `ecsservice` — `ImageResolverLogGroup` added with 14-day retention
+- ALB access logs deployed and verified on `labc-eu-w3` — logs writing to `labc-eu-w3-alb-logs/labc-eu-w3/`
 
 **`677019e` · 2026-06-05 — remove unused Network ACL, IPv6 cleanup, VPC Flow Logs, ALB hardening, dnf-automatic, optional ALB access logs**
 - [NACL removed](#nacl-removed)
@@ -96,7 +100,7 @@ New dedicated stack, deployed once per region. ALB access logs must be written t
 - **Encryption:** SSE-S3 (AES256) — KMS is not supported for ALB log delivery
 - **Versioning:** enabled — protects against accidental object deletion
 - **Public access:** fully blocked on all four settings
-- **Lifecycle:** objects deleted after 90 days (configurable via `RetentionDays`) — DSGVO storage limitation requires deletion, not archival; IP addresses in ALB logs are personal data under Art. 5(1)(e)
+- **Lifecycle:** objects deleted after 14 days (configurable via `RetentionDays`, default 14) — DSGVO storage limitation requires deletion, not archival; IP addresses in ALB logs are personal data under Art. 5(1)(e)
 - **Lifecycle:** incomplete multipart uploads aborted after 7 days — silently abandoned uploads accumulate cost
 - **Bucket policy:** `logdelivery.elasticloadbalancing.amazonaws.com` service principal (modern post-Aug 2022 approach), scoped to `AWSLogs/<account-id>/*`
 - **`DeletionPolicy: Retain`** — bucket and logs survive stack deletion
@@ -120,7 +124,7 @@ The alternative of making the NACL restrictive was rejected: NACLs are stateless
 
 ### VPC Flow Logs added
 Three new stack-managed resources:
-- **`VpcFlowLogGroup`** (`AWS::Logs::LogGroup`) — 90-day retention. IP addresses are personal data under DSGVO; retention period and legal basis (typically Art. 6(1)(f) legitimate interest) should be documented in the VVT. Note: log group and its data are lost on stack deletion — consider `DeletionPolicy: Retain` if continuity across stack recreations is needed.
+- **`VpcFlowLogGroup`** (`AWS::Logs::LogGroup`) — 14-day retention. IP addresses are personal data under DSGVO; retention period and legal basis (typically Art. 6(1)(f) legitimate interest) should be documented in the VVT. Note: log group and its data are lost on stack deletion — consider `DeletionPolicy: Retain` if continuity across stack recreations is needed.
 - **`VpcFlowLogRole`** (`AWS::IAM::Role`) — scoped to write access on the specific log group only, assumed by `vpc-flow-logs.amazonaws.com`
 - **`VpcFlowLog`** (`AWS::EC2::FlowLog`) — `TrafficType: REJECT`, delivers to CloudWatch. Only logs dropped traffic — accepted traffic is not recorded. `ALL` was considered but rejected due to cost: a small cluster generates ~87 GB/month uncompressed with `ALL`, costing ~$40-45/month in CloudWatch ingestion alone. `REJECT` reduces volume by ~95% and brings cost to a few dollars per month, while still covering the primary use case of detecting blocked traffic and security incidents.
 
