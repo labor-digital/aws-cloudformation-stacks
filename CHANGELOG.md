@@ -1,13 +1,31 @@
 # CHANGELOG
 
 ## Summary
-    
-**Uncommitted**
-- [VPC Flow Logs `TrafficType` changed to `REJECT`](#vpc-flow-logs-added)
-- VPC Flow Logs retention changed from 90 to 14 days
-- `alb-logs-bucket` — bucket name now derived from `ClusterName` parameter (`<ClusterName>-alb-logs`); bucket policy fixed to allow any prefix (`*/AWSLogs/<account>/*`); retention changed from 90 to 14 days
+
+**`In Progress` · 2026-06-09 — add Route 53 DNS Firewall in ALERT mode (LII26-94)**
+
+| Resource | Type | Purpose |
+|---|---|---|
+| `DnsQueryLogGroup` | `AWS::Logs::LogGroup` | CloudWatch log group for DNS queries, 14-day retention |
+| `DnsFirewallWhitelistDomainList` | `AWS::Route53Resolver::FirewallDomainList` | Empty allowlist — populated after Phase 2 analysis |
+| `DnsFirewallCatchAllDomainList` | `AWS::Route53Resolver::FirewallDomainList` | Contains `*`, matches all unwhitelisted domains |
+| `DnsFirewallRuleGroup` | `AWS::Route53Resolver::FirewallRuleGroup` | Rule 1 (priority 100): ALLOW whitelist / Rule 2 (priority 200): ALERT catch-all |
+| `DnsFirewallRuleGroupAssociation` | `AWS::Route53Resolver::FirewallRuleGroupAssociation` | Attaches the rule group to the VPC |
+| `DnsQueryLoggingConfig` | `AWS::Route53Resolver::ResolverQueryLoggingConfig` | Routes DNS queries to the log group |
+| `DnsQueryLoggingConfigAssociation` | `AWS::Route53Resolver::ResolverQueryLoggingConfigAssociation` | Associates logging config with the VPC |
+| `DnsFirewallAlertMetricFilter` | `AWS::Logs::MetricFilter` | Counts `firewall_rule_action = ALERT` events |
+| `DnsFirewallAlertAlarm` | `AWS::CloudWatch::Alarm` | Fires when ALERT events exceed 100/5min — adjust after baseline is established |
+
+Outputs exported: `DnsFirewallWhitelistId`, `DnsFirewallRuleGroupId` — for automation to add domains to the whitelist.
+
+**`8fee739` · 2026-06-05 — update log retention and enhance ALB/ECS configurations**
+- [VPC Flow Logs `TrafficType` changed to `REJECT`](#vpc-flow-logs-added) — reduces volume ~95%, cost from ~$40-45/month to a few dollars
+- VPC Flow Logs and ALB access logs retention set to 14 days (DSGVO)
+- `alb-logs-bucket` — bucket name derived from `ClusterName` parameter (`<ClusterName>-alb-logs`); bucket policy fixed to allow any prefix (`*/AWSLogs/<account>/*`)
 - `ecsservice` — `ImageResolverLogGroup` added with 14-day retention
 - ALB access logs deployed and verified on `labc-eu-w3` — logs writing to `labc-eu-w3-alb-logs/labc-eu-w3/`
+
+**`041da8d` · 2026-06-05 — switch VPC Flow Logs `TrafficType` to `REJECT`**
 
 **`677019e` · 2026-06-05 — remove unused Network ACL, IPv6 cleanup, VPC Flow Logs, ALB hardening, dnf-automatic, optional ALB access logs**
 - [NACL removed](#nacl-removed)
