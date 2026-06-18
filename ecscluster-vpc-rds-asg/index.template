@@ -68,6 +68,11 @@
       "Type": "String",
       "Default": "eu-north-1",
       "Description": "Destination region for backup copy (leave empty to disable copy)"
+    },
+    "DnsFirewallWhitelistDomains": {
+      "Type": "CommaDelimitedList",
+      "Description": "Comma-separated list of domains to allow through the DNS Firewall (e.g. *.eu-west-3.amazonaws.com,*.ec2.internal,api.doppler.com). Note: wildcards (*) only match a single subdomain level — *.example.com matches foo.example.com but NOT foo.bar.example.com. List must not be empty and must not contain trailing commas.",
+      "Default": "*.in-addr.arpa"
     }
   },
   "Resources": {
@@ -1913,6 +1918,189 @@
           "Fn::GetAtt": ["VpcFlowLogRole", "Arn"]
         }
       }
+    },
+    "DnsQueryLogGroup": {
+      "Type": "AWS::Logs::LogGroup",
+      "Properties": {
+        "LogGroupName": {
+          "Fn::Sub": "${AWS::StackName}-DnsFirewallLogs"
+        },
+        "RetentionInDays": 14
+      }
+    },
+    "DnsFirewallWhitelistDomainList": {
+      "Type": "AWS::Route53Resolver::FirewallDomainList",
+      "Properties": {
+        "Name": {
+          "Fn::Sub": "${AWS::StackName}-whitelist"
+        },
+        "Domains": {
+          "Ref": "DnsFirewallWhitelistDomains"
+        },
+        "Tags": [
+          {
+            "Key": "Name",
+            "Value": {
+              "Fn::Sub": "${AWS::StackName}-dns-whitelist"
+            }
+          },
+          {
+            "Key": "security-owner",
+            "Value": "network-sec"
+          }
+        ]
+      }
+    },
+    "DnsFirewallCatchAllDomainList": {
+      "Type": "AWS::Route53Resolver::FirewallDomainList",
+      "Properties": {
+        "Name": {
+          "Fn::Sub": "${AWS::StackName}-catch-all"
+        },
+        "Domains": [
+          "*"
+        ],
+        "Tags": [
+          {
+            "Key": "Name",
+            "Value": {
+              "Fn::Sub": "${AWS::StackName}-dns-catch-all"
+            }
+          },
+          {
+            "Key": "security-owner",
+            "Value": "network-sec"
+          }
+        ]
+      }
+    },
+    "DnsFirewallRuleGroup": {
+      "Type": "AWS::Route53Resolver::FirewallRuleGroup",
+      "Properties": {
+        "Name": {
+          "Fn::Sub": "${AWS::StackName}-egress-control"
+        },
+        "FirewallRules": [
+          {
+            "Priority": 100,
+            "FirewallDomainListId": {
+              "Ref": "DnsFirewallWhitelistDomainList"
+            },
+            "Action": "ALLOW"
+          },
+          {
+            "Priority": 200,
+            "FirewallDomainListId": {
+              "Ref": "DnsFirewallCatchAllDomainList"
+            },
+            "Action": "ALERT"
+          }
+        ],
+        "Tags": [
+          {
+            "Key": "Name",
+            "Value": {
+              "Fn::Sub": "${AWS::StackName}-egress-control"
+            }
+          },
+          {
+            "Key": "security-owner",
+            "Value": "network-sec"
+          }
+        ]
+      }
+    },
+    "DnsFirewallRuleGroupAssociation": {
+      "Type": "AWS::Route53Resolver::FirewallRuleGroupAssociation",
+      "Properties": {
+        "FirewallRuleGroupId": {
+          "Ref": "DnsFirewallRuleGroup"
+        },
+        "VpcId": {
+          "Ref": "Vpc"
+        },
+        "Priority": 200,
+        "MutationProtection": "DISABLED",
+        "Name": {
+          "Fn::Sub": "${AWS::StackName}-vpc-association"
+        },
+        "Tags": [
+          {
+            "Key": "security-owner",
+            "Value": "network-sec"
+          }
+        ]
+      }
+    },
+    "DnsQueryLoggingConfig": {
+      "Type": "AWS::Route53Resolver::ResolverQueryLoggingConfig",
+      "Properties": {
+        "Name": {
+          "Fn::Sub": "${AWS::StackName}-dns-query-logging"
+        },
+        "DestinationArn": {
+          "Fn::GetAtt": ["DnsQueryLogGroup", "Arn"]
+        }
+      }
+    },
+    "DnsQueryLoggingConfigAssociation": {
+      "Type": "AWS::Route53Resolver::ResolverQueryLoggingConfigAssociation",
+      "Properties": {
+        "ResolverQueryLogConfigId": {
+          "Ref": "DnsQueryLoggingConfig"
+        },
+        "ResourceId": {
+          "Ref": "Vpc"
+        }
+      }
+    },
+    "DnsFirewallAlertMetricFilter": {
+      "Type": "AWS::Logs::MetricFilter",
+      "Properties": {
+        "LogGroupName": {
+          "Ref": "DnsQueryLogGroup"
+        },
+        "FilterPattern": "{ $.firewall_rule_action = \"ALERT\" }",
+        "MetricTransformations": [
+          {
+            "MetricNamespace": {
+              "Fn::Sub": "${AWS::StackName}/DnsFirewall"
+            },
+            "MetricName": "AlertedQueries",
+            "MetricValue": "1",
+            "DefaultValue": 0
+          }
+        ]
+      }
+    },
+    "DnsFirewallWhitelistCandidatesQuery": {
+      "Type": "AWS::Logs::QueryDefinition",
+      "DependsOn": "DnsQueryLogGroup",
+      "Properties": {
+        "Name": "DnsFireWallLogsSummary",
+        "QueryString": {
+          "Fn::Sub": "SOURCE logGroups(logGroupName: \"${AWS::StackName}-DnsFirewallLogs\") START=-1209600s END=0s\n| fields query_name, query_type, srcaddr\n| filter firewall_rule_action = \"ALERT\"\n| filter query_type not in [\"PTR\"]\n| stats count(*) as requests by query_name, query_type\n| sort requests desc\n| limit 500"
+        }
+      }
+    },
+    "DnsFirewallAlertAlarm": {
+      "Type": "AWS::CloudWatch::Alarm",
+      "Properties": {
+        "AlarmName": {
+          "Fn::Sub": "${AWS::StackName}-dns-firewall-alert-surge"
+        },
+        "AlarmDescription": "Unusual spike in DNS Firewall ALERT events - review DnsFirewallLogs for unexpected external service access",
+        "Namespace": {
+          "Fn::Sub": "${AWS::StackName}/DnsFirewall"
+        },
+        "MetricName": "AlertedQueries",
+        "Statistic": "Sum",
+        "Period": 300,
+        "EvaluationPeriods": 1,
+        "Threshold": 100,
+        "ComparisonOperator": "GreaterThanThreshold",
+        "TreatMissingData": "notBreaching"
+      }
     }
   },
   "Outputs": {
@@ -2023,6 +2211,26 @@
       "Export": {
         "Name": {
           "Fn::Sub": "${AWS::StackName}-SgVpcLoadbalancerportsAccess"
+        }
+      }
+    },
+    "DnsFirewallWhitelistId": {
+      "Value": {
+        "Ref": "DnsFirewallWhitelistDomainList"
+      },
+      "Export": {
+        "Name": {
+          "Fn::Sub": "${AWS::StackName}-DnsFirewallWhitelistId"
+        }
+      }
+    },
+    "DnsFirewallRuleGroupId": {
+      "Value": {
+        "Ref": "DnsFirewallRuleGroup"
+      },
+      "Export": {
+        "Name": {
+          "Fn::Sub": "${AWS::StackName}-DnsFirewallRuleGroupId"
         }
       }
     }
