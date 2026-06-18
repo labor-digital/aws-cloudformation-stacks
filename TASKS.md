@@ -1,56 +1,14 @@
-# Code Review — `feature/update-cluster-additional-changes`
-
-## Critical
+# Open tasks
 
 - [ ] **`cloudfront-alb-distribution` — WAFv2 CLOUDFRONT scope requires `us-east-1`**
-  The `AWS::WAFv2::WebACL` with `Scope: CLOUDFRONT` can only be created in `us-east-1`. No region guard exists. Deploying with `EnableWAF=true` (the default) in any other region causes a deploy-time failure and stack rollback. Fix: add a deploy-time assertion or split the WAF into a separate `us-east-1` stack.
-
-- [ ] **`ecscluster-vpc-rds-asg` — `ManagedTerminationProtection: DISABLED` on `CapacityProvider`, no drain mechanism**
-  When ECS Managed Scaling scales in, the ASG can terminate instances mid-task. The prior Lambda lifecycle hook that drained containers before termination was removed and not replaced. Fix: set `ManagedTerminationProtection: "ENABLED"`.
-
-- [ ] **`ecscluster-vpc-rds-asg` — `BackupRetentionPeriod` reduced from 35 days to 1 day**
-  A data corruption event not detected within 24 hours leaves no Aurora automated snapshot. The AWS Backup vault provides weekly snapshots only — up to 6 days of transactional data would be unrecoverable. Fix: restore to at least 7 days (35 preferred).
-
-## High
-
-- [ ] **`ecscluster-vpc-rds-asg` — IPv6 ingress rules dropped from ALB security group `SgPublicHttpHttps`**
-  The old `SgPublicHttps` had four ingress rules (IPv4 + IPv6 × ports 80 + 443). The replacement has IPv4-only. Clients on IPv6-only networks receive a TCP refusal at the internet-facing ALB. Fix: add `::/0` ingress rules for ports 80 and 443.
+  CloudFront's control plane runs entirely in `us-east-1`, so any WebACL attached to it must also exist there. Deploying this stack with `EnableWAF=true` (the default) in any other region fails immediately with `WAFInvalidOperationException: CLOUDFRONT scope can only be used in us-east-1`. Fix: split the WAF into a dedicated `us-east-1` stack, export the WebACL ARN, and pass it as a parameter here.
 
 - [ ] **`ecscluster-vpc-rds-asg/alb-logs-bucket` — S3 lifecycle rule missing `NoncurrentVersionExpiration`**
-  Versioning is enabled, but the `DeleteLogs` lifecycle rule only expires current-version objects. Non-current versions (created on every ALB log write) accumulate indefinitely, silently defeating the DSGVO retention ceiling and causing unbounded storage growth. Fix: add a `NoncurrentVersionExpiration` rule matching `RetentionDays`, or disable versioning (ALB log objects are never overwritten, so versioning provides no benefit).
+  Versioning is enabled, but the `DeleteLogs` lifecycle rule only expires current-version objects. Non-current versions accumulate indefinitely, silently defeating the DSGVO retention ceiling and causing unbounded storage growth. Fix: add a `NoncurrentVersionExpiration` rule matching `RetentionDays`, or disable versioning (ALB log objects are never overwritten, so versioning provides no benefit).
+  **Reminder (2026-06-19):** Bucket is exactly 14 days old — first lifecycle expiration runs imminently. Toggle "Show versions" in S3 console to confirm whether delete markers and non-current versions appear. If they do, the fix is needed. If the list stays clean, the finding is invalid.
 
-- [ ] **`dns-firewall/index.template` (top-level) — staged as Added but deleted on disk**
-  `git status` shows `AD dns-firewall/index.template`. Committing now records a file that doesn't exist on disk; the live template is at `ecscluster-vpc-rds-asg/dns-firewall/index.template`. Fix: stage the deletion (`git add dns-firewall/index.template`) before committing.
-
-## Medium
-
-- [ ] **`ecscluster-vpc-rds-asg` — VPC Flow Logs changed from `ALL` to `REJECT`**
-  Accepted traffic is no longer logged. A compromised container exfiltrating data over permitted paths leaves no flow log trail. Incident responders lose source/destination IP and byte-count evidence for successful connections. Consider keeping `ALL` or using `ACCEPT` to restore forensic capability, accepting the increased log volume.
-
-- [ ] **`ecscluster-vpc-rds-asg/dns-firewall` — default `WhitelistDomains` covers only `*.in-addr.arpa`**
-  The catch-all rule currently uses `ALERT` (not `BLOCK`), so nothing breaks today. But if the catch-all is ever switched to `BLOCK` (the intended final state per the Zero-Trust roadmap), the default whitelist allows only PTR queries and would immediately block all DNS for `*.amazonaws.com`, ECR, S3, RDS, and application dependencies. Fix: document that `WhitelistDomains` *must* be populated before switching to BLOCK, or provide a safer default covering essential AWS domains.
-
-- [ ] **`ecscluster-vpc-rds-asg` — Seven cross-stack exports removed**
-  Removed: `SgVpcMysqlAccess`, `SgVpcLoadbalancerports`, `SgVpcEfsAccess`, `SgLaborSsh`, `InstanceroleProfile`, `KeypairName`, `AscalegroupHookTermTopic`, `ImageId`. No internal consumers found, but any external stack referencing these via `Fn::ImportValue` will fail on its next update. Audit external stacks before merging.
-
-## Low
-
-- [ ] **`alb-ecsservice-rule` + `ecsservice` — deploying both for the same service causes a listener rule priority conflict**
-  Both templates create HTTP and HTTPS listener rules. Using them together for the same service creates duplicate rules at the same priority on the same listener, resulting in an `ALBListenerPriorityConflict` error that spans two independent stacks. Add a warning to the `alb-ecsservice-rule` README clarifying it is only for ECS services deployed outside the `ecsservice` template.
-
----
-
-# Template Review — `ecscluster-vpc-rds-asg/index.template`
-
-## Medium — ECS scaling
-
-- **`CapacityProvider`** — `ManagedTerminationProtection: DISABLED`. Instances can be terminated mid-task during scale-down without draining. Change to `ENABLED`.
-- **`CapacityProvider`** — `MaximumScalingStepSize: 2` is hardcoded and conservative. During traffic spikes the cluster can only add 2 instances per scaling action.
-
-## Low — RDS hardening
-
-- No `EnableIAMDatabaseAuthentication`.
-- No `EnableCloudwatchLogsExports` for MySQL error/slow query logs.
+- [ ] **`ecscluster-vpc-rds-asg` — RDS uses static master password, no `EnableIAMDatabaseAuthentication`**
+  Currently every application authenticates with the same static `RdsMasterPassword` passed as a stack parameter. With IAM auth enabled, ECS tasks use a short-lived token generated from their IAM role instead — no static credentials stored anywhere. Access can be revoked per-service via IAM without changing a shared password. Requires code changes in each application to use token-based connection strings. Worth doing as part of the zero-trust posture but not a quick fix.
 
 ---
 

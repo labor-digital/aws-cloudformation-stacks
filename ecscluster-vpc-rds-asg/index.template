@@ -916,7 +916,8 @@
         "Description": "Aurora 8.0 Cluster Parameter Group with secure connection required",
         "Family": "aurora-mysql8.0",
         "Parameters": {
-          "require_secure_transport": "ON"
+          "require_secure_transport": "ON",
+          "slow_query_log": "1"
         }
       }
     },
@@ -976,6 +977,7 @@
             }
           }
         ],
+        "EnableCloudwatchLogsExports": ["error", "slowquery"],
         "StorageEncrypted": true,
         "VpcSecurityGroupIds": [
           {
@@ -1917,6 +1919,26 @@
         "DeliverLogsPermissionArn": {
           "Fn::GetAtt": ["VpcFlowLogRole", "Arn"]
         }
+      }
+    },
+    "RdsErrorLogGroup": {
+      "Type": "AWS::Logs::LogGroup",
+      "DependsOn": "Rdscl",
+      "Properties": {
+        "LogGroupName": {
+          "Fn::Sub": "/aws/rds/cluster/${Rdscl}/error"
+        },
+        "RetentionInDays": 14
+      }
+    },
+    "RdsSlowQueryLogGroup": {
+      "Type": "AWS::Logs::LogGroup",
+      "DependsOn": "Rdscl",
+      "Properties": {
+        "LogGroupName": {
+          "Fn::Sub": "/aws/rds/cluster/${Rdscl}/slowquery"
+        },
+        "RetentionInDays": 14
       }
     },
     "DnsQueryLogGroup": {
