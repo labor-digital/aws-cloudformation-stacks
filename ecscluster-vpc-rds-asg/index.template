@@ -2123,6 +2123,150 @@
         "ComparisonOperator": "GreaterThanThreshold",
         "TreatMissingData": "notBreaching"
       }
+    },
+    "VpcFlowLogsRejectedMetricFilter": {
+      "Type": "AWS::Logs::MetricFilter",
+      "Properties": {
+        "LogGroupName": {
+          "Ref": "VpcFlowLogGroup"
+        },
+        "FilterPattern": "[version, account_id, interface_id, srcaddr, dstaddr, srcport, dstport, protocol, packets, bytes, start, end, action=REJECT, log_status]",
+        "MetricTransformations": [
+          {
+            "MetricNamespace": {
+              "Fn::Sub": "${AWS::StackName}/VpcFlowLogs"
+            },
+            "MetricName": "RejectedConnections",
+            "MetricValue": "1",
+            "DefaultValue": 0
+          }
+        ]
+      }
+    },
+    "VpcFlowLogsRejectedAlarm": {
+      "Type": "AWS::CloudWatch::Alarm",
+      "Properties": {
+        "AlarmName": {
+          "Fn::Sub": "${AWS::StackName}-vpc-rejected-surge"
+        },
+        "AlarmDescription": "Unusual spike in rejected VPC connections - potential port scan or misconfigured service. Review VpcFlowLogsRejectedTraffic Logs Insights query.",
+        "Namespace": {
+          "Fn::Sub": "${AWS::StackName}/VpcFlowLogs"
+        },
+        "MetricName": "RejectedConnections",
+        "Statistic": "Sum",
+        "Period": 300,
+        "EvaluationPeriods": 1,
+        "Threshold": 500,
+        "ComparisonOperator": "GreaterThanThreshold",
+        "TreatMissingData": "notBreaching"
+      }
+    },
+    "VpcFlowLogsRejectedTrafficQuery": {
+      "Type": "AWS::Logs::QueryDefinition",
+      "DependsOn": "VpcFlowLogGroup",
+      "Properties": {
+        "Name": "VpcFlowLogsRejectedTraffic",
+        "QueryString": {
+          "Fn::Sub": "SOURCE logGroups(logGroupName: \"${VpcFlowLogGroup}\") START=-3600s END=0s\n| fields @timestamp, @message\n| parse @message \"* * * * * * * * * * * * * *\" as version, account, eni, srcaddr, dstaddr, srcport, dstport, protocol, packets, bytes, start, end, action, status\n| filter action = \"REJECT\"\n| stats count(*) as rejects by srcaddr, dstport\n| sort rejects desc\n| limit 50"
+        }
+      }
+    },
+    "RdsErrorMetricFilter": {
+      "Type": "AWS::Logs::MetricFilter",
+      "Properties": {
+        "LogGroupName": {
+          "Ref": "RdsErrorLogGroup"
+        },
+        "FilterPattern": "\"[ERROR]\"",
+        "MetricTransformations": [
+          {
+            "MetricNamespace": {
+              "Fn::Sub": "${AWS::StackName}/RDS"
+            },
+            "MetricName": "ErrorCount",
+            "MetricValue": "1",
+            "DefaultValue": 0
+          }
+        ]
+      }
+    },
+    "RdsErrorAlarm": {
+      "Type": "AWS::CloudWatch::Alarm",
+      "Properties": {
+        "AlarmName": {
+          "Fn::Sub": "${AWS::StackName}-rds-error"
+        },
+        "AlarmDescription": "RDS Aurora error log contains [ERROR] entries. Review RdsErrorLogSummary Logs Insights query for details.",
+        "Namespace": {
+          "Fn::Sub": "${AWS::StackName}/RDS"
+        },
+        "MetricName": "ErrorCount",
+        "Statistic": "Sum",
+        "Period": 300,
+        "EvaluationPeriods": 1,
+        "Threshold": 0,
+        "ComparisonOperator": "GreaterThanThreshold",
+        "TreatMissingData": "notBreaching"
+      }
+    },
+    "RdsErrorLogSummaryQuery": {
+      "Type": "AWS::Logs::QueryDefinition",
+      "DependsOn": "RdsErrorLogGroup",
+      "Properties": {
+        "Name": "RdsErrorLogSummary",
+        "QueryString": {
+          "Fn::Sub": "SOURCE logGroups(logGroupName: \"${RdsErrorLogGroup}\") START=-86400s END=0s\n| fields @timestamp, @message\n| filter @message like /\\[ERROR\\]|\\[Warning\\]/\n| sort @timestamp desc\n| limit 100"
+        }
+      }
+    },
+    "RdsSlowQueryMetricFilter": {
+      "Type": "AWS::Logs::MetricFilter",
+      "Properties": {
+        "LogGroupName": {
+          "Ref": "RdsSlowQueryLogGroup"
+        },
+        "FilterPattern": "\"# Query_time\"",
+        "MetricTransformations": [
+          {
+            "MetricNamespace": {
+              "Fn::Sub": "${AWS::StackName}/RDS"
+            },
+            "MetricName": "SlowQueryCount",
+            "MetricValue": "1",
+            "DefaultValue": 0
+          }
+        ]
+      }
+    },
+    "RdsSlowQueryAlarm": {
+      "Type": "AWS::CloudWatch::Alarm",
+      "Properties": {
+        "AlarmName": {
+          "Fn::Sub": "${AWS::StackName}-rds-slow-queries"
+        },
+        "AlarmDescription": "More than 5 slow queries (>10s) in 5 minutes. Review RdsSlowQuerySummary Logs Insights query.",
+        "Namespace": {
+          "Fn::Sub": "${AWS::StackName}/RDS"
+        },
+        "MetricName": "SlowQueryCount",
+        "Statistic": "Sum",
+        "Period": 300,
+        "EvaluationPeriods": 1,
+        "Threshold": 5,
+        "ComparisonOperator": "GreaterThanThreshold",
+        "TreatMissingData": "notBreaching"
+      }
+    },
+    "RdsSlowQuerySummaryQuery": {
+      "Type": "AWS::Logs::QueryDefinition",
+      "DependsOn": "RdsSlowQueryLogGroup",
+      "Properties": {
+        "Name": "RdsSlowQuerySummary",
+        "QueryString": {
+          "Fn::Sub": "SOURCE logGroups(logGroupName: \"${RdsSlowQueryLogGroup}\") START=-86400s END=0s\n| fields @timestamp, @message\n| filter @message like /# Query_time/\n| parse @message \"# Query_time: * Lock_time: * Rows_sent: * Rows_examined: *\" as query_time, lock_time, rows_sent, rows_examined\n| sort query_time desc\n| limit 50"
+        }
+      }
     }
   },
   "Outputs": {
