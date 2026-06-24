@@ -73,6 +73,12 @@
       "Type": "CommaDelimitedList",
       "Description": "Comma-separated list of domains to allow through the DNS Firewall (e.g. *.eu-west-3.amazonaws.com,*.ec2.internal,api.doppler.com). Note: wildcards (*) only match a single subdomain level — *.example.com matches foo.example.com but NOT foo.bar.example.com. List must not be empty and must not contain trailing commas.",
       "Default": "*.in-addr.arpa"
+    },
+    "EnableEgressAnalysis": {
+      "Type": "String",
+      "Default": "false",
+      "AllowedValues": ["true", "false"],
+      "Description": "Enable ACCEPT-mode VPC Flow Logs for egress port baseline analysis. Temporary — disable after 7-14 days once sufficient data is collected for Security Group hardening (LII26-95)."
     }
   },
   "Resources": {
@@ -1921,6 +1927,85 @@
         }
       }
     },
+    "VpcAcceptFlowLogGroup": {
+      "Type": "AWS::Logs::LogGroup",
+      "Condition": "EgressAnalysisEnabled",
+      "Properties": {
+        "LogGroupName": {
+          "Fn::Join": ["-", [{"Ref": "AWS::StackName"}, "VpcAcceptFlowLogs"]]
+        },
+        "RetentionInDays": 14
+      }
+    },
+    "VpcAcceptFlowLogRole": {
+      "Type": "AWS::IAM::Role",
+      "Condition": "EgressAnalysisEnabled",
+      "Properties": {
+        "AssumeRolePolicyDocument": {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Effect": "Allow",
+              "Principal": {
+                "Service": "vpc-flow-logs.amazonaws.com"
+              },
+              "Action": "sts:AssumeRole"
+            }
+          ]
+        },
+        "Policies": [
+          {
+            "PolicyName": "VpcAcceptFlowLogPolicy",
+            "PolicyDocument": {
+              "Version": "2012-10-17",
+              "Statement": [
+                {
+                  "Effect": "Allow",
+                  "Action": [
+                    "logs:CreateLogStream",
+                    "logs:PutLogEvents",
+                    "logs:DescribeLogGroups",
+                    "logs:DescribeLogStreams"
+                  ],
+                  "Resource": {
+                    "Fn::GetAtt": ["VpcAcceptFlowLogGroup", "Arn"]
+                  }
+                }
+              ]
+            }
+          }
+        ]
+      }
+    },
+    "VpcAcceptFlowLog": {
+      "Type": "AWS::EC2::FlowLog",
+      "Condition": "EgressAnalysisEnabled",
+      "Properties": {
+        "ResourceId": {
+          "Ref": "Vpc"
+        },
+        "ResourceType": "VPC",
+        "TrafficType": "ACCEPT",
+        "LogDestinationType": "cloud-watch-logs",
+        "LogGroupName": {
+          "Ref": "VpcAcceptFlowLogGroup"
+        },
+        "DeliverLogsPermissionArn": {
+          "Fn::GetAtt": ["VpcAcceptFlowLogRole", "Arn"]
+        }
+      }
+    },
+    "VpcEgressPortsQuery": {
+      "Type": "AWS::Logs::QueryDefinition",
+      "Condition": "EgressAnalysisEnabled",
+      "DependsOn": "VpcAcceptFlowLogGroup",
+      "Properties": {
+        "Name": "VpcEgressPortsAnalysis",
+        "QueryString": {
+          "Fn::Sub": "SOURCE logGroups(logGroupName: \"${VpcAcceptFlowLogGroup}\") START=-604800s END=0s\n| fields @timestamp, @message\n| parse @message \"* * * * * * * * * * * * * *\" as version, account, eni, srcaddr, dstaddr, srcport, dstport, protocol, packets, bytes, start, end, action, status\n| filter action = \"ACCEPT\"\n| filter srcaddr like /^10\\./\n| filter not dstaddr like /^10\\./\n| stats count(*) as connections, sum(bytes) as totalBytes by dstport, protocol\n| sort connections desc\n| limit 50"
+        }
+      }
+    },
     "RdsErrorLogGroup": {
       "Type": "AWS::Logs::LogGroup",
       "DependsOn": "Rdscl",
@@ -2267,6 +2352,17 @@
           "Fn::Sub": "SOURCE logGroups(logGroupName: \"${RdsSlowQueryLogGroup}\") START=-86400s END=0s\n| fields @timestamp, @message\n| filter @message like /# Query_time/\n| parse @message \"# Query_time: * Lock_time: * Rows_sent: * Rows_examined: *\" as query_time, lock_time, rows_sent, rows_examined\n| sort query_time desc\n| limit 50"
         }
       }
+    },
+    "ClusterDashboard": {
+      "Type": "AWS::CloudWatch::Dashboard",
+      "Properties": {
+        "DashboardName": {
+          "Fn::Sub": "${AWS::StackName}-Overview"
+        },
+        "DashboardBody": {
+          "Fn::Sub": "{\"start\":\"-PT3H\",\"widgets\":[{\"type\":\"metric\",\"x\":0,\"y\":0,\"width\":12,\"height\":6,\"properties\":{\"title\":\"ECS CPU by Service\",\"view\":\"timeSeries\",\"stacked\":false,\"metrics\":[[{\"expression\":\"SEARCH('{AWS/ECS,ClusterName,ServiceName} ClusterName=\\\"${AWS::StackName}-Ecscluster\\\" MetricName=\\\"CPUUtilization\\\"','Average',300)\",\"label\":\"$${LABEL}\",\"id\":\"cpu\"}]],\"period\":300,\"stat\":\"Average\",\"region\":\"${AWS::Region}\",\"yAxis\":{\"left\":{\"min\":0,\"max\":100}}}},{\"type\":\"metric\",\"x\":12,\"y\":0,\"width\":12,\"height\":6,\"properties\":{\"title\":\"ECS Memory by Service\",\"view\":\"timeSeries\",\"stacked\":false,\"metrics\":[[{\"expression\":\"SEARCH('{AWS/ECS,ClusterName,ServiceName} ClusterName=\\\"${AWS::StackName}-Ecscluster\\\" MetricName=\\\"MemoryUtilization\\\"','Average',300)\",\"label\":\"$${LABEL}\",\"id\":\"mem\"}]],\"period\":300,\"stat\":\"Average\",\"region\":\"${AWS::Region}\",\"yAxis\":{\"left\":{\"min\":0,\"max\":100}}}},{\"type\":\"metric\",\"x\":0,\"y\":6,\"width\":12,\"height\":6,\"properties\":{\"title\":\"RDS CPU & Connections\",\"view\":\"timeSeries\",\"stacked\":false,\"metrics\":[[\"AWS/RDS\",\"CPUUtilization\",\"DBClusterIdentifier\",\"${Rdscl}\",{\"stat\":\"Average\",\"label\":\"CPU %\"}],[\"AWS/RDS\",\"DatabaseConnections\",\"DBClusterIdentifier\",\"${Rdscl}\",{\"stat\":\"Average\",\"label\":\"Connections\",\"yAxis\":\"right\"}]],\"period\":300,\"region\":\"${AWS::Region}\",\"yAxis\":{\"left\":{\"min\":0,\"max\":100,\"label\":\"CPU %\"},\"right\":{\"min\":0,\"label\":\"Connections\"}}}},{\"type\":\"metric\",\"x\":12,\"y\":6,\"width\":12,\"height\":6,\"properties\":{\"title\":\"VPC Rejected Connections\",\"view\":\"timeSeries\",\"stacked\":false,\"metrics\":[[\"${AWS::StackName}/VpcFlowLogs\",\"RejectedConnections\",{\"stat\":\"Sum\",\"label\":\"Rejected/5min\"}]],\"period\":300,\"region\":\"${AWS::Region}\",\"annotations\":{\"horizontal\":[{\"label\":\"Alarm threshold\",\"value\":500}]}}}]}"
+        }
+      }
     }
   },
   "Outputs": {
@@ -2411,6 +2507,9 @@
       "Fn::Not": [
         { "Fn::Equals": [ { "Ref": "LogsBucketName" }, "" ] }
       ]
+    },
+    "EgressAnalysisEnabled": {
+      "Fn::Equals": [ { "Ref": "EnableEgressAnalysis" }, "true" ]
     }
   }
 }
