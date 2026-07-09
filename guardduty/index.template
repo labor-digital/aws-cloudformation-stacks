@@ -1,0 +1,197 @@
+{
+  "AWSTemplateFormatVersion": "2010-09-09",
+  "Description": "GuardDuty detector and incident-response infrastructure for zero-trust egress monitoring (LII26-96). One stack per region.",
+  "Parameters": {
+    "ClusterName": {
+      "Type": "String",
+      "Description": "Cluster name for tagging and reference (e.g. labc-eu-w3). Used to identify this detector's purpose; does not constrain deployment.",
+      "MinLength": "4",
+      "MaxLength": "32"
+    },
+    "ClusterStackName": {
+      "Type": "String",
+      "Description": "CloudFormation stack name of the ecscluster-vpc-rds-asg cluster (e.g. labc-eu-w3-cl). Used to import the VPC ID for the Quarantine Security Group.",
+      "MinLength": "4"
+    },
+    "FindingPublishingFrequency": {
+      "Type": "String",
+      "Default": "FIFTEEN_MINUTES",
+      "AllowedValues": [
+        "FIFTEEN_MINUTES",
+        "ONE_HOUR",
+        "SIX_HOURS"
+      ],
+      "Description": "How often GuardDuty publishes findings. FIFTEEN_MINUTES = real-time alerts; SIX_HOURS = lower cost, suitable for batch incident response."
+    }
+  },
+  "Resources": {
+    "GuardDutyDetector": {
+      "Type": "AWS::GuardDuty::Detector",
+      "Properties": {
+        "Enable": true,
+        "FindingPublishingFrequency": {
+          "Ref": "FindingPublishingFrequency"
+        },
+        "DataSources": {
+          "S3Logs": {
+            "Enable": false
+          },
+          "Kubernetes": {
+            "AuditLogs": {
+              "Enable": false
+            }
+          },
+          "MalwareProtection": {
+            "ScanEc2InstanceWithFindings": {
+              "EbsVolumes": false
+            }
+          }
+        },
+        "Tags": [
+          {
+            "Key": "Name",
+            "Value": {
+              "Fn::Sub": "${ClusterName}-GuardDutyDetector"
+            }
+          },
+          {
+            "Key": "Cluster",
+            "Value": {
+              "Ref": "ClusterName"
+            }
+          },
+          {
+            "Key": "Purpose",
+            "Value": "LII26-96 Zero-Trust Egress Monitoring"
+          }
+        ]
+      }
+    },
+    "QuarantineSg": {
+      "Type": "AWS::EC2::SecurityGroup",
+      "Properties": {
+        "GroupName": {
+          "Fn::Sub": "${ClusterName}-Quarantine"
+        },
+        "GroupDescription": "Quarantine security group: zero egress rules. Attached to compromised instances by GuardDuty incident response (Phase 3 Step D).",
+        "VpcId": {
+          "Fn::ImportValue": {
+            "Fn::Sub": "${ClusterStackName}-Vpc"
+          }
+        },
+        "SecurityGroupEgress": [],
+        "Tags": [
+          {
+            "Key": "Name",
+            "Value": {
+              "Fn::Sub": "${ClusterName}-Quarantine"
+            }
+          },
+          {
+            "Key": "Purpose",
+            "Value": "GuardDuty incident response / instance isolation"
+          }
+        ]
+      }
+    },
+    "GuardDutyIncidentResponseRole": {
+      "Type": "AWS::IAM::Role",
+      "Properties": {
+        "AssumeRolePolicyDocument": {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Effect": "Allow",
+              "Principal": {
+                "Service": "lambda.amazonaws.com"
+              },
+              "Action": "sts:AssumeRole"
+            }
+          ]
+        },
+        "ManagedPolicyArns": [
+          "arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
+        ],
+        "Policies": [
+          {
+            "PolicyName": "GuardDutyIncidentResponse",
+            "PolicyDocument": {
+              "Version": "2012-10-17",
+              "Statement": [
+                {
+                  "Effect": "Allow",
+                  "Action": [
+                    "ec2:DescribeInstances",
+                    "ec2:DescribeNetworkInterfaces",
+                    "ec2:ModifyInstanceAttribute"
+                  ],
+                  "Resource": "*"
+                },
+                {
+                  "Effect": "Allow",
+                  "Action": [
+                    "guardduty:GetFindings",
+                    "guardduty:GetFindingsStatistics"
+                  ],
+                  "Resource": "*"
+                }
+              ]
+            }
+          }
+        ],
+        "RoleName": {
+          "Fn::Sub": "${ClusterName}-GuardDutyIncidentResponseRole"
+        }
+      }
+    }
+  },
+  "Outputs": {
+    "DetectorId": {
+      "Value": {
+        "Ref": "GuardDutyDetector"
+      },
+      "Export": {
+        "Name": {
+          "Fn::Sub": "${AWS::StackName}-DetectorId"
+        }
+      },
+      "Description": "GuardDuty Detector ID for EventBridge rules and programmatic access"
+    },
+    "DetectorArn": {
+      "Value": {
+        "Fn::Sub": "arn:aws:guardduty:${AWS::Region}:${AWS::AccountId}:detector/${GuardDutyDetector}"
+      },
+      "Export": {
+        "Name": {
+          "Fn::Sub": "${AWS::StackName}-DetectorArn"
+        }
+      },
+      "Description": "GuardDuty Detector ARN"
+    },
+    "QuarantineSgId": {
+      "Value": {
+        "Ref": "QuarantineSg"
+      },
+      "Export": {
+        "Name": {
+          "Fn::Sub": "${AWS::StackName}-QuarantineSgId"
+        }
+      },
+      "Description": "Quarantine Security Group ID for Phase 3 Step D incident response"
+    },
+    "IncidentResponseRoleArn": {
+      "Value": {
+        "Fn::GetAtt": [
+          "GuardDutyIncidentResponseRole",
+          "Arn"
+        ]
+      },
+      "Export": {
+        "Name": {
+          "Fn::Sub": "${AWS::StackName}-IncidentResponseRoleArn"
+        }
+      },
+      "Description": "IAM role ARN for GuardDuty incident response Lambda (Phase 3 Step D)"
+    }
+  }
+}

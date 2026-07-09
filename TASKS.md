@@ -1,8 +1,10 @@
 # Open tasks
 
-- [ ] **`ecscluster-vpc-rds-asg/alb-logs-bucket` — S3 lifecycle rule missing `NoncurrentVersionExpiration`**
-  Versioning is enabled, but the `DeleteLogs` lifecycle rule only expires current-version objects. Non-current versions accumulate indefinitely, silently defeating the DSGVO retention ceiling and causing unbounded storage growth. Fix: add a `NoncurrentVersionExpiration` rule matching `RetentionDays`, or disable versioning (ALB log objects are never overwritten, so versioning provides no benefit).
-  **Reminder (2026-06-19):** Bucket is exactly 14 days old — first lifecycle expiration runs imminently. Toggle "Show versions" in S3 console to confirm whether delete markers and non-current versions appear. If they do, the fix is needed. If the list stays clean, the finding is invalid.
+- [ ] **Create new dashboards**
+  Paris has the template-provisioned `labc-eu-w3-cl-Overview` dashboard; Frankfurt gets `labc-eu-c1-Overview` with the cluster update. Evaluate what else deserves a dashboard (e.g. per-service deep-dive, DNS Firewall/egress monitoring views) and add to the template so all clusters get them.
+
+- [ ] **Restart Frankfurt instances to pick up launch template updates** ✓ Done
+  Existing instances rotated to latest AL2023 ECS AMI with `dnf-automatic` security updates.
 
 - [ ] **`ecscluster-vpc-rds-asg` — RDS uses static master password, no `EnableIAMDatabaseAuthentication`**
   Currently every application authenticates with the same static `RdsMasterPassword` passed as a stack parameter. With IAM auth enabled, ECS tasks use a short-lived token generated from their IAM role instead — no static credentials stored anywhere. Access can be revoked per-service via IAM without changing a shared password. Requires code changes in each application to use token-based connection strings. Worth doing as part of the zero-trust posture but not a quick fix.

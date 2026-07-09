@@ -8,8 +8,10 @@ Dieses Repository enthält die AWS CloudFormation Stack-Templates, die von LABOR
 
 | Template                       | Beschreibung |
 |--------------------------------|---|
-| `ecscluster-vpc-rds-asg`       | Vollständiger ECS-Cluster-Stack mit VPC, RDS, Auto Scaling Group und Load Balancer. |
+| `ecscluster-vpc-rds-asg`       | Vollständiger ECS-Cluster-Stack mit VPC, RDS, Auto Scaling Group, Load Balancer, CloudWatch-Überwachung und DNS Firewall für Zero-Trust-Egress-Sicherheit. |
+| `ecscluster-vpc-rds-asg/alb-logs-bucket` | ALB-Zugriffslogs mit S3-Lifecycle-Regeln und DSGVO-Aufbewahrungsgrenzen. Separate, unveränderlich gespeicherte Ressource (Löschung von Stack hindert Bucket nicht). |
 | `ecscluster-vpc-rds-asg/backup` | Erstellt zusätzliche Backup-Vaults für regionsübergreifende Backups. |
+| `guardduty`                    | GuardDuty Detector + Quarantine Security Group + IAM-Rollen für Threat Detection und Zero-Trust-Incident-Response. Pro Region ein Stack. |
 | `ecsservice`                   | ECS-Service-Stack zur Bereitstellung einer containerisierten Anwendung auf einem bestehenden Cluster. |
 | `alb-ecsservice-rule`          | Verbindet einen Hostnamen und Pfad mit der Targetgroup eines bestehenden ECS-Services. |
 | `alb-redirect-rule`            | Erstellt eine URL-Redirect-Regel auf dem Application Load Balancer eines bestehenden Clusters. |
@@ -22,7 +24,163 @@ Dieses Repository enthält die AWS CloudFormation Stack-Templates, die von LABOR
 
 ---
 
+## Architektur- und Designentscheidungen
+
+### Zero-Trust Egress Security: Vierphasiger Rollout
+
+Die Cluster-Infrastruktur folgt einer wiederholbaren, vier-Phasen-Strategie für die Härtung ausgehender Netzwerksicherheit. Jede Phase wird auf einem Cluster validiert, bevor sie auf weitere angewendet wird.
+
+**Phase 1: DNS Monitoring (ALERT-Modus)**
+- DNS Firewall mit zwei Regeln: ALLOW für die Whitelist, ALERT für alles andere
+- Route 53 Query Logging für DNS-Abfragen in CloudWatch
+- GuardDuty aktivieren (Threat Detection basierend auf VPC Flow Logs + DNS Logs)
+- Mindestens 7 Tage laufen lassen, um Baseline zu sammeln
+
+**Phase 2: Whitelist-Analyse & Verfeinerung**
+- CloudWatch Logs Insights Query ausführen: alle ALERT'd domains dieser Phase
+- Gruppieren nach Häufigkeit; legitime Services identifizieren, Tracker/verdächtige Domains filtern
+- DNS-Whitelist mit aggrierierten Root-Domains updaten (Wildcards vorsichtig verwenden — `*.example.com` in Route 53 DNS Firewall matched alle Subdomain-Tiefen)
+- GuardDuty Findings prüfen und mit DNS-Logs korrelieren
+
+**Phase 3: Security Group Härtung**
+- *Step A:* ACCEPT-Mode VPC Flow Logs aktivieren (`EnableEgressAnalysis=true` Parameter), 7–14 Tage laufen, `VpcEgressPortsAnalysis` Query ausführen → Baseline aller egress Ports sammeln
+- *Step B:* Prüfen, ob Instanzen bereits Amazon Time Sync Service (`169.254.169.123`) nutzen; falls nein, Port 123/UDP hinzufügen oder auf Time Sync migrieren
+- *Step C:* Blanket Allow-All Egress-Regel löschen, explizite Egress-Regeln hinzufügen: 443/TCP (HTTPS/APIs), 587/TCP (SMTP, wenn benötigt), 123/UDP (NTP, wenn nicht Time Sync), 53/TCP+UDP (interne DNS zum VPC CIDR)
+- *Step D:* Automated Incident Response: EventBridge + Lambda, die on HIGH-Severity GuardDuty findings eine instance auf die Quarantine Security Group (zero egress) umschalten
+
+**Phase 4: Go Live (BLOCK-Modus)**
+- DNS Firewall Catch-All-Regel von ALERT → BLOCK umschalten
+- Kritische Anwendungen testen (Email, NTP, APIs)
+- Erste 48h CloudWatch BLOCK-Events monitoren
+- Rollback-Befehl dokumentieren
+
+**Warum die Phasierung:** ALERT-Modus first, weil die Whitelist-Genauigkeit direkt auswirkt — zu eng und legitime Traffic blockiert, zu weit und Sicherheit ist illusorisch. Erst nach einer Woche Datensammlung und gründlicher Analyse ist die Whitelist stabil. Dann folgt die Egress-Härtung isoliert (die Whitelist ist stabil, also keine "war die DNS-Regel zu streng?" Fragen mehr). Quarantine-Automation kommt zuletzt, wenn alle Rules statisch sind. Blockieren kommt erst, wenn alles getestet wurde.
+
+**Infrastruktur-Komponenten:**
+- **DNS Firewall** (in `ecscluster-vpc-rds-asg`): Route 53 Resolver mit zwei Regeln (ALLOW Whitelist, ALERT Catch-all). Aktiv ab Phase 1.
+- **Route 53 Query Logs** (in `ecscluster-vpc-rds-asg`): Erfasst alle DNS-Abfragen in CloudWatch Logs für Analyse.
+- **GuardDuty Detector** (in separatem `guardduty` Stack): Überwacht VPC Flow Logs + Route 53 DNS Logs + CloudTrail auf Bedrohungen. Per Region ein Stack (nicht pro Cluster).
+- **Quarantine Security Group** (in `guardduty` Stack): Null Egress-Regeln. Wird von der Phase-3-Step-D-Automation (EventBridge + Lambda) auf Instances angewendet, wenn GuardDuty HIGH-Severity-Findings erkennt.
+
+### Stack-Abhängigkeiten und Lifecycle
+
+**Stack-Reihenfolge pro Region:**
+1. `guardduty` Stack (enables GuardDuty, erstellt Quarantine SG und IAM-Rollen)
+2. `ecscluster-vpc-rds-asg` Stack (das Cluster selbst, mit DNS Firewall eingebaut)
+3. `ecscluster-vpc-rds-asg/alb-logs-bucket` Stack (separate Stack für ALB-Logs, unveränderlich)
+4. `ecsservice` Stack(s) (auf dem Cluster deployt)
+
+**Warum separate Stacks für Konto-Ressourcen:**
+- **`guardduty`**: Account + Region sind die natürlichen Grenzen. GuardDuty ist nicht an einen Cluster gebunden; ein Detector überwacht die gesamte Region. Würde der Detector im Cluster-Template leben, könnte man ihn nicht zweimal deployen (harter Limit: ein Detector pro Account/Region). Lebte er im Cluster, würde das Löschen eines Cluster-Stacks die Threat Detection für die gesamte Region abschalten — gefährlich.
+- **`alb-logs-bucket`**: Das ALB-Logs-Bucket wird mit `DeletionPolicy: Retain` und `UpdateReplacePolicy: Retain` gekennzeichnet — CloudFormation löscht es niemals, selbst wenn der Stack gelöscht wird. Das ist absichtlich (Audit-Trail-Schutz), aber bedeutet auch, dass es nicht als Teil des Cluster-Lifecycle gelten sollte. Eine separate Stack erlaubt es, den Cluster zu löschen ohne Sorgen um Datenverlust.
+
+### EC2-Instanzen: Desired Capacity = 0, ECS Managed Scaling
+
+Die `Ascalegroup` startet mit `DesiredCapacity: 0` (keine Instances beim Deployment). **Warum:**
+- **ECS Capacity Provider mit Managed Scaling** überwacht die ECS-Task-Auslastung (Anzahl der Tasks im Cluster vs. verfügbare Kapazität).
+- Wenn eine Task nicht eingeplant werden kann (keine verfügbaren Ressourcen), erhöht Capacity Provider `DesiredCapacity` automatisch.
+- Wenn Kapazität unterlastet ist, reduziert es die Kapazität wieder.
+- Das spart Kosten während der Entwicklung/Staging (0 Instances = $0 pro Stunde für EC2) und optimiert automatisch für Produktion.
+
+**Alte Methode vs. neue Methode:**
+| Alte Methode (nicht mehr aktiv) | Neue Methode (Capacity Provider) |
+|----------------------------------|----------------------------------|
+| `DesiredCapacity: 3` oder höher | `DesiredCapacity: 0` |
+| Statische `AlarmAutoscaleScaleUp`/`ScaleDown` Step-Scaling-Alarme, permanent "In Alarm" wenn CPU niedrig | Interner ECS Managed Scaling, keine sichtbaren Alarme |
+| Manuelle Tuning der Step-Scaling-Schwellwerte | Einziger Schwellwert: Target Capacity (Standard: 80%) |
+
+### RDS und EFS: Encryption-by-Default
+
+`StorageEncrypted: true` auf `Rdscl` und `Encrypted: true` auf `Efs` — beides unveränderliche Eigenschaften. **Warum:**
+- Seit 2023 AWS-Best-Practice für jede Datenpersistenz.
+- Kann nicht nachträglich auf einer bestehenden Cluster aktiviert werden — CloudFormation müsste die Ressource ersetzen (Downtime, Datenverlust).
+- Eine neue Cluster deployt daher mit Encryption von Anfang an; bestehende Cluster, die aktualisiert werden, müssen eine Blue-Green-Migration durchführen (nicht im Template automatisiert).
+
+### CloudWatch Monitoring und Dashboard
+
+Die `ecscluster-vpc-rds-asg`-Vorlage enthält jetzt:
+- **Metric Filters** für RDS (error log, slow query) und VPC Flow Logs (rejected traffic)
+- **CloudWatch Alarms** auf diesen Filtern (Threshold=0 für RDS errors = sofort bei Problemen, Threshold=5 für slow queries, Threshold=500 für rejected connections)
+- **CloudWatch Logs Insights Queries** (gespeichert) für Deep-Dive-Analyse:
+  - `VpcFlowLogsRejectedTrafficQuery`: Top-N abgelehnte Connections nach Quell-IP und Zielport
+  - `RdsErrorLogSummaryQuery`: RDS-Fehler der letzten 24h mit Frequenz
+  - `RdsSlowQuerySummaryQuery`: Langsame Queries mit Execution Time, Lock Time, Rows
+  - `DnsFirewallWhitelistCandidatesQuery`: DNS ALERT-Abfragen, gruppiert nach Domain für Whitelist-Review
+  - `VpcEgressPortsAnalysis` (bedingt, nur wenn `EnableEgressAnalysis=true`): ACCEPT-Mode Flow Logs für Egress-Port-Baseline
+- **CloudWatch Dashboard** (`ClusterDashboard`): visuell dargestellt, mit SEARCH-Ausdrücken für Per-Service CPU/Memory, RDS-Metriken, VPC-Ablehnung
+
+**Warum nicht alles in SNS/Email-Alarmen:** Alarmverlauf ist ein Datenpunkt; echte forensische Arbeit erfordert die Raw-Log-Analyse. Gespeicherte Queries ermöglichen Konsistenz über Cluster hinweg und reduzieren Fehler durch manuelles Schreiben komplexer CloudWatch Insights-Syntax.
+
+---
+
 ## Templates
+
+### guardduty
+
+Erstellt einen GuardDuty Detector für Threat Detection sowie Quarantine-Infrastruktur für Zero-Trust-Incident-Response. **Ein Stack pro Region**, nicht pro Cluster (GuardDuty ist Account + Region).
+
+Dieser Stack stellt die Grundlagen für Phase 1 und Phase 3 Step D bereit:
+
+- **GuardDuty Detector**: Analysiert automatisch VPC Flow Logs, Route 53 DNS Logs und CloudTrail. Konfigurierbare Finding-Publishing-Häufigkeit (Standard: FIFTEEN_MINUTES für Echtzeit-Alerts).
+- **Quarantine Security Group**: Zero Egress-Regeln — wird von Phase-3-Step-D-Automation verwendet, um kompromittierte Instances zu isolieren (von EventBridge + Lambda auf Basis von HIGH-Severity GuardDuty-Findings).
+- **GuardDutyIncidentResponseRole**: IAM-Rolle mit Permissions zum Lesen von GuardDuty-Findings und zum Ändern von Instance-Security-Groups. Wird von der Phase-3-Step-D-Lambda verwendet.
+
+#### Wichtige Parameter
+
+| Parameter | Beschreibung |
+|---|---|
+| `ClusterName` | Name des Clusters für Tagging (z. B. `labc-eu-w3`). Nutzt den Detector nicht: dient nur zur Identifikation und wird auch für die Quarantine-SG verwendet. |
+| `FindingPublishingFrequency` | Wie oft GuardDuty neue Findings publiziert: `FIFTEEN_MINUTES` (Echtzeit, Default), `ONE_HOUR` (kosteneffizienter), `SIX_HOURS` (Batch-Modus). |
+
+#### Exports
+
+| Export | Beschreibung |
+|---|---|
+| `${AWS::StackName}-DetectorId` | GuardDuty Detector ID für EventBridge-Regeln (Phase 3 Step D). |
+| `${AWS::StackName}-DetectorArn` | GuardDuty Detector ARN. |
+| `${AWS::StackName}-QuarantineSgId` | Quarantine Security Group ID, die von der Phase-3-Step-D-Lambda verwendet wird. |
+| `${AWS::StackName}-IncidentResponseRoleArn` | IAM-Rolle ARN für die Phase-3-Step-D-Lambda. |
+
+#### Besonderheiten
+
+- **VPC-Abhängigkeit**: Die Quarantine SG wird in der VPC des Clusters erstellt. Der Stack versucht, die VPC-ID aus `/${ClusterName}/vpc-id` SSM Parameter zu lesen — müsste ggf. mit der tatsächlichen VPC-ID übersteigt oder die Cluster-Vorlage muss die VPC-ID publizieren.
+- **Costs**: GuardDuty hat 30 Tage kostenlos pro Region (Trial). Danach ca. $0.30–$1.50 pro Million Ingested Events, abhängig von Volume. Die GuardDuty Usage-Seite zeigt die projizierte Kosten in Echtzeit.
+
+---
+
+### ecscluster-vpc-rds-asg/alb-logs-bucket
+
+Erstellt einen S3-Bucket für ALB-Zugriffslogs mit DSGVO-konformen Lifecycle-Regeln. **Separate Stack** (nicht Teil des Cluster-Stacks), damit das Bucket nicht gelöscht wird, wenn der Cluster-Stack gelöscht wird.
+
+Dieser Stack speichert:
+- **Lifecycle-Regel `DeleteLogs`**: Löscht aktuelle Versionen nach `RetentionDays` (Standard: 14 Tage)
+- **Lifecycle-Regel `CleanupDeleteMarkers`**: Löscht verwaiste Löschmarker
+- **Lifecycle-Regel `NoncurrentVersionExpiration`**: Löscht Noncurrent-Versionen 1 Tag nach sie noncurrent werden — dies verhindert unbegrenztes Wachstum durch Versionierung
+
+**Warum separate Stack:**
+- Audit-Trail-Schutz: ALB-Logs sollten länger als der Cluster selbst aufbewahrt werden
+- `DeletionPolicy: Retain` auf dem Bucket bedeutet, CloudFormation wird es nie löschen, selbst wenn der Stack gelöscht wird
+- Separat zu deployen erlaubt, den Cluster zu iterieren, ohne Sorgen um versehentliche Log-Löschung
+
+#### Wichtige Parameter
+
+| Parameter | Beschreibung |
+|---|---|
+| `ClusterName` | Cluster-Name für Bucket-Namespacing. Bucket wird `${ClusterName}-alb-logs` genannt. |
+| `RetentionDays` | DSGVO-Aufbewahrungsfenster (Standard: 14 Tage). Nach N Tagen werden aktuelle Versionen gelöscht. |
+
+#### Outputs
+
+| Output | Beschreibung |
+|---|---|
+| `BucketName` | Der S3-Bucket-Name. Wird als `LogsBucketName`-Parameter in den Cluster-Stack übergeben. |
+
+#### Besonderheiten
+
+- **Versioning-Sicherheit**: Versioning ist aktiviert (Best Practice für Log-Trails), aber die Lifecycle-Regeln verhindern, dass noncurrent versions sich anhäufen. Ist wichtig: ohne `NoncurrentVersionExpiration` würde der Bucket still unbegrenzlich wachsen, selbst wenn die aktuelle Version gelöscht wird.
+- **Bucket-Policy**: Erlaubt dem regionalen ELB-Log-Delivery-Service, Logs zu schreiben. Der Policy ist fest auf die Region des Stacks gebunden.
+
+---
 
 ### ecscluster-vpc-rds-asg
 
@@ -35,6 +193,10 @@ Erstellt eine vollständige, eigenständige Infrastruktur für den Betrieb von E
 - **RDS-Instanz** (Standard: `db.t3.medium`) innerhalb der VPC.
 - **ECS Capacity Provider** mit verwalteter Skalierung (Zielkapazität: 80%).
 - **AWS Backup** mit optionaler regionsübergreifender Kopie für RDS-Snapshots und EFS.
+- **DNS Firewall** (Phase 1 Zero-Trust): Route 53 Resolver mit zwei Regeln (ALLOW Whitelist, ALERT Catch-all). Query Logging in CloudWatch für Analyse.
+- **CloudWatch Monitoring**: Metric Filters für RDS (error, slow query) und VPC Flow Logs (rejected traffic), mit Alarmen und gespeicherten Insights-Queries für forensische Analyse.
+- **CloudWatch Dashboard**: Vordefiniert mit SEARCH-Ausdrücken für Per-Service CPU/Memory, RDS-Metriken, VPC-Ablehnung.
+- **Conditional Egress Analysis**: Parameter `EnableEgressAnalysis` aktiviert ACCEPT-Mode VPC Flow Logs und `VpcEgressPortsAnalysis` Query für Phase 3 Step A (Port-Audit). Standardmäßig aus, wird nur aktiviert, wenn gezielt deployiert.
 
 #### Wichtige Parameter
 
@@ -50,6 +212,9 @@ Erstellt eine vollständige, eigenständige Infrastruktur für den Betrieb von E
 | `AscalegroupDesSize` | Gewünschte Anzahl der EC2-Instanzen beim Deployment (Standard: `0`). |
 | `AscalegroupMaxSize` | Maximale Anzahl der EC2-Instanzen im Cluster (Standard: `3`). |
 | `BackupCopyDestinationRegion` | Zielregion für Backup-Kopien (Standard: `eu-north-1`, leer lassen zum Deaktivieren). |
+| `DnsFirewallWhitelistDomains` | Komma-separierte Liste von Whitelist-Domains für DNS Firewall (z. B. `*.amazonaws.com,*.docker.com`). Wird in Phase 1 deployiert mit Defaults, in Phase 2 nach Whitelist-Analyse aktualisiert. |
+| `LogsBucketName` | Bucket-Name für ALB-Zugriffslogs (z. B. `labc-eu-w3-alb-logs`). Leer lassen zum Deaktivieren. |
+| `EnableEgressAnalysis` | `true` oder `false` (Standard: `false`). Aktiviert ACCEPT-Mode VPC Flow Logs und `VpcEgressPortsAnalysis` Query für Phase 3 Step A. Sollte nur während des Port-Audit-Fensters (7–14 Tage) aktiviert sein. |
 
 #### Exports
 
@@ -61,6 +226,25 @@ Erstellt eine vollständige, eigenständige Infrastruktur für den Betrieb von E
 | `${AWS::StackName}-Vpc` | ID der VPC. |
 | `${AWS::StackName}-Efs` | ID des EFS-Dateisystems. |
 | `${AWS::StackName}-LoadbalancerArn` | ARN des Application Load Balancers. |
+| `${AWS::StackName}-DnsFirewallRuleGroupId` | DNS Firewall Rule Group ID (benötigt für Phase 3 Step D EventBridge-Regeln und Phase 4 Rollback-Befehl). |
+| `${AWS::StackName}-DnsFirewallWhitelistId` | Whitelist Domain List ID (benötigt für Phase 2 Whitelist-Updates). |
+| `${AWS::StackName}-SubnetPrivate1`, `SubnetPrivate2` | Interne Subnets (für weitere RDS/VPN-Konfiguration). |
+
+#### Design Notes: Warum ECS Managed Scaling statt statischer Kapazität
+
+Das Cluster startet mit `AscalegroupDesSize: 0`. **Warum:**
+
+1. **Kosten in Entwicklung**: 0 Instanzen = $0 Compute-Kosten bei Nicht-Nutzung. `ecsservice`-Stacks starten Tasks nach Bedarf; der Cluster skaliert dazu hoch.
+2. **Automatische Optimierung**: ECS Capacity Provider beobachtet den `MemoryReservation` des Clusters. Wenn Tasks nicht eingeplant können (zu wenig RAM/CPU), erhöht es `DesiredCapacity`. Wenn Kapazität unterlastet (z. B. nachts), senkt es es wieder.
+3. **Keine sichtbaren Alarme**: Step Scaling erzeugt permanente `AlarmAutoscaleScaleDown`-Alarme, die "In Alarm" sind sobald CPU niedrig ist (=normal) — rauschig für Monitoring. Managed Scaling nutzt interne Metriken, keine sichtbaren Alarme.
+
+**Alte vs. neue Methode:**
+- Alt: `DesiredCapacity: 3`, `AlarmAutoscaleScaleDown` wenn CPU < 15%, `AlarmAutoscaleScaleUp` wenn CPU > 65% → permanente Alarme
+- Neu: `DesiredCapacity: 0`, Capacity Provider passt automatisch an (Metric: `MemoryReservation` vs. 80% Target) → saubere Alarme, besserer Cost Control
+
+---
+
+
 
 ---
 
@@ -304,6 +488,56 @@ Normalerweise driftet ein Service-Stack nicht signifikant ab, abgesehen von der 
 3. Den Service-Stack **ohne Austausch des Templates** aktualisieren – dabei nur den Parameter `InitialDockerImage` auf das aktuell laufende Image setzen.
 4. Warten, bis der Stack aktualisiert wurde und wieder in einem bereiten Zustand ist.
 5. Nun den Stack erneut aktualisieren, das Template ersetzen und alle gewünschten Änderungen anwenden.
+
+---
+
+## Deployment & Operations
+
+### Cluster-Rollout-Reihenfolge
+
+Neue Region oder Cluster-Update? Folgendes Deployment-Pattern hat sich bewährt:
+
+1. **`guardduty` Stack** (neue Region)
+   ```bash
+   aws cloudformation create-stack \
+     --stack-name labc-eu-c1-guardduty \
+     --template-body file://guardduty/index.template \
+     --parameters \
+       ParameterKey=ClusterName,ParameterValue=labc-eu-c1 \
+       ParameterKey=FindingPublishingFrequency,ParameterValue=FIFTEEN_MINUTES \
+     --region eu-central-1
+   ```
+
+2. **`ecscluster-vpc-rds-asg` Stack** (neue Region oder Update)
+   - Phase 1 läuft im ALERT-Modus (kein Blocking)
+   - Erst nach Phase 2 (Whitelist verfeinert) auf BLOCK-Modus wechseln
+
+3. **`alb-logs-bucket` Stack** (neue Region)
+   - Output `BucketName` wird in Cluster-Stack als `LogsBucketName` verwendet
+
+4. **`ecsservice` Stack(s)** auf dem Cluster (nach Bedarf)
+
+### Zero-Trust Rollout: Was Wann Tun
+
+**Phase 1 (Woche 1–2):** DNS Firewall ALERT-Modus, GuardDuty sammelt Baseline
+
+**Phase 2 (nach Tag 7):** DNS-Whitelist verfeinern, `DnsFirewallWhitelistDomains` updaten
+
+**Phase 3 (nach Phase 2 validiert):** 
+- Step A: `EnableEgressAnalysis=true`, Port-Baseline sammeln
+- Step B: NTP-Konfiguration prüfen
+- Step C: Security Group explizite Egress-Regeln, `EnableEgressAnalysis=false`
+- Step D: Lambda + EventBridge für Quarantine-Automation
+
+**Phase 4 (nach Step D validiert):** DNS Firewall ALERT → BLOCK, Apps testen, 48h monitoren
+
+### Häufige Operational Tasks
+
+**RDS-Fehler der letzten 24h:** `RdsErrorLogSummaryQuery` in CloudWatch Logs Insights
+
+**Welche egress Ports benutzt meine App?** Phase 3 Step A: `EnableEgressAnalysis=true` → 7–14 Tage → `VpcEgressPortsAnalysis` Query
+
+**Wurde Traffic blockiert?** Filter `action = "BLOCK"` in `DnsQueryLoggingGroup`
 
 ---
 

@@ -57,6 +57,14 @@
               "ExpirationInDays": {
                 "Ref": "RetentionDays"
               },
+              "NoncurrentVersionExpiration": {
+                "NoncurrentDays": 1
+              },
+              "Status": "Enabled"
+            },
+            {
+              "Id": "CleanupDeleteMarkers",
+              "ExpiredObjectDeleteMarker": true,
               "Status": "Enabled"
             }
           ]
