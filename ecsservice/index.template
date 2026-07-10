@@ -21,6 +21,10 @@
         {
           "Label" : { "default" : "Doppler" },
           "Parameters" : [ "ProjectNameShort", "ProjectEnv", "ProjectToken" ]
+        },
+        {
+          "Label" : { "default" : "Monitoring & Alerts" },
+          "Parameters" : [ "ServiceHighCpuThreshold", "ServiceHighMemoryThreshold", "ServiceLowCpuThreshold", "ServiceLowMemoryThreshold" ]
         }
       ]
     }
@@ -123,12 +127,60 @@
       "Type": "String",
       "Default": "",
       "Description": "Command to run in the container as a comma-separated list, e.g., python,app.py,--env,prod. Leave empty to use the image default."
+    },
+    "ServiceHighCpuThreshold": {
+      "Type": "Number",
+      "Description": "CPU utilization threshold (percent) for high-CPU alarm. Alerts when sustained above this value. Set to 0 to disable.",
+      "Default": 20,
+      "MinValue": 0,
+      "MaxValue": 100
+    },
+    "ServiceHighMemoryThreshold": {
+      "Type": "Number",
+      "Description": "Memory utilization threshold (percent) for high-memory alarm. Alerts when sustained above this value. Set to 0 to disable.",
+      "Default": 80,
+      "MinValue": 0,
+      "MaxValue": 100
+    },
+    "ServiceLowCpuThreshold": {
+      "Type": "Number",
+      "Description": "CPU utilization threshold (percent) for low-CPU alarm. Alerts when sustained below this value. Set to 0 to disable (default).",
+      "Default": 0,
+      "MinValue": 0,
+      "MaxValue": 50
+    },
+    "ServiceLowMemoryThreshold": {
+      "Type": "Number",
+      "Description": "Memory utilization threshold (percent) for low-memory alarm. Alerts when sustained below this value. Set to 0 to disable (default).",
+      "Default": 0,
+      "MinValue": 0,
+      "MaxValue": 70
     }
   },
   "Conditions": {
     "HasContainerCommand": {
       "Fn::Not": [
         { "Fn::Equals": [ { "Ref": "ContainerCommand" }, "" ] }
+      ]
+    },
+    "EnableHighCpuAlarm": {
+      "Fn::Not": [
+        { "Fn::Equals": [ { "Ref": "ServiceHighCpuThreshold" }, 0 ] }
+      ]
+    },
+    "EnableHighMemoryAlarm": {
+      "Fn::Not": [
+        { "Fn::Equals": [ { "Ref": "ServiceHighMemoryThreshold" }, 0 ] }
+      ]
+    },
+    "EnableLowCpuAlarm": {
+      "Fn::Not": [
+        { "Fn::Equals": [ { "Ref": "ServiceLowCpuThreshold" }, 0 ] }
+      ]
+    },
+    "EnableLowMemoryAlarm": {
+      "Fn::Not": [
+        { "Fn::Equals": [ { "Ref": "ServiceLowMemoryThreshold" }, 0 ] }
       ]
     }
   },
@@ -663,22 +715,191 @@
             "AlarmAutoscaleScaleDown" ]
           ]
         },
-        "ComparisonOperator" : "LessThanThreshold",
-        "Dimensions" : [ {
-          "Name" : "ClusterName",
-          "Value" : { "Fn::ImportValue" : { "Fn::Sub" : "${ClusterStackName}-Ecscluster" } }
-        }, {
-          "Name" : "ServiceName",
-          "Value" : { "Fn::GetAtt" : [ "Service", "Name" ] }
-        } ],
-        "EvaluationPeriods" : "3",
-        "MetricName" : "CPUUtilization",
-        "Namespace" : "AWS/ECS",
-        "Period" : 60,
-        "Statistic" : "Average",
-        "Threshold" : 15
+        "AlarmDescription" : "Scale-in trigger: fires only while MORE tasks than ServiceDesiredCount are running AND CPU is below 15%. OK during normal operation; stays in alarm only while scale-in is pending — if it stays red for long, scale-in is stuck.",
+        "ComparisonOperator" : "GreaterThanThreshold",
+        "Threshold" : 0,
+        "EvaluationPeriods" : 5,
+        "TreatMissingData" : "notBreaching",
+        "Metrics" : [
+          {
+            "Id" : "scalein",
+            "Label" : "ScaleInNeeded",
+            "Expression" : { "Fn::Sub" : "IF(cpu < 15 AND tasks > ${ServiceDesiredCount}, 1, 0)" },
+            "ReturnData" : true
+          },
+          {
+            "Id" : "cpu",
+            "ReturnData" : false,
+            "MetricStat" : {
+              "Metric" : {
+                "Namespace" : "AWS/ECS",
+                "MetricName" : "CPUUtilization",
+                "Dimensions" : [ {
+                  "Name" : "ClusterName",
+                  "Value" : { "Fn::ImportValue" : { "Fn::Sub" : "${ClusterStackName}-Ecscluster" } }
+                }, {
+                  "Name" : "ServiceName",
+                  "Value" : { "Fn::GetAtt" : [ "Service", "Name" ] }
+                } ]
+              },
+              "Period" : 60,
+              "Stat" : "Average"
+            }
+          },
+          {
+            "Id" : "tasks",
+            "ReturnData" : false,
+            "MetricStat" : {
+              "Metric" : {
+                "Namespace" : "AWS/ApplicationELB",
+                "MetricName" : "HealthyHostCount",
+                "Dimensions" : [ {
+                  "Name" : "TargetGroup",
+                  "Value" : { "Fn::GetAtt" : [ "Target", "TargetGroupFullName" ] }
+                }, {
+                  "Name" : "LoadBalancer",
+                  "Value" : {
+                    "Fn::Select" : [ 1, {
+                      "Fn::Split" : [ "loadbalancer/", { "Fn::ImportValue" : { "Fn::Sub" : "${ClusterStackName}-LoadbalancerArn" } } ]
+                    } ]
+                  }
+                } ]
+              },
+              "Period" : 60,
+              "Stat" : "Average"
+            }
+          }
+        ]
       },
       "DependsOn" : [ "AutoscaleScaleDown", "Service" ]
+    },
+    "ServiceHighCpuAlarm": {
+      "Type": "AWS::CloudWatch::Alarm",
+      "Condition": "EnableHighCpuAlarm",
+      "Properties": {
+        "AlarmName": {
+          "Fn::Sub": "${AWS::StackName}-HighCpu"
+        },
+        "AlarmDescription": "Service CPU utilization exceeds threshold — possible performance issue or insufficient capacity.",
+        "MetricName": "CPUUtilization",
+        "Namespace": "AWS/ECS",
+        "Statistic": "Average",
+        "Period": 300,
+        "EvaluationPeriods": 1,
+        "Threshold": {"Ref": "ServiceHighCpuThreshold"},
+        "ComparisonOperator": "GreaterThanThreshold",
+        "Dimensions": [
+          {
+            "Name": "ServiceName",
+            "Value": {"Fn::GetAtt": ["Service", "Name"]}
+          },
+          {
+            "Name": "ClusterName",
+            "Value": {
+              "Fn::ImportValue": {
+                "Fn::Sub": "${ClusterStackName}-Ecscluster"
+              }
+            }
+          }
+        ],
+        "TreatMissingData": "notBreaching"
+      }
+    },
+    "ServiceHighMemoryAlarm": {
+      "Type": "AWS::CloudWatch::Alarm",
+      "Condition": "EnableHighMemoryAlarm",
+      "Properties": {
+        "AlarmName": {
+          "Fn::Sub": "${AWS::StackName}-HighMemory"
+        },
+        "AlarmDescription": "Service memory utilization exceeds threshold — possible memory leak or insufficient allocation.",
+        "MetricName": "MemoryUtilization",
+        "Namespace": "AWS/ECS",
+        "Statistic": "Average",
+        "Period": 300,
+        "EvaluationPeriods": 1,
+        "Threshold": {"Ref": "ServiceHighMemoryThreshold"},
+        "ComparisonOperator": "GreaterThanThreshold",
+        "Dimensions": [
+          {
+            "Name": "ServiceName",
+            "Value": {"Fn::GetAtt": ["Service", "Name"]}
+          },
+          {
+            "Name": "ClusterName",
+            "Value": {
+              "Fn::ImportValue": {
+                "Fn::Sub": "${ClusterStackName}-Ecscluster"
+              }
+            }
+          }
+        ],
+        "TreatMissingData": "notBreaching"
+      }
+    },
+    "ServiceLowCpuAlarm": {
+      "Type": "AWS::CloudWatch::Alarm",
+      "Condition": "EnableLowCpuAlarm",
+      "Properties": {
+        "AlarmName": {
+          "Fn::Sub": "${AWS::StackName}-LowCpu"
+        },
+        "AlarmDescription": "Service CPU utilization is chronically low — possible overprovisioning or underutilization.",
+        "MetricName": "CPUUtilization",
+        "Namespace": "AWS/ECS",
+        "Statistic": "Average",
+        "Period": 300,
+        "EvaluationPeriods": 2,
+        "Threshold": {"Ref": "ServiceLowCpuThreshold"},
+        "ComparisonOperator": "LessThanThreshold",
+        "Dimensions": [
+          {
+            "Name": "ServiceName",
+            "Value": {"Fn::GetAtt": ["Service", "Name"]}
+          },
+          {
+            "Name": "ClusterName",
+            "Value": {
+              "Fn::ImportValue": {
+                "Fn::Sub": "${ClusterStackName}-Ecscluster"
+              }
+            }
+          }
+        ],
+        "TreatMissingData": "notBreaching"
+      }
+    },
+    "ServiceLowMemoryAlarm": {
+      "Type": "AWS::CloudWatch::Alarm",
+      "Condition": "EnableLowMemoryAlarm",
+      "Properties": {
+        "AlarmName": {
+          "Fn::Sub": "${AWS::StackName}-LowMemory"
+        },
+        "AlarmDescription": "Service memory utilization is chronically low — possible overprovisioning or consolidation candidate.",
+        "MetricName": "MemoryUtilization",
+        "Namespace": "AWS/ECS",
+        "Statistic": "Average",
+        "Period": 300,
+        "EvaluationPeriods": 2,
+        "Threshold": {"Ref": "ServiceLowMemoryThreshold"},
+        "ComparisonOperator": "LessThanThreshold",
+        "Dimensions": [
+          {
+            "Name": "ServiceName",
+            "Value": {"Fn::GetAtt": ["Service", "Name"]}
+          },
+          {
+            "Name": "ClusterName",
+            "Value": {
+              "Fn::ImportValue": {
+                "Fn::Sub": "${ClusterStackName}-Ecscluster"
+              }
+            }
+          }
+        ],
+        "TreatMissingData": "notBreaching"
+      }
     }
   },
   "Outputs" : {

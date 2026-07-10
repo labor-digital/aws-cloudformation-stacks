@@ -11,7 +11,7 @@ Dieses Repository enthält die AWS CloudFormation Stack-Templates, die von LABOR
 | `ecscluster-vpc-rds-asg`       | Vollständiger ECS-Cluster-Stack mit VPC, RDS, Auto Scaling Group, Load Balancer, CloudWatch-Überwachung und DNS Firewall für Zero-Trust-Egress-Sicherheit. |
 | `ecscluster-vpc-rds-asg/alb-logs-bucket` | ALB-Zugriffslogs mit S3-Lifecycle-Regeln und DSGVO-Aufbewahrungsgrenzen. Separate, unveränderlich gespeicherte Ressource (Löschung von Stack hindert Bucket nicht). |
 | `ecscluster-vpc-rds-asg/backup` | Erstellt zusätzliche Backup-Vaults für regionsübergreifende Backups. |
-| `guardduty`                    | GuardDuty Detector + Quarantine Security Group + IAM-Rollen für Threat Detection und Zero-Trust-Incident-Response. Pro Region ein Stack. |
+| `ecscluster-vpc-rds-asg/guardduty` | GuardDuty Detector + Quarantine Security Group + IAM-Rollen für Threat Detection und Zero-Trust-Incident-Response. Pro Region ein Stack. |
 | `ecsservice`                   | ECS-Service-Stack zur Bereitstellung einer containerisierten Anwendung auf einem bestehenden Cluster. |
 | `alb-ecsservice-rule`          | Verbindet einen Hostnamen und Pfad mit der Targetgroup eines bestehenden ECS-Services. |
 | `alb-redirect-rule`            | Erstellt eine URL-Redirect-Regel auf dem Application Load Balancer eines bestehenden Clusters. |
@@ -113,9 +113,39 @@ Die `ecscluster-vpc-rds-asg`-Vorlage enthält jetzt:
 
 ---
 
+### Service-Autoscaling: Step Scaling mit zustandsbewusstem Scale-in-Alarm
+
+Das `ecsservice`-Template nutzt **Step-Scaling** mit zwei expliziten CloudWatch-Alarmen:
+
+- **`AlarmAutoscaleScaleUp`**: CPU > **65%** (3 Min.) → fügt einen Task hinzu. Im Normalbetrieb "OK".
+- **`AlarmAutoscaleScaleDown`** (Metric-Math-Expression): feuert nur, wenn **beide** Bedingungen gelten:
+  1. CPU < **15%** *und*
+  2. mehr Tasks laufen als `ServiceDesiredCount` (gemessen über ALB `HealthyHostCount` der Service-TargetGroup)
+
+  → entfernt einen Task pro Cooldown, bis die Baseline wieder erreicht ist. Im Normalbetrieb **"OK"** — nicht dauerhaft rot.
+
+**Warum die kombinierte Bedingung:** Die Services laufen im Normalbetrieb bei <1% CPU. Ein reiner CPU-Schwellwert (CPU < 15%) ist damit *immer* wahr — der Scale-down-Alarm wäre permanent "In Alarm" und das Dashboard unbrauchbar (dasselbe Problem hätte Target Tracking: dessen automatisch erzeugter `AlarmLow` bei 90% des Targets ist nicht konfigurierbar). Die Zusatzbedingung "läuft überhaupt mehr als die Baseline?" macht den Alarm zustandsbewusst: Er ist nur rot, *während* ein Scale-in ansteht. Bleibt er länger rot, ist der Scale-in hängengeblieben — der Alarm ist damit gleichzeitig das Anomalie-Signal für "Extra-Tasks bleiben liegen".
+
+**Warum `HealthyHostCount` statt ECS-Task-Metriken:** `RunningTaskCount`/`DesiredTaskCount` existieren nur in Container Insights (`ECS/ContainerInsights`), das im Cluster nicht aktiviert ist (kostet extra). Die ALB-Metrik zählt die registrierten, gesunden Tasks der TargetGroup und ist kostenlos. Wichtig: Verglichen wird gegen den **Parameter** `ServiceDesiredCount` (die Baseline/MinCapacity), nicht gegen die DesiredCount-Metrik — der Autoscaler hebt beim Scale-up den DesiredCount des Service an, eine Metrik-zu-Metrik-Differenz wäre daher immer 0.
+
+**Verhalten bei Deployments:** Rolling Deployments (MaximumPercent 200%) verdoppeln kurz die HealthyHostCount. Der Alarm kann dabei kurz anschlagen; der Scale-down-Versuch ist dann ein No-op, weil die Kapazität bereits auf MinCapacity steht (Application Auto Scaling skaliert nie unter MinCapacity). `EvaluationPeriods: 5` überbrückt typische Deployment-Fenster.
+
+**Operative Alarme (nur Sichtbarkeit, keine Scaling-Aktionen):** Zusätzlich erstellt das Template pro Service bis zu vier Alarme; jeder lässt sich per Threshold `0` deaktivieren:
+
+| Alarm | Parameter | Default | Rationale |
+|---|---|---|---|
+| HighCpu | `ServiceHighCpuThreshold` | 20% | Baseline liegt bei <1–2%; 20% bedeutet "ernsthaft auffällig", lange bevor die 65%-Skalierung greift. |
+| HighMemory | `ServiceHighMemoryThreshold` | 80% | Frühwarnung vor OOM-Kill; Wert anhand realer Nutzungsdaten gewählt (Services mit >80% waren Resize-Kandidaten). |
+| LowCpu | `ServiceLowCpuThreshold` | 0 (aus) | Bei <1% CPU-Baseline würde jeder sinnvolle Schwellwert dauerhaft feuern. Opt-in. |
+| LowMemory | `ServiceLowMemoryThreshold` | 0 (aus) | Für gezielte Right-Sizing-Reviews (überprovisionierte Services finden), nicht für Dauerbetrieb. Opt-in. |
+
+Ergebnis: **Kein Alarm ist im gesunden Zustand rot.** Jeder rote Alarm bedeutet entweder ein laufendes Scaling-Ereignis oder ein echtes Problem.
+
+---
+
 ## Templates
 
-### guardduty
+### ecscluster-vpc-rds-asg/guardduty
 
 Erstellt einen GuardDuty Detector für Threat Detection sowie Quarantine-Infrastruktur für Zero-Trust-Incident-Response. **Ein Stack pro Region**, nicht pro Cluster (GuardDuty ist Account + Region).
 
@@ -270,7 +300,8 @@ Dient zur Bereitstellung eines einzelnen ECS-Services auf einem Cluster, der mit
 - **ECS Task Definition** (Einzelcontainer mit EFS-Mount und Doppler-Secret-Injektion).
 - **ECS Service** mit ALB-Integration.
 - **ALB Listener Rule** basierend auf Hostname und Pfad.
-- **Autoscaling** auf Task-Ebene (CPU/Speicher).
+- **Autoscaling** auf Task-Ebene via Target-Tracking-Policy (Ziel: durchschnittliche CPU-Auslastung, siehe [Designentscheidung](#service-autoscaling-target-tracking-statt-step-scaling)).
+- **Operative CloudWatch-Alarme** (HighCpu, HighMemory, optional LowCpu/LowMemory) — reine Sichtbarkeit, keine Scaling-Trigger.
 - **EFS Access Point** für persistenten Speicher.
 - **IAM-Rollen** für Task und Service.
 
@@ -281,10 +312,15 @@ Dient zur Bereitstellung eines einzelnen ECS-Services auf einem Cluster, der mit
 | `ClusterStackName` | Name des bestehenden CloudFormation-Stacks des Clusters. |
 | `ListenerRuleHost` | Hostname für die ALB-Listener-Regel. |
 | `InitialDockerImage` | Docker-Image für das initiale Deployment. |
-| `TaskMemory` | Soft Limit für den Arbeitsspeicher pro Task (Empfehlung für `t3.small`: `485`, `970` oder `1940`). |
+| `TaskMemory` | Soft Limit für den Arbeitsspeicher pro Task in MB (`478`, `956`, `1434` oder `1913` — so gewählt, dass 4, 2 bzw. 1 Task exakt auf eine `t3.small`-Instanz passen). |
 | `ProjectNameShort` | Projekt-Kurzname (Format: `xxx_xxx_xxx`) für die Doppler-Zuordnung. |
-| `ServiceDesiredCount` | Gewünschte Anzahl der Task-Instanzen (entspricht auch dem Minimum für Autoscaling). |
+| `ServiceDesiredCount` | Gewünschte Anzahl der Task-Instanzen (entspricht auch dem Minimum für Autoscaling; im Normalbetrieb laufen exakt so viele Tasks). |
 | `ServiceMaxCapacity` | Maximale Anzahl der Task-Instanzen für Autoscaling. |
+| `ServiceTargetCpuUtilization` | Ziel-CPU-Auslastung (%) der Target-Tracking-Policy (Standard: `65`). |
+| `ServiceHighCpuThreshold` | Schwellwert (%) für den HighCpu-Alarm (Standard: `20`; `0` = deaktiviert). |
+| `ServiceHighMemoryThreshold` | Schwellwert (%) für den HighMemory-Alarm (Standard: `80`; `0` = deaktiviert). |
+| `ServiceLowCpuThreshold` | Schwellwert (%) für den LowCpu-Alarm (Standard: `0` = deaktiviert; Opt-in für Right-Sizing-Reviews). |
+| `ServiceLowMemoryThreshold` | Schwellwert (%) für den LowMemory-Alarm (Standard: `0` = deaktiviert; Opt-in für Right-Sizing-Reviews). |
 | `ECSHealthCheckGracePeriod` | Wartezeit in Sekunden, bevor ECS den Health-Check startet (Standard: `0`). |
 | `ServiceTrafficPort` | Port, auf dem der Container Traffic entgegennimmt (Standard: `443`). |
 | `ServiceTrafficProtocol` | Protokoll des Containers (`HTTP` oder `HTTPS`, Standard: `HTTPS`). |
@@ -501,9 +537,10 @@ Neue Region oder Cluster-Update? Folgendes Deployment-Pattern hat sich bewährt:
    ```bash
    aws cloudformation create-stack \
      --stack-name labc-eu-c1-guardduty \
-     --template-body file://guardduty/index.template \
+     --template-body file://ecscluster-vpc-rds-asg/guardduty/index.template \
      --parameters \
        ParameterKey=ClusterName,ParameterValue=labc-eu-c1 \
+       ParameterKey=ClusterStackName,ParameterValue=labc-eu-c1 \
        ParameterKey=FindingPublishingFrequency,ParameterValue=FIFTEEN_MINUTES \
      --region eu-central-1
    ```
