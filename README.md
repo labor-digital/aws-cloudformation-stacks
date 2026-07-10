@@ -312,11 +312,13 @@ Dient zur Bereitstellung eines einzelnen ECS-Services auf einem Cluster, der mit
 | `ClusterStackName` | Name des bestehenden CloudFormation-Stacks des Clusters. |
 | `ListenerRuleHost` | Hostname für die ALB-Listener-Regel. |
 | `InitialDockerImage` | Docker-Image für das initiale Deployment. |
+| `SkipImageResolver` | `true` (Standard): `InitialDockerImage` wird direkt verwendet — für Stack-Erstellung und solange das erste Deployment noch nicht stabil läuft. Nach erfolgreichem Service-Start auf `false` setzen, damit Stack-Updates das Image vom laufenden Service übernehmen (verhindert Rollback auf veraltete Images). |
 | `TaskMemory` | Soft Limit für den Arbeitsspeicher pro Task in MB (`478`, `956`, `1434` oder `1913` — so gewählt, dass 4, 2 bzw. 1 Task exakt auf eine `t3.small`-Instanz passen). |
 | `ProjectNameShort` | Projekt-Kurzname (Format: `xxx_xxx_xxx`) für die Doppler-Zuordnung. |
 | `ServiceDesiredCount` | Gewünschte Anzahl der Task-Instanzen (entspricht auch dem Minimum für Autoscaling; im Normalbetrieb laufen exakt so viele Tasks). |
 | `ServiceMaxCapacity` | Maximale Anzahl der Task-Instanzen für Autoscaling. |
-| `ServiceTargetCpuUtilization` | Ziel-CPU-Auslastung (%) der Target-Tracking-Policy (Standard: `65`). |
+| `ServiceScaleUpCpuThreshold` | CPU-Schwellwert (%) für automatisches Scale-up (Standard: `65`). |
+| `ServiceScaleDownCpuThreshold` | CPU-Schwellwert (%) für automatisches Scale-down — greift nur, solange mehr Tasks als `ServiceDesiredCount` laufen (Standard: `15`). |
 | `ServiceHighCpuThreshold` | Schwellwert (%) für den HighCpu-Alarm (Standard: `20`; `0` = deaktiviert). |
 | `ServiceHighMemoryThreshold` | Schwellwert (%) für den HighMemory-Alarm (Standard: `80`; `0` = deaktiviert). |
 | `ServiceLowCpuThreshold` | Schwellwert (%) für den LowCpu-Alarm (Standard: `0` = deaktiviert; Opt-in für Right-Sizing-Reviews). |
@@ -524,6 +526,20 @@ Normalerweise driftet ein Service-Stack nicht signifikant ab, abgesehen von der 
 3. Den Service-Stack **ohne Austausch des Templates** aktualisieren – dabei nur den Parameter `InitialDockerImage` auf das aktuell laufende Image setzen.
 4. Warten, bis der Stack aktualisiert wurde und wieder in einem bereiten Zustand ist.
 5. Nun den Stack erneut aktualisieren, das Template ersetzen und alle gewünschten Änderungen anwenden.
+
+### Template-Versionierung
+
+Das `ecsservice`-Template trägt seine Version als Stack-Output `TemplateVersion` (aktuell `1.0.0`). Bei jeder inhaltlichen Template-Änderung wird die Version im Template mit angehoben — der Output wird beim nächsten Stack-Update automatisch gestempelt und zeigt damit, welcher Template-Stand auf welchem Stack deployt ist.
+
+Deployte Versionen aller Service-Stacks einer Region auf einen Blick (CloudShell):
+
+```bash
+aws cloudformation describe-stacks --region eu-west-3 \
+  --query "Stacks[?Outputs[?OutputKey=='TargetGroupArn']].{stack:StackName, version:(Outputs[?OutputKey=='TemplateVersion'].OutputValue)[0]}" \
+  --output table
+```
+
+Stacks ohne `TemplateVersion`-Output (Anzeige `None`) laufen auf einem Template-Stand vor Einführung der Versionierung (< 1.0.0). Der Filter auf `TargetGroupArn` begrenzt die Liste auf ecsservice-Stacks.
 
 ---
 

@@ -24,7 +24,7 @@
         },
         {
           "Label" : { "default" : "Monitoring & Alerts" },
-          "Parameters" : [ "ServiceHighCpuThreshold", "ServiceHighMemoryThreshold", "ServiceLowCpuThreshold", "ServiceLowMemoryThreshold" ]
+          "Parameters" : [ "ServiceScaleUpCpuThreshold", "ServiceScaleDownCpuThreshold", "ServiceHighCpuThreshold", "ServiceHighMemoryThreshold", "ServiceLowCpuThreshold", "ServiceLowMemoryThreshold" ]
         }
       ]
     }
@@ -52,14 +52,14 @@
       "MinValue" : 1
     },
     "InitialDockerImage" : {
-      "Description" : "The Docker image for the container. Always required on first stack creation. On updates, only used when SkipImageResolver is true — otherwise the image is read from the currently running ECS service.",
+      "Description" : "The Docker image for the container. Always required on first stack creation. On updates, only used when SkipImageResolver is true - otherwise the image is read from the currently running ECS service.",
       "Type" : "String",
       "MinLength" : 1
     },
     "SkipImageResolver" : {
-      "Description" : "When true, InitialDockerImage is used directly. When false (default), the image is read from the currently running ECS task definition on stack updates, preventing stale image rollbacks.",
+      "Description" : "When true (default), InitialDockerImage is used directly. When false, the image is read from the currently running ECS task definition on stack updates, preventing stale image rollbacks. Best practice: keep true for stack creation (and while iterating on a failing first deployment), then set to false once the service runs successfully.",
       "Type" : "String",
-      "Default" : "false",
+      "Default" : "true",
       "AllowedValues" : [ "true", "false" ]
     },
     "TaskMemory" : {
@@ -113,7 +113,7 @@
       "AllowedPattern" : "[a-z]{3}_[a-z]{3}_[a-z]{3}"
     },
     "ProjectEnv": {
-      "Description" : "The environment in which this project should run. This one is also used to determine the correct doppler config to fetch secrets from. But it may be used in the code as well. So, unless you really know what you´re doing, keep the default 'prd' - or 'stg' for staging environments.",
+      "Description" : "The environment in which this project should run. This one is also used to determine the correct doppler config to fetch secrets from. But it may be used in the code as well. So, unless you really know what you're doing, keep the default 'prd' - or 'stg' for staging environments.",
       "Default" : "prd",
       "Type" : "String"
     },
@@ -127,6 +127,20 @@
       "Type": "String",
       "Default": "",
       "Description": "Command to run in the container as a comma-separated list, e.g., python,app.py,--env,prod. Leave empty to use the image default."
+    },
+    "ServiceScaleUpCpuThreshold": {
+      "Type": "Number",
+      "Description": "CPU utilization (percent) above which the service scales up by one task.",
+      "Default": 65,
+      "MinValue": 10,
+      "MaxValue": 100
+    },
+    "ServiceScaleDownCpuThreshold": {
+      "Type": "Number",
+      "Description": "CPU utilization (percent) below which the service scales down by one task - only acts while more tasks than ServiceDesiredCount are running. Must be lower than ServiceScaleUpCpuThreshold.",
+      "Default": 15,
+      "MinValue": 1,
+      "MaxValue": 90
     },
     "ServiceHighCpuThreshold": {
       "Type": "Number",
@@ -678,7 +692,7 @@
         "Namespace" : "AWS/ECS",
         "Period" : 60,
         "Statistic" : "Average",
-        "Threshold" : 65
+        "Threshold" : { "Ref" : "ServiceScaleUpCpuThreshold" }
       },
       "DependsOn" : [ "AutoscaleScaleUp", "Service" ]
     },
@@ -698,7 +712,7 @@
           "Cooldown" : 300,
           "MetricAggregationType" : "Average",
           "StepAdjustments" : [ {
-            "MetricIntervalUpperBound" : 0,
+            "MetricIntervalLowerBound" : 0,
             "ScalingAdjustment" : -1
           } ]
         }
@@ -724,7 +738,7 @@
           {
             "Id" : "scalein",
             "Label" : "ScaleInNeeded",
-            "Expression" : { "Fn::Sub" : "IF(cpu < 15 AND tasks > ${ServiceDesiredCount}, 1, 0)" },
+            "Expression" : { "Fn::Sub" : "IF(cpu < ${ServiceScaleDownCpuThreshold} AND tasks > ${ServiceDesiredCount}, 1, 0)" },
             "ReturnData" : true
           },
           {
@@ -778,7 +792,7 @@
       "Condition": "EnableHighCpuAlarm",
       "Properties": {
         "AlarmName": {
-          "Fn::Sub": "${AWS::StackName}-HighCpu"
+          "Fn::Sub": "${AWS::StackName}-AlarmHighCpu"
         },
         "AlarmDescription": "Service CPU utilization exceeds threshold — possible performance issue or insufficient capacity.",
         "MetricName": "CPUUtilization",
@@ -810,7 +824,7 @@
       "Condition": "EnableHighMemoryAlarm",
       "Properties": {
         "AlarmName": {
-          "Fn::Sub": "${AWS::StackName}-HighMemory"
+          "Fn::Sub": "${AWS::StackName}-AlarmHighMemory"
         },
         "AlarmDescription": "Service memory utilization exceeds threshold — possible memory leak or insufficient allocation.",
         "MetricName": "MemoryUtilization",
@@ -842,7 +856,7 @@
       "Condition": "EnableLowCpuAlarm",
       "Properties": {
         "AlarmName": {
-          "Fn::Sub": "${AWS::StackName}-LowCpu"
+          "Fn::Sub": "${AWS::StackName}-AlarmLowCpu"
         },
         "AlarmDescription": "Service CPU utilization is chronically low — possible overprovisioning or underutilization.",
         "MetricName": "CPUUtilization",
@@ -874,7 +888,7 @@
       "Condition": "EnableLowMemoryAlarm",
       "Properties": {
         "AlarmName": {
-          "Fn::Sub": "${AWS::StackName}-LowMemory"
+          "Fn::Sub": "${AWS::StackName}-AlarmLowMemory"
         },
         "AlarmDescription": "Service memory utilization is chronically low — possible overprovisioning or consolidation candidate.",
         "MetricName": "MemoryUtilization",
@@ -907,6 +921,10 @@
       "Description" : "The Arn of the TargetGroup",
       "Value" : { "Ref" : "Target" },
       "Export" : { "Name" : { "Fn::Sub" : "${AWS::StackName}-TargetGroupArn" } }
+    },
+    "TemplateVersion" : {
+      "Description" : "Version of the ecsservice template this stack was last updated with. Bump on every template change (see README).",
+      "Value" : "1.0.0"
     }
   }
 }
