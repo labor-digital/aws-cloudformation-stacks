@@ -2,25 +2,27 @@
 
 ## Cluster deployment timeline
 
-Paris and Frankfurt are on different rollout stages — this table tracks which recent change has reached which cluster.
+Paris and Frankfurt are on different rollout stages — this table tracks open/in-flight changes per cluster (rows completed in both regions get removed). Frankfurt work is planned in ~2 weeks (from 2026-07-10); dates TBD.
 
 | Change | Paris (labc-eu-w3) | Frankfurt (labc-eu-c1) |
 |---|---|---|
-| EC2 instance refresh → AL2023 ECS AMI + `dnf-automatic` | ✅ done (fleet fully rotated before 2026-07-09) | ✅ 2026-07-09 (14 instances, launch-before-terminate) |
-| Orphaned `SgLaborSsh` security group removed | ✅ 2026-07-09 | ✅ 2026-07-09 (detached from instances first) |
-| Cluster stack: DNS Firewall (ALERT) + RDS/VPC monitoring + dashboard (LII26-96 Phase 1) | ✅ ~2026-07-09 — 7-day ALERT baseline running, Phase 2 possible from ~2026-07-16 | ✅ 2026-07-10 (commit `4ccba95`) — 7-day ALERT baseline running, Phase 2 possible from ~2026-07-17 |
-| `alb-logs-bucket` lifecycle fix (noncurrent version expiry) | ✅ 2026-07-09 | ✅ deployed (verified 2026-07-10 — live template matches current repo state) |
-| `guardduty` stack (detector, quarantine SG, incident-response role) | ✅ 2026-07-09 (`labc-eu-w3-guardduty`) | ⏳ pending |
-| `ecsservice` alarm rework (metric-math scale-in, operational alarms) | ✅ 2026-07-10 — all 14 services on final template **v1.0.0** (verified via `TemplateVersion` fleet query); scale-in proven end-to-end on `tro-tro-web-s` | ⏳ not started — services were updated 2026-07-10 to commit `4ccba95`, which **pre-dates** the alarm rework (old step scaling, permanently-red scale-down alarms still active) |
+| 7-day DNS ALERT baseline (Phase 1 wait) | ⏱ running — complete ~2026-07-16 | ⏱ running — complete ~2026-07-17 |
+| `guardduty` stack (detector, quarantine SG, incident-response role) + data source verification | ✅ 2026-07-09; FlowLogs/DNSLogs/CloudTrail verified ENABLED 2026-07-10 | ⏳ |
+| GuardDuty findings review | ✅ 2026-07-10 — 2× `Policy:IAMUser/RootCredentialUsage` (account owner checking cluster, verified benign, archived) | ⏳ |
+| DNS ALERT data-flow sanity check (run saved query `DnsFireWallLogsSummary` over last 24h — confirm logs are flowing before the baseline ends) | ⏳ optional, anytime | ⏳ |
+| GuardDuty projected monthly cost from Usage page (budget reporting) | 🗓 ~2026-07-14/15 | |
+| LII26-96 Phase 2 — whitelist analysis, update `DnsFirewallWhitelistDomains`, deploy, correlate findings | 🗓 from ~2026-07-16 | |
+| `ecsservice` alarm rework v1.0.0 | ✅ 2026-07-10 — all 14 services (fleet query), scale-in proven end-to-end on `tro-tro-web-s` | ⏳ services currently on pre-rework template (commit `4ccba95`, permanently-red scale-down alarms still active) |
+| Service RAM resizes (high-memory) | ✅ 2026-07-09 (`lab-web-fro-s`, `gwa-gut-sol-s`) | ⏳ `labs-tin-fro-app-p` (**106%** — consider pulling this one forward, 5-min change), `gwa-gut-sol-p` (77%) |
 
 
 ---
 
 - [ ] **Create new dashboards**
-  Paris has the template-provisioned `labc-eu-w3-cl-Overview` dashboard; Frankfurt gets `labc-eu-c1-Overview` with the cluster update. Evaluate what else deserves a dashboard (e.g. per-service deep-dive, DNS Firewall/egress monitoring views) and add to the template so all clusters get them.
+  Both clusters now have the template-provisioned Overview dashboard (`labc-eu-w3-Overview`, `labc-eu-c1-Overview`). Evaluate what else deserves a dashboard (e.g. per-service deep-dive, DNS Firewall/egress monitoring views) and add to the template so all clusters get them.
 
-- [ ] **Restart Frankfurt instances to pick up launch template updates** ✓ Done
-  Existing instances rotated to latest AL2023 ECS AMI with `dnf-automatic` security updates.
+- [ ] **`guardduty` — Findings e-mail notification (interim until Phase 3 automation)**
+  Findings are currently only seen when someone opens the console. Add to the guardduty template: EventBridge rule on GuardDuty findings with severity ≥ 4 (MEDIUM+) → SNS topic → e-mail subscription. Both regions get it with their guardduty stack. Superseded later by Phase 3 Step D (EventBridge → Lambda quarantine for HIGH), but the notification stays useful for MEDIUM findings even then. Also consider: an IAM identity for the account owner — root-usage findings will recur on every root console visit and pollute the findings signal.
 
 - [ ] **`ecscluster-vpc-rds-asg` — RDS uses static master password, no `EnableIAMDatabaseAuthentication`**
   Currently every application authenticates with the same static `RdsMasterPassword` passed as a stack parameter. With IAM auth enabled, ECS tasks use a short-lived token generated from their IAM role instead — no static credentials stored anywhere. Access can be revoked per-service via IAM without changing a shared password. Requires code changes in each application to use token-based connection strings. Worth doing as part of the zero-trust posture but not a quick fix.
@@ -94,9 +96,9 @@ Repeatable rollout checklist — execute per cluster in order: **Paris (labc-eu-
 - [ ] Set `EnableEgressAnalysis=false` and deploy to remove the temporary ACCEPT flow log
 
 **Step D — Automated incident response:**
-- [ ] Create Quarantine Security Group (no egress rules whatsoever)
-- [ ] Create Lambda function: on invocation, swap a target instance's security group to the Quarantine SG via AWS API
-- [ ] Create EventBridge rule: GuardDuty finding with HIGH severity → trigger Lambda
+- [ ] ~~Create Quarantine Security Group~~ — already provided by the `guardduty` stack (export `<stack>-QuarantineSgId`), zero egress rules
+- [ ] Create Lambda function: on invocation, swap a target instance's security group to the Quarantine SG via AWS API — execution role already provided by the `guardduty` stack (export `<stack>-IncidentResponseRoleArn`)
+- [ ] Create EventBridge rule: GuardDuty finding with HIGH severity → trigger Lambda (detector ID available as export `<stack>-DetectorId`)
 - [ ] Test end-to-end using GuardDuty **Generate sample findings**
 - [ ] Confirm the test instance was automatically moved to the Quarantine SG
 
@@ -104,17 +106,14 @@ Repeatable rollout checklist — execute per cluster in order: **Paris (labc-eu-
 
 ### Phase 4 — LII26-92: Go Live (BLOCK Mode)
 
+**Template prerequisite (do first):** the catch-all rule's `ALERT` action is currently **hardcoded** in the cluster template. Changing it via CLI/console would be out-of-band drift — the next cluster stack update would silently revert BLOCK → ALERT and disarm enforcement. Add a parameter (e.g. `DnsFirewallCatchAllAction`, AllowedValues `ALERT`/`BLOCK`, default `ALERT`) to the cluster template before go-live.
+
+- [ ] Add `DnsFirewallCatchAllAction` parameter to the cluster template (see above)
 - [ ] Run `DnsFireWallLogsSummary` one final time — confirm no legitimate domains are still appearing as ALERT
-- [ ] Edit DNS Firewall catch-all rule: change action from **ALERT → BLOCK** (response type: NXDOMAIN)
+- [ ] Go live via stack update: set `DnsFirewallCatchAllAction=BLOCK` (response type: NXDOMAIN)
 - [ ] Test all critical applications: Lieferchat, Matomo, email sending, time synchronisation
 - [ ] Monitor CloudWatch for unexpected BLOCK events in the first 48h
-- [ ] Store rollback command in the Jira ticket:
-  ```
-  aws route53resolver update-firewall-rule \
-    --firewall-rule-group-id <id> \
-    --firewall-domain-list-id <catch-all-id> \
-    --action ALERT
-  ```
+- [ ] Rollback = stack update with `DnsFirewallCatchAllAction=ALERT` (no out-of-band CLI needed; document in the Jira ticket)
 
 ---
 
