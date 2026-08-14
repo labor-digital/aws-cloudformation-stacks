@@ -2,7 +2,41 @@
 
 ## Summary
 
-**`In Progress` · 2026-06-09 — add Route 53 DNS Firewall in ALERT mode (LII26-94)**
+**`7adefc8` · 2026-07-10 — `ecsservice`: parameterised scaling thresholds, `SkipImageResolver` default, template versioning**
+- Scale thresholds moved out of the alarms into parameters: `ServiceScaleUpCpuThreshold` (65), `ServiceScaleDownCpuThreshold` (15)
+- `SkipImageResolver` default changed `false` → `true` — new services skip the ECS lookup during creation and while iterating on a failing first deployment; set it to `false` once the service runs. Mitigates the failed-first-create retry loop.
+- New `TemplateVersion` stack output (`1.0.0`). Stacks showing `None` predate versioning — see README "Template-Versionierung"
+
+**`c4564d7` · 2026-07-10 — `ecsservice`: state-aware scale-in alarm and operational alarms**
+- `AlarmAutoscaleScaleDown` rewritten as a metric-math alarm — `IF(cpu < ${ServiceScaleDownCpuThreshold} AND tasks > ${ServiceDesiredCount}, 1, 0)`, `EvaluationPeriods: 5`, `TreatMissingData: notBreaching`. Replaces the CPU-only alarm that was permanently red at the <1–2% idle baseline. Task count comes from ALB `HealthyHostCount` (Container Insights is not enabled). See README "Service-Autoscaling".
+- Step adjustment switched from `MetricIntervalUpperBound: 0` to `MetricIntervalLowerBound: 0` to match the inverted alarm polarity (now `GreaterThanThreshold 0` over a 0/1 expression)
+- Four conditional operational alarms, each disabled by setting its threshold to `0`: HighCpu (20), HighMemory (80), LowCpu (0, opt-in), LowMemory (0, opt-in). Visibility only — no scaling actions, and no `AlarmActions` wired up yet.
+- **New cross-stack import:** `${ClusterStackName}-LoadbalancerArn`. The cluster stack must export it (present since `40e2451`), otherwise the service stack update fails at import resolution.
+
+**`219ce33` · 2026-07-10 — move the `guardduty` stack into `ecscluster-vpc-rds-asg/`**
+
+**`3eb2d1f` · 2026-07-09 — add `guardduty` stack (detector, quarantine SG, incident-response role)**
+- One stack per region, not per cluster — a GuardDuty detector is limited to one per account/region, and deleting a cluster stack must not disable threat detection region-wide. Rationale in README.
+- Exports `DetectorId`, `QuarantineSgId`, `IncidentResponseRoleArn` for the Phase 3 Step D automation
+- Deployed Paris 2026-07-09; FlowLogs/DNSLogs/CloudTrail data sources verified 2026-07-10. Frankfurt pending.
+
+**`4ccba95` · 2026-06-24 — egress analysis resources and cluster dashboard**
+- `EnableEgressAnalysis` parameter (default `false`) gates a temporary ACCEPT-mode VPC Flow Log with its own log group and role, plus the `VpcEgressPortsAnalysis` saved query. Temporary by design — ACCEPT flow logs bill per GB.
+- `ClusterDashboard` (`${AWS::StackName}-Overview`): ECS CPU and memory per service via `SEARCH()`, RDS CPU + connections, rejected VPC connections
+
+**`475a21a` · 2026-06-19 — metric filters, alarms and saved queries for VPC and RDS logs**
+- RDS: `RdsErrorMetricFilter` + `RdsErrorAlarm` (any `[ERROR]` entry), `RdsSlowQueryMetricFilter` + `RdsSlowQueryAlarm` (>5 slow queries / 5 min), and the `RdsErrorLogSummary` / `RdsSlowQuerySummary` Insights queries
+- VPC: `VpcFlowLogsRejectedMetricFilter` + `VpcFlowLogsRejectedAlarm` (>500 rejects / 5 min), `VpcFlowLogsRejectedTraffic` query
+
+**`1457fe8` · 2026-06-18 — RDS logging and security hardening**
+- `EnableCloudwatchLogsExports: ["error", "slowquery"]` on the Aurora cluster, plus `slow_query_log = 1` in the cluster parameter group (without the parameter the slowquery export stays empty)
+- `RdsErrorLogGroup` / `RdsSlowQueryLogGroup` pre-created with 14-day retention — RDS otherwise creates them with never-expire
+- Frankfurt (`labc-eu-c1`) verified live 2026-08-14 via `describe-db-clusters`: `error`, `slowquery`. Paris not re-verified — it leads the rollout, so presumed live.
+- The slow-query threshold is the engine default `long_query_time = 10s`. Lowering it (e.g. `0` to trace every statement) also trips `RdsSlowQueryAlarm` — raise or disable that alarm for the duration of the trace.
+
+**`7fabcf8` · 2026-06-18 — associate the DNS Firewall rule group with the ECS cluster VPC**
+
+**`8cbc659` · 2026-06-09 — add Route 53 DNS Firewall in ALERT mode (LII26-94)**
 
 | Resource | Type | Purpose |
 |---|---|---|

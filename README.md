@@ -592,6 +592,27 @@ Neue Region oder Cluster-Update? Folgendes Deployment-Pattern hat sich bewährt:
 
 **Wurde Traffic blockiert?** Filter `action = "BLOCK"` in `DnsQueryLoggingGroup`
 
+**Langsame Queries finden:** `RdsSlowQuerySummary` Query. Erfasst wird alles über `long_query_time` (Engine-Default 10s). Wer den Schwellwert zum vollständigen Query-Trace absenkt (`long_query_time = 0`, dynamisch, kein Reboot), muss `RdsSlowQueryAlarm` (>5 Slow Queries / 5 Min.) für die Dauer anheben oder deaktivieren — sonst ist er sofort rot und die `SlowQueryCount`-Metrik wertlos. Der **General Log** ist dafür nicht die bessere Wahl: er enthält dieselben Statements *ohne* `Query_time`/`Rows_examined`, dafür jede Anweisung jeder Verbindung. Ergebniszeilen enthält keines der beiden Logs.
+
+### EFS-Restore
+
+AWS Backup sichert das EFS alle 6h (35 Tage, `${ClusterName}-BackupVault`) und wöchentlich (365 Tage, `${ClusterName}-BackupLongTermVault`). Der schnellste Weg zu den Daten nutzt zwei Eigenschaften des Cluster-Stacks: die UserData mountet die **Wurzel** des Dateisystems auf jeder Instanz unter `/mnt/efs`, und die Instanzrolle hat `AmazonSSMManagedInstanceCore`. Es braucht daher kein neues Dateisystem, kein Mount-Target und keinen Bastion-Host — und wegen des fehlenden Port-22-Ingress ist SSM ohnehin der einzige Shell-Zugang.
+
+1. **Recovery Point wählen:** `aws backup list-recovery-points-by-backup-vault --backup-vault-name <cluster>-BackupVault`
+2. **Restore starten** (Konsole ist hier am einfachsten): Restore-Typ *Item-level* mit bis zu 5 relativen Pfaden (`/<service-stack-name>` — das ist die `RootDirectory`, die jeder `ecsservice`-Stack mountet) oder *Full*. Ziel: **existierendes Dateisystem**, nicht ein neues.
+3. **Restore-Rolle: Default role.** `BackupRole` aus dem Template kann *nicht* restoren (siehe TASKS.md).
+4. **Zugriff:** `aws ssm start-session --target <instance-id>`, dann `sudo ls /mnt/efs/aws-backup-restore_*`
+
+AWS Backup überschreibt beim EFS-Restore nie — es legt immer ein neues Verzeichnis `aws-backup-restore_<timestamp>/` in der Wurzel an. Der Restore ist damit zerstörungsfrei; das Verzeichnis danach löschen, es kostet EFS-Storage.
+
+**Weitere Hinweise:**
+
+- Bei `AscalegroupDesSize=0` und leerem Cluster läuft keine Instanz, in die man sich verbinden könnte — Desired temporär auf 1 setzen oder den Restore machen, während ein Service läuft.
+- Ein Recovery Point aus dem `eu-north-1`-Mirror lässt sich nicht direkt in das Dateisystem der Quellregion restoren; erst zurückkopieren. Der Mirror ist für Regionsverlust, nicht für Bequemlichkeit.
+- **Daten nicht durch den SSM-Tunnel herunterladen.** Der ist ein Control Channel (WebSocket über den SSM-Service) und für Bulk-Transfer ungeeignet. Stattdessen über S3: temporäre `s3:PutObject`-Policy auf `<cluster>-Instancerole`, dann direkt streamen statt über die EBS-Root-Volume zu kopieren — `sudo tar -C /mnt/efs/aws-backup-restore_<ts>/<stack> -cf - . | zstd -T0 -3 | aws s3 cp - s3://<bucket>/restore/<stack>.tar.zst` — und lokal per `aws s3 cp` parallel als Multipart herunterladen. `tar` fasst dabei viele kleine Dateien zu einem Stream zusammen, was auf EFS meist der eigentliche Engpass ist. Achtung: ohne S3-Gateway-Endpoint läuft der Upload über das NAT Gateway und kostet Data Processing.
+- Ist EFS selbst der Engpass, `ThroughputMode` und `BurstCreditBalance` prüfen — ein aufgebrauchtes Guthaben deckelt auf ~50 KiB/s pro GiB. Auch `t3.small` limitiert Netz und EBS spürbar; für große Restores lohnt eine temporäre größere Instanz mit `SgVpcEfsAccess` (nicht `EC2InstanceType` ändern, das ist auf `t3.small`/`t3.micro` beschränkt).
+- Sollen die Daten nur zurück in ein Service-Verzeichnis, gar nicht herunterladen: `sudo cp -a /mnt/efs/aws-backup-restore_<ts>/<stack>/… /mnt/efs/<stack>/…` bleibt komplett innerhalb EFS.
+
 ---
 
 ## Allgemeine Hinweise
