@@ -128,6 +128,8 @@ Das `ecsservice`-Template nutzt **Step-Scaling** mit zwei expliziten CloudWatch-
 
 **Warum `HealthyHostCount` statt ECS-Task-Metriken:** `RunningTaskCount`/`DesiredTaskCount` existieren nur in Container Insights (`ECS/ContainerInsights`), das im Cluster nicht aktiviert ist (kostet extra). Die ALB-Metrik zählt die registrierten, gesunden Tasks der TargetGroup und ist kostenlos. Wichtig: Verglichen wird gegen den **Parameter** `ServiceDesiredCount` (die Baseline/MinCapacity), nicht gegen die DesiredCount-Metrik — der Autoscaler hebt beim Scale-up den DesiredCount des Service an, eine Metrik-zu-Metrik-Differenz wäre daher immer 0.
 
+**Warum `Stat: Average` und nicht `Sum` — nicht ändern:** Die ALB veröffentlicht `HealthyHostCount` pro Availability Zone. Das legt den Schluss nahe, `Average` liefere den AZ-Mittelwert statt der Gesamtzahl — der Schluss ist falsch. Weil Cross-Zone Load Balancing aktiv ist, routet jeder AZ-Knoten auf *alle* gesunden Targets, jede AZ meldet also die **vollständige** Zahl. Gemessen 2026-08-14 an `lab-web-fro-p` (2 Tasks, 2 AZs): `Average = 2.0`, `Sum = 4.0`. `Average` ist damit die korrekte Gesamtzahl; `Sum` multipliziert sie mit der AZ-Anzahl. Ein Wechsel auf `Sum` würde `tasks > ServiceDesiredCount` dauerhaft wahr machen und jeden Service permanent auf MinCapacity herunterdrücken. Nur neu bewerten, falls `load_balancing.cross_zone.enabled` an einer TargetGroup auf `false` gesetzt wird.
+
 **Verhalten bei Deployments:** Rolling Deployments (MaximumPercent 200%) verdoppeln kurz die HealthyHostCount. Der Alarm kann dabei kurz anschlagen; der Scale-down-Versuch ist dann ein No-op, weil die Kapazität bereits auf MinCapacity steht (Application Auto Scaling skaliert nie unter MinCapacity). `EvaluationPeriods: 5` überbrückt typische Deployment-Fenster.
 
 **Operative Alarme (nur Sichtbarkeit, keine Scaling-Aktionen):** Zusätzlich erstellt das Template pro Service bis zu vier Alarme; jeder lässt sich per Threshold `0` deaktivieren:
@@ -530,6 +532,17 @@ Normalerweise driftet ein Service-Stack nicht signifikant ab, abgesehen von der 
 ### Template-Versionierung
 
 Das `ecsservice`-Template trägt seine Version als Stack-Output `TemplateVersion` (aktuell `1.0.0`). Bei jeder inhaltlichen Template-Änderung wird die Version im Template mit angehoben — der Output wird beim nächsten Stack-Update automatisch gestempelt und zeigt damit, welcher Template-Stand auf welchem Stack deployt ist.
+
+Seit 2026-08-14 trägt auch `ecscluster-vpc-rds-asg` den Stempel (`1.0.0`). Damit lässt sich der Template-Stand pro Region direkt abfragen, statt ihn über `LastUpdatedTime` und Git-Historie zu rekonstruieren:
+
+```bash
+aws cloudformation describe-stacks --stack-name <cluster-stack> \
+  --query "Stacks[0].Outputs[?OutputKey=='TemplateVersion'].OutputValue" --output text
+```
+
+Alle übrigen Templates haben den Output noch nicht — siehe TASKS.md. Ein Cluster-Stack ohne `TemplateVersion` wurde seit Einführung des Stempels nicht aktualisiert.
+
+**Achtung bei Cluster-Updates:** `Launchtemplate` löst bei *jedem* Stack-Update eine Änderung aus, weil `ImageId` eine SSM-Dynamic-Reference auf die aktuelle ECS-optimized AMI ist (`{{resolve:ssm:/aws/service/ecs/optimized-ami/amazon-linux-2023/recommended/image_id}}`) und CloudFormation diese jedes Mal neu auflöst. Im Change Set erscheinen dann vier Zeilen: `Launchtemplate` (`DirectModification`, `RequiresRecreation: Never`) und als Folge davon `Ascalegroup`, `CapacityProvider` und `EcsclusterCapacityProviderAssociation` — letztere zwei mit `Replacement: Conditional`. **Das ist kein Template-Rückstand und keine echte Neuerstellung:** das Launch Template bekommt lediglich eine neue Version, die ASG wird in-place aktualisiert, ihre ARN bleibt stabil, und der Capacity Provider erhält dieselbe ARN. Laufende Instanzen bleiben unberührt; die neue AMI greift erst bei künftigen Launches — genau der gewünschte Patch-Pfad. Prüfen lässt sich das über `ChangeSource`/`CausingEntity` im Change Set: nur `DirectModification`-Zeilen stammen aus dem Template, `ResourceAttribute`/`ResourceReference` sind Folgeänderungen.
 
 Deployte Versionen aller Service-Stacks einer Region auf einen Blick (CloudShell):
 

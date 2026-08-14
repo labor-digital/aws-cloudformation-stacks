@@ -2002,7 +2002,7 @@
       "Properties": {
         "Name": "VpcEgressPortsAnalysis",
         "QueryString": {
-          "Fn::Sub": "SOURCE logGroups(logGroupName: \"${VpcAcceptFlowLogGroup}\") START=-604800s END=0s\n| fields @timestamp, @message\n| parse @message \"* * * * * * * * * * * * * *\" as version, account, eni, srcaddr, dstaddr, srcport, dstport, protocol, packets, bytes, startTime, endTime, action, status\n| filter action = \"ACCEPT\"\n| filter srcaddr like /^10\\./\n| filter dstaddr not like /^10\\./\n| stats count(*) as connections, sum(bytes) as totalBytes by dstport, protocol\n| sort connections desc\n| limit 50"
+          "Fn::Sub": "SOURCE logGroups(logGroupName: \"${VpcAcceptFlowLogGroup}\") START=-604800s END=0s\n| fields @timestamp, @message\n| parse @message \"* * * * * * * * * * * * * *\" as version, account, eni, srcaddr, dstaddr, srcport, dstport, protocol, packets, bytes, startTime, endTime, action, status\n| filter action = \"ACCEPT\"\n| filter srcaddr like /^10\\.1\\.[34]\\./\n| filter dstaddr not like /^10\\./\n| filter srcport != 443 and srcport != 80\n| stats count(*) as connections, sum(bytes) as totalBytes by dstport, protocol\n| sort connections desc\n| limit 500"
         }
       }
     },
@@ -2495,6 +2495,10 @@
           "Fn::Sub": "${AWS::StackName}-DnsFirewallRuleGroupId"
         }
       }
+    },
+    "TemplateVersion": {
+      "Description": "Version of the ecscluster-vpc-rds-asg template this stack was last updated with. Bump on every template change (see README).",
+      "Value": "1.0.0"
     }
   },
   "Conditions": {
