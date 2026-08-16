@@ -24,7 +24,7 @@
         },
         {
           "Label" : { "default" : "Monitoring & Alerts" },
-          "Parameters" : [ "ServiceScaleUpCpuThreshold", "ServiceScaleDownCpuThreshold", "ServiceHighCpuThreshold", "ServiceHighMemoryThreshold", "ServiceLowCpuThreshold", "ServiceLowMemoryThreshold" ]
+          "Parameters" : [ "ServiceScaleUpCpuThreshold", "ServiceScaleDownCpuThreshold", "ServiceHighCpuThreshold", "ServiceHighMemoryThreshold", "ServiceLowCpuThreshold", "ServiceLowMemoryThreshold", "EnableLogAnomalyDetection" ]
         }
       ]
     }
@@ -169,6 +169,12 @@
       "Default": 0,
       "MinValue": 0,
       "MaxValue": 70
+    },
+    "EnableLogAnomalyDetection": {
+      "Type": "String",
+      "Description": "Create a CloudWatch Logs anomaly detector on this service's log group. Detects new or unusual log patterns automatically; no charge for the detector itself. Set to false for services whose logs are not pattern-like (see README).",
+      "Default": "true",
+      "AllowedValues": [ "true", "false" ]
     }
   },
   "Conditions": {
@@ -196,6 +202,9 @@
       "Fn::Not": [
         { "Fn::Equals": [ { "Ref": "ServiceLowMemoryThreshold" }, 0 ] }
       ]
+    },
+    "EnableAnomalyDetector": {
+      "Fn::Equals": [ { "Ref": "EnableLogAnomalyDetection" }, "true" ]
     }
   },
   "Resources" : {
@@ -233,6 +242,22 @@
         },
         "RetentionInDays" : 14
       }
+    },
+    "LogAnomalyDetector" : {
+      "Type" : "AWS::Logs::LogAnomalyDetector",
+      "Condition" : "EnableAnomalyDetector",
+      "Metadata" : {
+        "Note" : "Trains on the previous two weeks of this log group's events, then flags new or unusually frequent log patterns. No charge for the detector. AnomalyVisibilityTime is deliberately left at the 21-day default: an anomaly that keeps occurring for longer is auto-accepted as normal, so anything still open after three weeks is either fixed or suppressed on purpose. Not suited to access/audit-style logs — see README."
+      },
+      "Properties" : {
+        "DetectorName" : { "Fn::Sub" : "${AWS::StackName}-LogAnomalyDetector" },
+        "LogGroupArnList" : [
+          { "Fn::Sub" : "arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:${AWS::StackName}-LogGroup" }
+        ],
+        "EvaluationFrequency" : "FIFTEEN_MIN",
+        "AnomalyVisibilityTime" : 21
+      },
+      "DependsOn" : [ "LogGroup" ]
     },
     "ImageResolverRole" : {
       "Type" : "AWS::IAM::Role",
@@ -924,7 +949,7 @@
     },
     "TemplateVersion" : {
       "Description" : "Version of the ecsservice template this stack was last updated with. Bump on every template change (see README).",
-      "Value" : "1.0.0"
+      "Value" : "1.0.1"
     }
   }
 }
