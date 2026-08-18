@@ -10,6 +10,13 @@
       "Type": "String",
       "Default": ""
     },
+    "AlertEmail": {
+      "Description": "E-mail address that receives every alarm notification of this cluster and of all its services. Leave empty to create the topic without a subscription (alarms still publish, nothing is delivered). An e-mail subscription must be confirmed via the link AWS sends: CloudFormation reports CREATE_COMPLETE while the subscription is still PendingConfirmation, so verify with 'aws sns list-subscriptions-by-topic'.",
+      "Type": "String",
+      "Default": "",
+      "AllowedPattern": "^$|^[^@\\s]+@[^@\\s]+\\.[^@\\s]+$",
+      "ConstraintDescription": "must be a valid e-mail address, or empty to skip the subscription."
+    },
     "RdsMasterUsername": {
       "Description": "MasterUsername which is applied to RDS cluster/instances.",
       "Type": "String",
@@ -2161,6 +2168,113 @@
         }
       }
     },
+    "AlertTopic": {
+      "Type": "AWS::SNS::Topic",
+      "Metadata": {
+        "Note": "Single notification path for the whole cluster: the four alarms below, every ecsservice stack's alarms (via the AlertTopicArn export), the GuardDuty findings rule and the Phase 3 Step D quarantine Lambda. Alarms reference an ARN, never an address, so delivery stays a subscription-level concern - adding Slack (AWS Chatbot) or Opsgenie later touches no alarm. Deliberately not KMS-encrypted: alarm payloads contain metric names, thresholds and stack names only, no personal data. If that ever changes, the key policy must also grant kms:GenerateDataKey*/kms:Decrypt to cloudwatch.amazonaws.com and events.amazonaws.com, otherwise delivery fails silently."
+      },
+      "Properties": {
+        "TopicName": {
+          "Fn::Sub": "${AWS::StackName}-alerts"
+        },
+        "DisplayName": {
+          "Fn::Sub": "${AWS::StackName} alerts"
+        },
+        "Tags": [
+          {
+            "Key": "Name",
+            "Value": {
+              "Fn::Join": [
+                "-",
+                [
+                  {
+                    "Ref": "AWS::StackName"
+                  },
+                  "AlertTopic"
+                ]
+              ]
+            }
+          }
+        ]
+      }
+    },
+    "AlertEmailSubscription": {
+      "Type": "AWS::SNS::Subscription",
+      "Condition": "AlertEmailProvided",
+      "Metadata": {
+        "Note": "A separate resource rather than an inline Subscription on the topic, so adding or removing a recipient never touches the topic itself. Stays PendingConfirmation until the recipient clicks the link in the AWS e-mail; CloudFormation reports success either way."
+      },
+      "Properties": {
+        "TopicArn": {
+          "Ref": "AlertTopic"
+        },
+        "Protocol": "email",
+        "Endpoint": {
+          "Ref": "AlertEmail"
+        }
+      }
+    },
+    "AlertTopicPolicy": {
+      "Type": "AWS::SNS::TopicPolicy",
+      "Metadata": {
+        "Note": "This resource replaces the default topic policy, so the owner statement has to be restated here. EventBridge (GuardDuty findings rule) cannot publish without the service statement - the console adds it implicitly, CloudFormation does not, and the rule then reports as configured while delivering nothing. cloudwatch.amazonaws.com is listed for the same reason."
+      },
+      "Properties": {
+        "Topics": [
+          {
+            "Ref": "AlertTopic"
+          }
+        ],
+        "PolicyDocument": {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Sid": "AllowOwnerAccountFullTopicAccess",
+              "Effect": "Allow",
+              "Principal": {
+                "AWS": {
+                  "Ref": "AWS::AccountId"
+                }
+              },
+              "Action": [
+                "SNS:GetTopicAttributes",
+                "SNS:SetTopicAttributes",
+                "SNS:AddPermission",
+                "SNS:RemovePermission",
+                "SNS:DeleteTopic",
+                "SNS:Subscribe",
+                "SNS:ListSubscriptionsByTopic",
+                "SNS:Publish"
+              ],
+              "Resource": {
+                "Ref": "AlertTopic"
+              }
+            },
+            {
+              "Sid": "AllowCloudWatchAndEventBridgeToPublish",
+              "Effect": "Allow",
+              "Principal": {
+                "Service": [
+                  "cloudwatch.amazonaws.com",
+                  "events.amazonaws.com"
+                ]
+              },
+              "Action": "SNS:Publish",
+              "Resource": {
+                "Ref": "AlertTopic"
+              },
+              "Condition": {
+                "StringEquals": {
+                  "aws:SourceAccount": {
+                    "Ref": "AWS::AccountId"
+                  }
+                }
+              }
+            }
+          ]
+        }
+      }
+    },
     "DnsFirewallAlertMetricFilter": {
       "Type": "AWS::Logs::MetricFilter",
       "Properties": {
@@ -2196,6 +2310,11 @@
         "AlarmName": {
           "Fn::Sub": "${AWS::StackName}-dns-firewall-alert-surge"
         },
+        "AlarmActions": [
+          {
+            "Ref": "AlertTopic"
+          }
+        ],
         "AlarmDescription": "Unusual spike in DNS Firewall ALERT events - review DnsFirewallLogs for unexpected external service access",
         "Namespace": {
           "Fn::Sub": "${AWS::StackName}/DnsFirewall"
@@ -2234,6 +2353,11 @@
         "AlarmName": {
           "Fn::Sub": "${AWS::StackName}-vpc-rejected-surge"
         },
+        "AlarmActions": [
+          {
+            "Ref": "AlertTopic"
+          }
+        ],
         "AlarmDescription": "Unusual spike in rejected VPC connections - potential port scan or misconfigured service. Review VpcFlowLogsRejectedTraffic Logs Insights query.",
         "Namespace": {
           "Fn::Sub": "${AWS::StackName}/VpcFlowLogs"
@@ -2282,6 +2406,11 @@
         "AlarmName": {
           "Fn::Sub": "${AWS::StackName}-rds-error"
         },
+        "AlarmActions": [
+          {
+            "Ref": "AlertTopic"
+          }
+        ],
         "AlarmDescription": "RDS Aurora error log contains [ERROR] entries. Review RdsErrorLogSummary Logs Insights query for details.",
         "Namespace": {
           "Fn::Sub": "${AWS::StackName}/RDS"
@@ -2330,6 +2459,11 @@
         "AlarmName": {
           "Fn::Sub": "${AWS::StackName}-rds-slow-queries"
         },
+        "AlarmActions": [
+          {
+            "Ref": "AlertTopic"
+          }
+        ],
         "AlarmDescription": "More than 5 slow queries (>10s) in 5 minutes. Review RdsSlowQuerySummary Logs Insights query.",
         "Namespace": {
           "Fn::Sub": "${AWS::StackName}/RDS"
@@ -2496,9 +2630,20 @@
         }
       }
     },
+    "AlertTopicArn": {
+      "Description": "SNS topic that receives all alarm notifications of this cluster. Imported by every ecsservice stack for its AlarmActions, and the target of the GuardDuty findings rule. Change the recipient here, never per service.",
+      "Value": {
+        "Ref": "AlertTopic"
+      },
+      "Export": {
+        "Name": {
+          "Fn::Sub": "${AWS::StackName}-AlertTopicArn"
+        }
+      }
+    },
     "TemplateVersion": {
       "Description": "Version of the ecscluster-vpc-rds-asg template this stack was last updated with. Bump on every template change (see README).",
-      "Value": "1.0.0"
+      "Value": "1.1.0"
     }
   },
   "Conditions": {
@@ -2514,6 +2659,11 @@
     },
     "EgressAnalysisEnabled": {
       "Fn::Equals": [ { "Ref": "EnableEgressAnalysis" }, "true" ]
+    },
+    "AlertEmailProvided": {
+      "Fn::Not": [
+        { "Fn::Equals": [ { "Ref": "AlertEmail" }, "" ] }
+      ]
     }
   }
 }
