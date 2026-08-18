@@ -1,201 +1,137 @@
 # Open tasks
 
+Background, rationale and operational procedures live in [README.md](README.md) (per-template Best Practices) and [CHANGELOG.md](CHANGELOG.md). This file is the to-do list only.
+
 ## Cluster deployment timeline
 
-Paris and Frankfurt are on different rollout stages — this table tracks open/in-flight changes per cluster (rows completed in both regions get removed). Frankfurt work is planned in ~2 weeks (from 2026-07-10); dates TBD.
+Open/in-flight changes per cluster. Rows completed in both regions get removed.
 
 | Change | Paris (labc-eu-w3) | Frankfurt (labc-eu-c1) |
 |---|---|---|
-| 7-day DNS ALERT baseline (Phase 1 wait) | ✅ complete ~2026-07-16 — ~4 weeks of data available as of 2026-08-07, analysis not yet run | ✅ complete ~2026-07-17 — same, analysis not yet run |
-| `EnableEgressAnalysis=true` (Phase 3 Step A port baseline) | ✅ analysed 2026-08-07 over 28 days — full port list + destinations recorded in Phase 3 Step A. **Now switch off** (ran 29 days vs. the intended 14; ACCEPT flow logs bill per GB). | ✅ enabled 2026-08-14 with the fixed query — **switch off by 2026-08-28** (14-day window) |
-| Cluster template `TemplateVersion` stamp (`1.0.0`) | ✅ 2026-08-14 | ✅ 2026-08-14 |
-| `guardduty` stack (detector, quarantine SG, incident-response role) + data source verification | ✅ 2026-07-09; FlowLogs/DNSLogs/CloudTrail verified ENABLED 2026-07-10 | ✅ 2026-08-14 — `labc-eu-c1-guardduty`; CLOUD_TRAIL/DNS_LOGS/FLOW_LOGS ENABLED, `RDS_LOGIN_EVENTS` also ENABLED |
-| GuardDuty findings review | ✅ 2026-07-10 — 2× `Policy:IAMUser/RootCredentialUsage` (account owner checking cluster, verified benign, archived) | ✅ 2026-08-14 — pipeline verified with a sample `Recon:EC2/PortProbeUnprotectedPort` (sev 2.0, `i-99999999`), archived. No real findings yet. |
-| DNS ALERT data-flow sanity check (run saved query `DnsFireWallLogsSummary` over last 24h — confirm logs are flowing before the baseline ends) | ⏳ optional, anytime | ⏳ |
-| GuardDuty projected monthly cost from Usage page (budget reporting) | 🗓 ~2026-07-14/15 | |
-| LII26-96 Phase 2 — whitelist analysis, update `DnsFirewallWhitelistDomains`, deploy, correlate findings | ⚠️ overdue — unblocked since 2026-07-16, still open | ⏳ unblocked since 2026-07-17 |
-| `ecsservice` alarm rework v1.0.0 | ✅ 2026-07-10 — all 14 services (fleet query), scale-in proven end-to-end on `tro-tro-web-s` | ⏳ services currently on pre-rework template (commit `4ccba95`, permanently-red scale-down alarms still active) |
-| Service RAM resizes (high-memory) | ✅ 2026-07-09 (`lab-web-fro-s`, `gwa-gut-sol-s`) | ⏳ `labs-tin-fro-app-p` (**106%** — consider pulling this one forward, 5-min change), `gwa-gut-sol-p` (77%) |
-
+| `EnableEgressAnalysis` | ⏳ **switch off** — ran 29 days vs. intended 14, analysis complete | ⏳ enabled 2026-08-14 — run the analysis, then **switch off by 2026-08-28** |
+| LII26-96 Phase 2 — whitelist analysis + deploy | ⚠️ overdue — unblocked since 2026-07-16 | ⏳ unblocked since 2026-07-17 |
+| `ecsservice` rollout to `1.0.1` | ✅ 14 services on `1.0.0` — need re-update for `1.0.1` | ⏳ 20 of 21 still on pre-rework template; `ado-lea-tut-p` on `1.0.0`, needs `1.0.1` |
+| Service RAM resizes | ✅ 2026-07-09 | ⏳ `gwa-gut-sol-p` (77%). `labs-tin-fro-app-p` (106%) is on `labcluster-eu-c1-cl`, tracked separately |
+| GuardDuty projected monthly cost from Usage page | 🗓 open | 🗓 open |
+| DNS ALERT data-flow sanity check (`DnsFireWallLogsSummary`, last 24h) | ⏳ optional | ⏳ optional |
 
 ---
 
-- [ ] **Create new dashboards**
-  Both clusters now have the template-provisioned Overview dashboard (`labc-eu-w3-Overview`, `labc-eu-c1-Overview`). Evaluate what else deserves a dashboard (e.g. per-service deep-dive, DNS Firewall/egress monitoring views) and add to the template so all clusters get them.
+## Templates
 
-- [ ] **Add `TemplateVersion` output to the remaining templates**
-  Only `ecsservice` (`1.0.0`) and `ecscluster-vpc-rds-asg` (`1.0.0`, added 2026-08-14) carry the version stamp. Ten templates still have none: `guardduty`, `alb-logs-bucket`, `backup-vaults-mirror`, `ecscluster-ext-additional-cluster`, `alb-ecsservice-rule`, `alb-redirect-rule`, `alb-additional-certificate`, `certificate`, `cloudfront-alb-distribution`, `global-accelerator-alb`.
+- [ ] **`ecsservice` — finish the `1.0.1` rollout.** 20 of 21 Frankfurt services still on the pre-rework template; `ado-lea-tut-p` is on `1.0.0` and needs a second update for the anomaly detector. Paris is on `1.0.0` throughout. Suggested order: `ado-lea-tut-p` → `lab-web-fro-p` (first with ≥2 tasks) → the 1/1 and 1/2 services → `dwk-zer-app-p` (baseline 0, a working scale-in ends at zero tasks) → the five at baseline 3 last. Pass `SkipImageResolver=false` explicitly. Before each update compare live `MinCapacity` against the stack parameter (`aws application-autoscaling describe-scalable-targets --service-namespace ecs`) — verified clean for all 21 on 2026-08-14.
 
-  **Why it matters, concretely:** on 2026-08-14 the question "is Paris behind Frankfurt on the cluster template?" took a `LastUpdatedTime` comparison, hashing four resource blocks across twenty commits, a change set, and a chain of reasoning about an SSM dynamic reference — to arrive at "no, it's just the ECS-optimized AMI re-resolving". With the output in place that is a single `describe-stacks` query. The stamp is a static output: no resources, no drift risk, and it lands on the next update the stack receives anyway.
+- [ ] **`ecsservice` — add the notification path, then continue the rollout.** Eight alarms have no `AlarmActions`: `DnsFirewallAlertAlarm`, `VpcFlowLogsRejectedAlarm`, `RdsErrorAlarm`, `RdsSlowQueryAlarm` (cluster) and `ServiceHighCpuAlarm`, `ServiceHighMemoryAlarm`, `ServiceLowCpuAlarm`, `ServiceLowMemoryAlarm` (service). No SNS topic exists in either template, so nothing notifies anyone — including the new log anomaly detector.
+  - Cluster: `AlertTopic` + optional `AlertEmail` parameter (empty = no subscription, `LogsBucketName` convention), exported as `${AWS::StackName}-AlertTopicArn`; wire the four cluster alarms.
+  - Service: import that ARN, wire the High/Low alarms plus a new anomaly alarm — metric `AnomalyCount`, dimensions `LogAnomalyDetector` (detector name) and `LogAnomalyPriority` = `HIGH`, `Sum`/`300`/`1`/`> 0`/`notBreaching`. **Namespace unverified** — check `aws cloudwatch list-metrics --metric-name AnomalyCount` before hardcoding `AWS/Logs`.
+  - Do **not** wire SNS to `AlarmAutoscaleScaleDown` — it is red during every normal scale-in by design.
+  - `email` subscriptions need a manual confirmation click; CloudFormation reports `CREATE_COMPLETE` while still `PendingConfirmation`. Verify with `aws sns list-subscriptions-by-topic`.
+  - Point the GuardDuty findings rule below at this same topic. Do this **before** continuing the rollout, or 21 stacks get updated twice.
 
-  Priority order: `guardduty` and `alb-logs-bucket` first — they are deployed per region and audited alongside the cluster. `backup-vaults-mirror` next (per region, and DSGVO-relevant retention lives near it). The leaf templates (`certificate`, `alb-redirect-rule`, `alb-additional-certificate`, `alb-ecsservice-rule`, `cloudfront-alb-distribution`, `global-accelerator-alb`) are numerous and rarely change — worth doing for consistency, low urgency. Note the fleet query in README "Template-Versionierung" filters on the `TargetGroupArn` output to isolate ecsservice stacks; each template needs its own filter, or a common marker output.
+- [ ] **`guardduty` — findings e-mail notification.** EventBridge rule on findings with severity ≥ 4 (MEDIUM+) → the shared `AlertTopic`. Superseded later by Phase 3 Step D but stays useful for MEDIUM. Also: give the account owner an IAM identity, or `Policy:IAMUser/RootCredentialUsage` recurs on every root console visit.
 
-- [ ] **`guardduty` — Findings e-mail notification (interim until Phase 3 automation)**
-  Findings are currently only seen when someone opens the console. Add to the guardduty template: EventBridge rule on GuardDuty findings with severity ≥ 4 (MEDIUM+) → SNS topic → e-mail subscription. Both regions get it with their guardduty stack. Superseded later by Phase 3 Step D (EventBridge → Lambda quarantine for HIGH), but the notification stays useful for MEDIUM findings even then. Also consider: an IAM identity for the account owner — root-usage findings will recur on every root console visit and pollute the findings signal.
+- [ ] **`ecsservice` — harden ImageResolver against the failed-first-create retry loop.** On an Update event after a failed create: (a) if the ECS service is gone, `describe_services` finds nothing and the Lambda hard-fails the stack update; (b) if the service exists but never became healthy, the broken image is read from the running task definition and resurrected on every update. Fix (a) with a ~4-line fallback to `InitialDockerImage` in the Update branch. (b) is not safely auto-detectable — `SkipImageResolver=true` stays the documented override. Mitigated 2026-07-10 by defaulting `SkipImageResolver` to `true`; still worthwhile for stacks already switched to `false`.
 
-- [ ] **`ecscluster-vpc-rds-asg` — Something bypasses the VPC resolver, so DNS Firewall never sees it**
-  Found in the 2026-08-07 Paris egress analysis: 12 queries (NAT-deduplicated) to **`8.8.8.8`** over 28 days. Flow logs do not record queries to the Amazon-provided resolver, so anything appearing on port 53 at all is by definition going elsewhere. DNS Firewall only inspects traffic through the VPC resolver — these queries bypass the whitelist, the ALERT logging, and (after Phase 4) BLOCK enforcement entirely.
+- [ ] **Add `TemplateVersion` output to the remaining templates.** Only `ecsservice` (`1.0.1`) and `ecscluster-vpc-rds-asg` (`1.0.0`) have it. Without it, "which template is this stack on?" costs a `LastUpdatedTime` comparison plus git archaeology instead of one query. Order: `guardduty` and `alb-logs-bucket` (per region), then `backup-vaults-mirror`, then the leaf templates. Note each template needs its own filter for a fleet query — the `ecsservice` one keys on the `TargetGroupArn` output.
 
-  **Almost certainly the OpenTelemetry agent.** The three sources querying `8.8.8.8` (`10.1.3.76`, `10.1.4.99`, `10.1.4.12`) are *exactly* the three sources exporting OTLP to `149.248.216.54:4318`, with matching relative magnitudes (6/4/2 DNS vs 8/3/3 OTLP). That is one container image deployed three times resolving its collector endpoint through a hardcoded resolver — so it is a single fix, not three. Check the agent container for a `dns` setting or a baked `resolv.conf`.
+- [ ] **`ecscluster-vpc-rds-asg` — add a Gateway VPC Endpoint for S3.** No VPC endpoints exist, so all S3 traffic exits via NAT.
+  ```json
+  { "Type": "AWS::EC2::VPCEndpoint", "Properties": {
+      "VpcId": { "Ref": "Vpc" },
+      "ServiceName": { "Fn::Sub": "com.amazonaws.${AWS::Region}.s3" },
+      "VpcEndpointType": "Gateway",
+      "RouteTableIds": [ { "Ref": "RoutetablePrivate" } ] } }
+  ```
+  The direct cost saving is a few euros a year at our volumes — the real reasons are that it lets Step C match the S3 **managed prefix list** instead of allowing `443 → 0.0.0.0/0` for ECR layer pulls, and that EFS-restore uploads stop paying NAT. Gateway endpoints cover S3/DynamoDB in-region only. ECR/SSM **interface** endpoints are deliberately out of scope: they bill per hour per AZ plus per GB, which exceeds the NAT traffic they would replace.
 
-  **Must be fixed before Phase 3 Step C**, not after: the `53 → VPC CIDR only` rule will block these queries the moment it lands, and the agent then cannot resolve its collector. Fixing the agent first makes the rule a no-op for it; applying the rule first breaks telemetry.
+- [ ] **`ecscluster-vpc-rds-asg` — RDS uses a static master password, no `EnableIAMDatabaseAuthentication`.** Every application authenticates with the same `RdsMasterPassword` stack parameter. IAM auth would give each ECS task a short-lived token from its role, revocable per service without rotating a shared secret. Requires connection-string changes in every application — not a quick fix.
 
-- [ ] **`ecscluster-vpc-rds-asg` — RDS uses static master password, no `EnableIAMDatabaseAuthentication`**
-  Currently every application authenticates with the same static `RdsMasterPassword` passed as a stack parameter. With IAM auth enabled, ECS tasks use a short-lived token generated from their IAM role instead — no static credentials stored anywhere. Access can be revoked per-service via IAM without changing a shared password. Requires code changes in each application to use token-based connection strings. Worth doing as part of the zero-trust posture but not a quick fix.
+- [ ] **`ecscluster-vpc-rds-asg` — `BackupRole` cannot perform restores.** It carries only `AWSBackupServiceRolePolicyForBackup`; a restore also needs `...ForRestores`. Current practice is the console's `AWSBackupDefaultServiceRole` (account-wide, created outside CloudFormation). Decide: keep the split (better posture, and the unowned role is then intentional) or add a scoped restore role. Record the decision either way.
 
-- [ ] **`ecsservice` — Roll out reworked autoscaling alarms to all deployed service stacks**
-  Template work is done: Step Scaling at 65% up / 15% down, where the scale-down alarm is now a metric-math expression (`CPU < 15% AND HealthyHostCount > ServiceDesiredCount`) — it is OK in normal operation and red only while a scale-in is pending, so it doubles as the "extra tasks lingering" signal. Plus operational alarms HighCpu (20%), HighMemory (80%), opt-in LowCpu/LowMemory (0 = disabled). See README "Service-Autoscaling: Step Scaling mit zustandsbewusstem Scale-in-Alarm". Remaining: **Frankfurt rollout** (Paris completed 2026-07-10 — all 14 services on template v1.0.0, scale-in validated end-to-end on `tro-tro-web-s`). Watch after each update: a scale-down alarm staying red >10 min means scalable-target drift (compare live min/max vs. stack params — see the `tro-tro-web-s` case, where a console-set MinCapacity=3 from June 26 blocked scale-in invisibly for two weeks) or stuck scale-in. Progress check per region: `aws cloudformation describe-stacks --query "Stacks[?Outputs[?OutputKey=='TargetGroupArn']].{stack:StackName, version:(Outputs[?OutputKey=='TemplateVersion'].OutputValue)[0]}" --output table`.
+- [ ] **Create new dashboards.** Both clusters have the template-provisioned Overview dashboard. Evaluate what else earns one (per-service deep-dive, DNS Firewall/egress views) and add it to the template so every cluster gets it.
 
-- [x] **`ecsservice` — `HealthyHostCount` statistic in the scale-in alarm: `Average` is correct. Do NOT change it to `Sum`.**
-  Verified 2026-08-14 against `lab-web-fro-p` (2 running tasks, 2 AZs): `Average = 2.0`, `Sum = 4.0`. Because ALB cross-zone load balancing is enabled, every AZ's node routes to *all* healthy targets, so each AZ publishes the **full** count rather than its local share. Averaging across AZs therefore recovers the true total; summing multiplies it by the number of AZs.
+- [ ] **`ecsservice` — CloudWatch anomaly detection for network throughput.** Add `NetworkIn`/`NetworkOut` anomaly detection with `EnableNetworkAnomalyDetection` and `NetworkAnomalyThreshold` parameters. CloudWatch learns the baseline over ~2 weeks, then alerts on >2σ deviation — adapts per service without hardcoded thresholds. Needs the warmup before it is useful.
 
-  **The plausible-sounding "fix" is a bug.** Switching to `Sum` would report 4 against a `ServiceDesiredCount` of 2, making `tasks > ServiceDesiredCount` permanently true and driving continuous scale-in pressure down to MinCapacity on every service. The reasoning that leads there — "the ALB publishes per AZ, so `Average` must be the per-AZ mean" — is wrong precisely because cross-zone makes the per-AZ value the total. Measure before changing.
-
-  Reproduce: `aws cloudwatch get-metric-statistics --namespace AWS/ApplicationELB --metric-name HealthyHostCount --dimensions Name=TargetGroup,Value=<tg-full-name> Name=LoadBalancer,Value=<lb-full-name> --period 60 --statistics Average Sum` and compare against `aws ecs describe-services --query 'services[0].runningCount'`. Worth re-checking if `load_balancing.cross_zone.enabled` is ever set to `false` on a target group — that would invert the conclusion.
-
-- [ ] **`ecscluster-vpc-rds-asg` — `BackupRole` cannot perform restores**
-  `BackupRole` carries only `AWSBackupServiceRolePolicyForBackup`. A restore job additionally needs `AWSBackupServiceRolePolicyForRestores`, so choosing `BackupRole` under "Choose an IAM role" in the restore dialog fails on permissions. Current practice is the console's **Default role** (`AWSBackupDefaultServiceRole`) — created outside CloudFormation, account-wide, valid for all supported resource types. Decide whether to keep it that way (splitting backup and restore permissions is the better posture, and the role having no owning template is then intentional) or add a scoped restore role to the cluster template. Either way, record the decision — the restore procedure itself is in README "EFS-Restore".
-
-- [ ] **Frankfurt — Resize high-memory services**
-  From the 2026-07-09 metrics review: `labs-tin-fro-app-p` runs at **106% memory** (exceeds its soft limit, eats into the shared instance pool) and `gwa-gut-sol-p` at 77% (same app family as the Paris service that needed the same fix). Double `TaskMemory` for both, same as done for Paris (`lab-web-fro-s` 83.9%→11.5%, `gwa-gut-sol-s` 74.4%→36.8%). Watch list: `tro-cur-web-p` (71%), `labs-gru-web-sol-s` (71%).
-
-- [ ] **`ecsservice` — Harden ImageResolver against failed-first-create retry loop**
-  Report confirmed by code review: on a *fresh* create the resolver returns `InitialDockerImage` directly and cannot fail (`SkipImageResolver` is irrelevant there). The trap is the retry after a failed first create, when the resolver receives an **Update** event: (a) if the ECS service is gone (rolled back / deleted out-of-band), `describe_services` finds nothing and the Lambda hard-fails the whole stack update; (b) if the service exists but never became healthy, the resolver reads the *broken* image from the running task definition and resurrects it on every update — new `InitialDockerImage` values are ignored until `SkipImageResolver=true` forces them through. Fix for (a): in the Update branch, fall back to `InitialDockerImage` (with log line) instead of raising when the service is missing or has no task definition (~4 lines). (b) is not safely auto-detectable; `SkipImageResolver=true` stays the documented override for it. **Mitigation shipped 2026-07-10:** `SkipImageResolver` default changed to `true` — new services skip the resolver during creation/iteration entirely; operators set it to `false` once the service runs successfully. The Lambda hardening remains worthwhile for stacks already switched to `false`.
-
-- [ ] **`ecsservice` — Add CloudWatch Anomaly Detection for network throughput**
-  Future enhancement: add network throughput (NetworkIn/NetworkOut metrics) anomaly detection to each service. CloudWatch learns normal traffic patterns over 2 weeks, then alerts when traffic deviates >2σ from baseline — adapts per-service without hardcoded thresholds. Useful for detecting unusual traffic patterns or traffic spikes. Add parameters `EnableNetworkAnomalyDetection` and `NetworkAnomalyThreshold` to ecsservice template. Requires 2-week warmup before becoming effective.
+- [ ] **Detecting compromise of an ephemeral container.** GuardDuty Malware Protection for EC2 does not close this gap: it scans EBS only (so the EFS mount at `VolumeMountPath` is never scanned), a scan only starts after GuardDuty already raised a finding — and a file written inside a container is invisible to flow logs, DNS logs and CloudTrail — and the container writable layer is discarded on the next deploy, taking the evidence with it. Container contents *are* in scope where they sit on EBS, attributed as `Execution:ECS/MaliciousFile`. Durable evidence today: ALB access logs (verified enabled in Frankfurt 2026-08-16), DNS firewall logs, flow logs, container logs. Missing: anything recording *execution*.
+  - Evaluate **GuardDuty Runtime Monitoring** (`RUNTIME_MONITORING`, currently `DISABLED`, sub-options `EC2_AGENT_MANAGEMENT` / `ECS_FARGATE_AGENT_MANAGEMENT`) — agent-based, emits a finding at execution time that outlives the container and covers EFS paths. Check ECS-on-EC2 support, agent footprint on `t3.small`, cost.
+  - Enable `EBS_MALWARE_PROTECTION` anyway via the guardduty template (not the console) — 30-day free trial, small per-GB cost on 30 GB root volumes, and it incidentally checks ECR image contents. Do not record it as covering application data.
+  - Per service, determine which paths are image vs EFS. For the `-typ` TYPO3 and Matomo services it matters whether extension directories sit inside the image (scanned, not persistent) or on the EFS mount (persistent, unscanned). Check `sudo ls -la /mnt/efs/<service-stack-name>/`.
+  - Everything has 14-day retention, so no investigation reaches back further than two weeks. Deliberate DSGVO tradeoff, but it means alerting inside the window matters more than analysis run eventually.
 
 ---
 
 ## LII26-96: Zero-Trust Outgoing Network Security
 
-Repeatable rollout checklist — execute per cluster in order: **Paris (labc-eu-w3) → Frankfurt (labc-eu-c1)**.
+Execute per cluster in order: **Paris (labc-eu-w3) → Frankfurt (labc-eu-c1)**.
 
----
+**Phase 1 — LII26-94: DNS monitoring (ALERT mode)** — ✅ complete in both regions. DNS Firewall, Route 53 query logging, metric filter and alarm deployed; GuardDuty active with FlowLogs/DNSLogs/CloudTrail verified; 7-day baselines finished 2026-07-16 (Paris) and 2026-07-17 (Frankfurt).
 
-### Phase 1 — LII26-94: DNS Monitoring (ALERT Mode)
+### Phase 2 — LII26-93: Log analysis & whitelist
 
-- [ ] Deploy DNS Firewall into the cluster stack:
-  - Rule 1: ALLOW if domain is on whitelist
-  - Rule 2: ALERT catch-all for everything else
-  - Route 53 Resolver Query Logging → CloudWatch log group
-  - CloudWatch metric filter + alarm on ALERT surge
-- [ ] **Enable AWS GuardDuty** in the cluster's region
-  - Verify **VPC Flow Logs** is an active data source
-  - Verify **Route 53 DNS Logs** is an active data source
-  - Document projected monthly cost from GuardDuty Usage page for budget reporting
-- [ ] Run for minimum 7 days before proceeding to Phase 2
+- [ ] Run `DnsFireWallLogsSummary`, group ALERT'd domains by frequency, separate legitimate services from trackers and noise
+- [ ] Build the whitelist, aggregating by root domain. Wildcards match a single subdomain level only — `*.example.com` covers `foo.example.com` but not `foo.bar.example.com`
+- [ ] **Include the container registry domains, not just ECR.** `lab-ana-mat-p` (`matomo:5.8`) and `gwa-gut-sol-p` (`solr:9.9`) pull from Docker Hub. A `BLOCK` catch-all breaks the **image pull at the next task placement**, not the running container — so the Phase 4 application test would pass while those services silently cannot restart or scale. Needs `registry-1.docker.io`, `auth.docker.io` and the layer CDN; confirm exact hostnames from the ALERT logs.
+- [ ] Update `DnsFirewallWhitelistDomains` and deploy
+- [ ] Correlate GuardDuty findings with the DNS logs
+- [ ] Record projected GuardDuty monthly cost from the Usage page
 
----
+### Phase 3 — LII26-95: Security group hardening
 
-### Phase 2 — LII26-93: Log Analysis & Whitelist
+**Prerequisites:** Phase 1 and 2 complete, GuardDuty verified.
 
-- [ ] Run `DnsFireWallLogsSummary` saved query in CloudWatch Logs Insights
-- [ ] Group ALERT'd domains by frequency — identify legitimate services, filter ad trackers and suspicious domains
-- [ ] Build whitelist (aggregate by root domain, use wildcards carefully — `*.example.com` covers all subdomain depths in Route 53 DNS Firewall)
-- [ ] **Whitelist the container registry domains — not just ECR.** Most services pull from `848331400135.dkr.ecr.<region>.amazonaws.com`, but two pull from Docker Hub: `lab-ana-mat-p` (`matomo:5.8`) and `gwa-gut-sol-p` (`solr:9.9`). A `BLOCK` catch-all breaks the **image pull at the next task placement**, not the running container — so the Phase 4 "test all critical applications" step would pass while the services are already unable to restart or scale. Needs `registry-1.docker.io`, `auth.docker.io` and the layer CDN; confirm the exact hostnames from the ALERT logs rather than assuming, and check the ECR/S3 endpoints the ECR pull path uses too. Full list of images per stack: `aws cloudformation describe-stacks --query "Stacks[?Parameters[?ParameterKey=='ServiceDesiredCount']].{stack:StackName,image:(Parameters[?ParameterKey=='InitialDockerImage'].ParameterValue)[0]}" --output table`.
-- [ ] Update `DnsFirewallWhitelistDomains` stack parameter and deploy
-- [ ] Check GuardDuty findings console — correlate any findings with DNS logs
-- [ ] Document projected GuardDuty monthly cost from Usage page
+**Step A — port audit.** ✅ Paris analysed 2026-08-07 over 28 days. The saved query's two defects (counting inbound replies, and NAT double-counting) were fixed in the template on 2026-08-14 by narrowing the source filter to the private subnets (`/^10\.1\.[34]\./`) plus a `srcport != 443/80` backstop, with `limit` raised to 500 — **not yet deployed to Paris**. The 128 apparent "dead ports" were verified as our RSTs landing on inbound scanners' fixed source ports (masscan/zmap profile, Censys among the sources) — inbound-initiated, no egress rules needed, no compromise indicated.
 
----
+Result (connection counts NAT-deduplicated, raw ÷ 2):
 
-### Phase 3 — LII26-95: Security Group Hardening
-
-**Prerequisites:** Phase 1 and Phase 2 complete. GuardDuty active and verified.
-
-**Step A — Port audit (collect baseline):**
-- [x] Set `EnableEgressAnalysis=true` in the cluster stack and deploy — Paris: 2026-07-09, still running as of 2026-08-07 (29 days). Frankfurt: not yet enabled.
-- [x] Run `VpcEgressPortsAnalysis` — **Paris analysed 2026-08-07 over 28 days.** Result below.
-- [x] Resolve destinations per port (`dport`/`dstaddr`/`srcaddr` query) — done 2026-08-07, results in the table below.
-- [ ] **Set `EnableEgressAnalysis=false` and deploy** — analysis is complete and recorded here; the ACCEPT flow log is now pure cost (29 days vs. the intended 14).
-- [ ] Identify `3724/TCP → 145.239.131.113` (OVH) — the one remaining unknown destination. 9 connections / 1.56 KB in 28 days, originating from `10.1.3.7`.
-- [x] Scan-noise assessment confirmed 2026-08-07 by bidirectional query — see below.
-
-**✅ Two defects in the saved query — fixed in the template 2026-08-14, not yet deployed.** Both were resolved by one change rather than the two proposed below: `| filter srcaddr like /^10\./` became `| filter srcaddr like /^10\.1\.[34]\./`. The template hardcodes the subnets — NAT gateway and ALB live in `10.1.1.0/24` / `10.1.2.0/24`, tasks and instances in `10.1.3.0/24` / `10.1.4.0/24` — so restricting sources to the private subnets drops the NAT ENI (defect 2), the ALB's port-443 replies (defect 1) and the inbound-scan RSTs from `10.1.1.202` in a single filter, with no new parameter and no per-region value. Every real egress source in the Paris audit (`10.1.3.45`, `10.1.3.76`, `10.1.4.12`, `10.1.4.99`) is inside that range. `| filter srcport != 443 and srcport != 80` was kept as a backstop, and `limit` raised 50 → 500 because Paris's genuine 138 ports would otherwise still be truncated. **Do not also parameterise the NAT IP as suggested in point 2 — it is redundant now.** The two defects are kept below for the reasoning and the evidence.
-
-1. **It counts reply traffic.** `VpcEgressPortsAnalysis` filters `srcaddr like /^10\./ and dstaddr not like /^10\./`, which also matches the ALB/tasks *answering* inbound requests (`srcport=443`, `dstport=<client ephemeral>`). Every answered request contributes one more "port", so the result grows without bound instead of converging on the ports actually in use. In Paris it added 180,534 connections / 5.55 GB and **9,950 phantom ports out of a 10,000-row result** — and that result was still truncated, so the true count was higher. Adding `| filter srcport != 443 and srcport != 80` collapsed it to 138 ports, complete down to a single connection. If a run returns a suspiciously round number of rows, this is why.
-2. **NAT gateway double-counting.** Every flow through the NAT gateway is recorded twice — once at the task ENI, once at the gateway ENI (`10.1.1.202` in Paris, `eni-0918a8815b4f80842`). Verified exactly: for `4318`, the three instance sources sum to the gateway row (8+3+3 = 14 connections, 166,726+54,221+53,080 = 274,027 B). **All raw figures are ~2× reality.** Add `| filter srcaddr != "<nat-private-ip>"` — the NAT IP differs per region, so parameterise it.
-
-Also cast before any numeric range filter (`dstport * 1`): `parse` yields strings, so `dstport >= 5000` compares lexicographically and silently drops 4-digit ports.
-
-**Step A result — Paris, 28 days, initiated egress only. Connection counts are NAT-deduplicated (raw ÷ 2).**
-
-| Port | Conns (dedup) | Bytes | Destination | Source | Verdict |
+| Port | Conns | Bytes | Destination | Source | Verdict |
 |---|---|---|---|---|---|
-| 443/TCP | ~978,000 | ~6.60 GB | 0.0.0.0/0 | all | allow |
-| 123/UDP | ~50,300 | ~4.9 MB | Ubuntu NTP pool | `10.1.3.7` | see Step B |
-| 80/TCP | ~216 | ~658 KB | — | all | likely OCSP/CRL — confirm destinations before dropping |
-| 4318/TCP | 14 | 274 KB | `149.248.216.54` | `10.1.3.76`, `10.1.4.99`, `10.1.4.12` | OTLP/HTTP telemetry export |
-| 22/TCP | 14 | 83.5 KB | `185.166.143.48/.49/.50` | `10.1.3.7` | legitimate SSH, round-robin trio |
-| 4460/TCP | 5 | 5.5 KB | `91.189.91.111-113`, `185.125.190.122-123` (Canonical) | `10.1.3.7` | **NTS-KE** (RFC 8915) — see Step B |
+| 443/TCP | ~978,000 | ~6.60 GB | `0.0.0.0/0` | all | allow |
+| 123/UDP | ~50,300 | ~4.9 MB | Ubuntu NTP pool | `10.1.3.7` | not cluster traffic |
+| 80/TCP | ~216 | ~658 KB | — | all | likely OCSP/CRL — confirm before dropping |
+| 4318/TCP | 14 | 274 KB | `149.248.216.54` | `10.1.3.76`, `10.1.4.99`, `10.1.4.12` | OTLP telemetry export |
+| 22/TCP | 14 | 83.5 KB | `185.166.143.48-50` | `10.1.3.7` | not cluster traffic |
+| 4460/TCP | 5 | 5.5 KB | Canonical NTS-KE | `10.1.3.7` | not cluster traffic |
 | 3724/TCP | 9 | 1.56 KB | `145.239.131.113` (OVH) | `10.1.3.7` | **unidentified** |
-| 587/TCP | 2 | 6.2 KB | `95.217.210.26` (Hetzner) | `10.1.3.45` | **SMTP — real. Do not remove.** |
-| 53/UDP | 12 | 960 B | `8.8.8.8` | `10.1.3.76`, `10.1.4.99`, `10.1.4.12` | DNS Firewall bypass — separate task |
+| 587/TCP | 2 | 6.2 KB | `95.217.210.26` (Hetzner) | `10.1.3.45` | **SMTP — real, do not remove** |
+| 53/UDP | 12 | 960 B | `8.8.8.8` | `10.1.3.76`, `10.1.4.99`, `10.1.4.12` | DNS Firewall bypass — see below |
 | ICMP | 3 | 264 B | — | — | ping |
 
-**The 128 "dead ports" are replies to inbound scanning, not outbound activity — verified, not inferred.**
+- [ ] Run the analysis in Frankfurt, then set `EnableEgressAnalysis=false` in **both** regions
+- [ ] Identify `3724/TCP → 145.239.131.113` — the one remaining unknown, from `10.1.3.7`
 
-Each remote host maps to exactly one fixed port (`46141`↔`46.201.166.109` ×29, `19044`↔`213.231.52.175` ×18, `8096`↔`37.27.131.99` ×15, …) at 40 bytes per record. A bidirectional query on `46.201.166.109` proved the direction:
+**Step B — NTP.** ✅ Resolved 2026-08-07. The ECS hosts already use Amazon Time Sync (`169.254.169.123`, which flow logs do not record). All external NTP, NTS-KE, SSH and the OVH traffic originate from `10.1.3.7` = `lab-dev-llm-s-EC2`, a `t3a.large` Ubuntu box from its own stack, not an ASG member — so `123/UDP`, `4460/TCP`, `22/TCP` and `3724/TCP` leave Step C entirely.
 
-- `46.201.166.109:46141 → 10.1.1.202:2283` (ACCEPT, 29 flows) and the reply `10.1.1.202:2283 → 46.201.166.109:46141` (29 flows, 40 B/packet = RST, nothing listening). The remote uses its ephemeral port as *source* against our port 2283 — inbound-initiated.
-- The same remote, from the same source port `37523`, hits `10.1.1.202` (ACCEPT — NAT gateways have no security group), `10.1.2.103` (REJECT) and `10.1.1.173` (REJECT). One remote host fanning out across our private address space while security groups reject it.
+- [ ] `lab-dev-llm-s` needs its own egress policy — separate stack, separate SG, outside this repo. Track it there.
 
-So what the egress query reported as "destination port 46141" was our RST landing on the scanner's fixed source port — `masscan`/`zmap` send from a fixed source port by design. Source IPs fit the profile (`147.185.221.22` is Censys). The failed SSH attempts to `23.106.55.199`, `91.124.63.12`, `54.36.246.226` are the same pattern with source port 22. **No egress rules needed, nothing inside the VPC originating it, no compromise indicated.** GuardDuty has flagged nothing since 2026-07-09.
-
-Note: instance IPs *do* appear in these flows, but as REJECT recipients of inbound packets — not as originators. The REJECT records also confirm the permanent REJECT flow log and the temporary ACCEPT flow log share one log group, so `EnableEgressAnalysis=false` removes only the ACCEPT stream.
-
-**Step B — NTP evaluation:**
-- [x] **Resolved 2026-08-07: the logged port-123 traffic did NOT go to Amazon Time Sync.** Flow logs exclude traffic to `169.254.169.123` ([flow log limitations](https://docs.aws.amazon.com/vpc/latest/userguide/flow-logs-limitations.html)), so anything visible on port 123 went to an external server by definition. Which host that was is the next bullet — it is not the ECS fleet.
-- [x] **The ECS hosts are already on Amazon Time Sync.** The launch template uses `{{resolve:ssm:/aws/service/ecs/optimized-ami/amazon-linux-2023/recommended/image_id}}` and the UserData never touches chrony, so ASG instances run the AL2023 default (`169.254.169.123`), which flow logs do not record.
-- [x] **The external NTP is not cluster traffic.** `10.1.3.7` = `i-06ffc732f73a20005` = **`lab-dev-llm-s-EC2`**, a `t3a.large` running **Ubuntu 26.04**, launched 2026-07-06 from its own CloudFormation stack `lab-dev-llm-s`, with its own security group (`lab-dev-llm-s-EC2SecurityGroup-FoLTBWyqVBSI`) and subnet. It returns empty from `aws ecs list-container-instances` — not an ASG member. NTS key establishment (`4460/TCP` to Canonical space, RFC 8915) plus NTP over `123/UDP` is stock Ubuntu behaviour.
-- [x] **Four ports leave Step C entirely.** `123/UDP`, `4460/TCP`, `22/TCP` (→ `185.166.143.48-50`) and `3724/TCP` (→ OVH box `145.239.131.113`) all originate from `lab-dev-llm-s-EC2`, not from the cluster. No cluster egress rules needed for any of them.
-- [ ] **`lab-dev-llm-s` needs its own egress policy** — separate stack, separate SG, outside this repo. The cluster's Step C rules do not reach it. Track there, not here.
-
-**Step C — Apply egress rules (replace blanket allow-all):**
-
-Target rule set, derived from the Step A results. Five rules, two of them `/32`-scoped, one scoped to the VPC CIDR (down from seven after `22`, `123`, `4460` and `3724` turned out to originate from `lab-dev-llm-s`, see Step B):
-
-Scope confirmed 2026-08-07: the VPC runs 9 `labc-eu-w3` instances plus exactly one outsider, `lab-dev-llm-s-EC2` (`10.1.3.7`). All remaining egress sources (`10.1.3.45`, `10.1.3.76`, `10.1.4.12`, `10.1.4.99`) are cluster members, so the traffic below is genuinely containerised.
+**Step C — apply egress rules.** Target set, five rules:
 
 | Rule | Destination | Rationale |
 |---|---|---|
-| 443/TCP | `0.0.0.0/0` | web/APIs — 99% of egress; GuardDuty monitors for anomalous connections |
-| 80/TCP | `0.0.0.0/0` | OCSP/CRL revocation checks — **dropping this breaks TLS validation** |
-| 587/TCP | `95.217.210.26/32` | SMTP relay (Hetzner), from `10.1.3.45` |
-| 4318/TCP | `149.248.216.54/32` | OTLP/HTTP telemetry export (Fly.io), from 3 of 9 hosts |
-| 53/UDP+TCP | VPC CIDR **only** | internal DNS; scoping to the VPC CIDR is what closes the `8.8.8.8` bypass |
+| 443/TCP | `0.0.0.0/0` | web/APIs, ~99% of egress; GuardDuty watches for anomalies |
+| 80/TCP | `0.0.0.0/0` | OCSP/CRL — **dropping this breaks TLS validation** |
+| 587/TCP | `95.217.210.26/32` | SMTP relay, from `10.1.3.45` |
+| 4318/TCP | `149.248.216.54/32` | OTLP telemetry, from 3 of 9 hosts |
+| 53/UDP+TCP | VPC CIDR **only** | internal DNS; this is what closes the `8.8.8.8` bypass |
 
-Dropped from this list — all `lab-dev-llm-s`, not cluster traffic: ~~`22/TCP`~~, ~~`123/UDP`~~, ~~`4460/TCP`~~, ~~`3724/TCP`~~.
+**⚠️ All three instance security groups must be restricted or this is a no-op.** The launch template attaches `SgVpcMysqlAccess`, `SgVpcLoadbalancerports` and `SgVpcEfsAccess`, and **none defines `SecurityGroupEgress`** — so each inherits allow-all. SG rules are additive: if one still allows everything, restricting the other two changes nothing. Either add the set to all three, or introduce one dedicated egress SG and strip allow-all from the rest.
 
-**⚠️ All three instance security groups must be restricted, or this is a no-op.** The launch template attaches `SgVpcMysqlAccess`, `SgVpcLoadbalancerports` and `SgVpcEfsAccess`. **None of them define `SecurityGroupEgress`**, so each inherits CloudFormation's default allow-all. Security group rules are additive — if even one still allows all egress, restricting the other two changes nothing. Add the rule set to all three, or introduce a single dedicated egress SG and strip allow-all from the rest.
+- [ ] Fix the OTel agent's hardcoded resolver **first** — the `53 → VPC CIDR` rule blocks its `8.8.8.8` queries the moment it lands, and it then cannot resolve its collector. Three sources (`10.1.3.76`, `10.1.4.99`, `10.1.4.12`) are the same image deployed three times, so it is one fix. Until then those queries bypass the whitelist, the ALERT logging and later BLOCK enforcement entirely.
+- [ ] Confirm the `80/TCP` destinations really are OCSP/CRL before allowing plaintext egress to the internet
+- [ ] Delete the blanket `Egress: ALL → 0.0.0.0/0` rule and apply the table above
 
-- [ ] Fix the OTel agent's resolver so `53` traffic goes to the VPC resolver, otherwise the `53 → VPC CIDR` rule breaks telemetry
-- [ ] Confirm the `80/TCP` destinations really are OCSP/CRL before shipping a rule that allows plaintext egress to the internet
-- [ ] Delete the blanket outbound rule (Egress: ALL to 0.0.0.0/0) and apply the table above
-- [ ] Set `EnableEgressAnalysis=false` and deploy to remove the temporary ACCEPT flow log
+**Step D — automated incident response.** The `guardduty` stack already provides the Quarantine SG (`<stack>-QuarantineSgId`, zero egress), the execution role (`-IncidentResponseRoleArn`) and the detector ID (`-DetectorId`).
 
-**Ordering matters:** the `53 → VPC CIDR` rule will block the OTel agent's `8.8.8.8` queries the moment it lands. Fix the agent's DNS config *before* applying Step C, or telemetry export fails when the agent can no longer resolve `149.248.216.54`.
+- [ ] Lambda: swap a target instance's security group to the Quarantine SG
+- [ ] EventBridge rule: GuardDuty finding with HIGH severity → the Lambda
+- [ ] Test end-to-end with sample findings and confirm the instance moved to the Quarantine SG
 
-**Step D — Automated incident response:**
-- [ ] ~~Create Quarantine Security Group~~ — already provided by the `guardduty` stack (export `<stack>-QuarantineSgId`), zero egress rules
-- [ ] Create Lambda function: on invocation, swap a target instance's security group to the Quarantine SG via AWS API — execution role already provided by the `guardduty` stack (export `<stack>-IncidentResponseRoleArn`)
-- [ ] Create EventBridge rule: GuardDuty finding with HIGH severity → trigger Lambda (detector ID available as export `<stack>-DetectorId`)
-- [ ] Test end-to-end using GuardDuty **Generate sample findings**
-- [ ] Confirm the test instance was automatically moved to the Quarantine SG
+### Phase 4 — LII26-92: Go live (BLOCK mode)
 
----
-
-### Phase 4 — LII26-92: Go Live (BLOCK Mode)
-
-**Template prerequisite (do first):** the catch-all rule's `ALERT` action is currently **hardcoded** in the cluster template. Changing it via CLI/console would be out-of-band drift — the next cluster stack update would silently revert BLOCK → ALERT and disarm enforcement. Add a parameter (e.g. `DnsFirewallCatchAllAction`, AllowedValues `ALERT`/`BLOCK`, default `ALERT`) to the cluster template before go-live.
-
-- [ ] Add `DnsFirewallCatchAllAction` parameter to the cluster template (see above)
-- [ ] Run `DnsFireWallLogsSummary` one final time — confirm no legitimate domains are still appearing as ALERT
-- [ ] Go live via stack update: set `DnsFirewallCatchAllAction=BLOCK` (response type: NXDOMAIN)
-- [ ] Test all critical applications: Lieferchat, Matomo, email sending, time synchronisation
-- [ ] Monitor CloudWatch for unexpected BLOCK events in the first 48h
-- [ ] Rollback = stack update with `DnsFirewallCatchAllAction=ALERT` (no out-of-band CLI needed; document in the Jira ticket)
+- [ ] **First:** add a `DnsFirewallCatchAllAction` parameter (`ALERT`/`BLOCK`, default `ALERT`) to the cluster template. The action is currently hardcoded, so flipping it by CLI would be drift that the next stack update silently reverts — disarming enforcement.
+- [ ] Run `DnsFireWallLogsSummary` once more; confirm no legitimate domain still appears as ALERT
+- [ ] Set `DnsFirewallCatchAllAction=BLOCK` (response NXDOMAIN) via stack update
+- [ ] Test critical applications: Lieferchat, Matomo, email, time sync — and image pulls
+- [ ] Monitor for unexpected BLOCK events for 48h. Rollback = same parameter back to `ALERT`
 
 ---
 
