@@ -1297,13 +1297,6 @@
                     "Ref": "Ecscluster"
                   },
                   " >> /etc/ecs/ecs.config\n",
-                  "mkdir -p /mnt/efs\n",
-                  "echo \"",
-                  {
-                    "Ref": "Efs"
-                  },
-                  ":/ /mnt/efs efs _netdev,tls 0 0\" >> /etc/fstab\n",
-                  "mount -a || true\n",
                   "dnf install -y dnf-automatic\n",
                   "sed -i 's/^upgrade_type = .*/upgrade_type = security/' /etc/dnf/automatic.conf\n",
                   "sed -i 's/^apply_updates = .*/apply_updates = yes/' /etc/dnf/automatic.conf\n",
@@ -2643,7 +2636,7 @@
     },
     "TemplateVersion": {
       "Description": "Version of the ecscluster-vpc-rds-asg template this stack was last updated with. Bump on every template change (see README).",
-      "Value": "1.1.0"
+      "Value": "1.2.0"
     }
   },
   "Conditions": {

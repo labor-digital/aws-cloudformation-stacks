@@ -13,6 +13,7 @@ Parameter sind nicht hier dokumentiert: jeder Parameter trägt im Template eine 
 | `ecscluster-vpc-rds-asg` | Vollständiger ECS-Cluster: VPC, RDS Aurora, ASG, ALB, EFS, AWS Backup, DNS Firewall, CloudWatch-Monitoring. |
 | `ecscluster-vpc-rds-asg/alb-logs-bucket` | S3-Bucket für ALB-Zugriffslogs mit DSGVO-Lifecycle. Separater Stack, Bucket überlebt Stack-Löschung. |
 | `ecscluster-vpc-rds-asg/guardduty` | GuardDuty Detector, Quarantine-SG und Incident-Response-Rolle. Ein Stack pro Region. |
+| `ecscluster-vpc-rds-asg/alb-waf` | `REGIONAL` WAF-WebACL am Cluster-ALB. Schützt alle Services hinter diesem Loadbalancer. |
 | `ecscluster-vpc-rds-asg/backup-vaults-mirror` | Backup-Vaults in der Zielregion für regionsübergreifende Backup-Kopien. |
 | `ecscluster-vpc-rds-asg/efs-access` | Temporärer SFTP-Zugang zum Cluster-EFS. Stack deployen, Daten übertragen, Stack löschen. |
 | `ecsservice` | Ein containerisierter Service auf einem bestehenden Cluster. |
@@ -22,6 +23,7 @@ Parameter sind nicht hier dokumentiert: jeder Parameter trägt im Template eine 
 | `certificate` | Eigenständiges ACM-Zertifikat mit DNS-Validierung. |
 | `cloudfront-alb-distribution` | CloudFront-Distribution vor einem ALB, inkl. WAF WebACL. |
 | `global-accelerator-alb` | Global Accelerator mit zwei statischen Anycast-IPv4-Adressen vor einem ALB. |
+| `chatbot-slack` | Slack-Zustellung der Cluster-Alarme über AWS Chatbot. Ein Stack für alle Cluster, regionsübergreifend. |
 
 > `ecscluster-ext-additional-cluster` ist veraltet und wird nicht mehr unterstützt.
 
@@ -36,7 +38,7 @@ Pro Region in dieser Reihenfolge:
 3. **`ecscluster-vpc-rds-asg/guardduty`** — **nach** dem Cluster, nicht davor: die Quarantine-SG importiert `${ClusterStackName}-Vpc`.
 4. **`ecscluster-vpc-rds-asg/backup-vaults-mirror`** — in der Zielregion (`BackupCopyDestinationRegion`, Default `eu-north-1`). Muss existieren, bevor Backup-Kopien greifen.
 5. **`ecsservice`** — pro Anwendung.
-6. Optional: `alb-ecsservice-rule`, `alb-redirect-rule`, `alb-additional-certificate`, `cloudfront-alb-distribution`, `global-accelerator-alb`.
+6. Optional: `ecscluster-vpc-rds-asg/alb-waf` (importiert `-LoadbalancerArn` und `-AlertTopicArn`, also **nach** dem Cluster), `alb-ecsservice-rule`, `alb-redirect-rule`, `alb-additional-certificate`, `cloudfront-alb-distribution`, `global-accelerator-alb`.
 
 **Cross-Stack-Kontrakt.** Die Abhängigkeiten laufen ausschließlich über CloudFormation-Exports:
 
@@ -72,7 +74,7 @@ Vollständige, eigenständige Infrastruktur für den Betrieb von ECS-Services: V
 - **Jedes Stack-Update zeigt vier Zeilen AMI-Kaskade — das ist kein Drift.** `ImageId` ist eine SSM-Dynamic-Reference auf die aktuelle ECS-optimized AMI, die CloudFormation bei jedem Update neu auflöst. Im Change Set erscheinen dann `Launchtemplate` (`DirectModification`, `RequiresRecreation: Never`) und als Folge `Ascalegroup`, `CapacityProvider`, `EcsclusterCapacityProviderAssociation` — die letzten zwei mit `Replacement: Conditional`. Es wird nichts neu erstellt: das Launch Template bekommt eine neue Version, die ASG wird in-place aktualisiert, ihre ARN bleibt stabil. Laufende Instanzen bleiben unberührt, die neue AMI greift erst bei künftigen Launches. Unterscheiden lässt sich das über `ChangeSource` im Change Set: nur `DirectModification` stammt aus dem Template, `ResourceAttribute`/`ResourceReference` sind Folgeänderungen.
 - **`AscalegroupDesSize` auf `0` lassen.** ECS Managed Scaling (Target Capacity 80 %) startet Instanzen, wenn Tasks Kapazität brauchen, und fährt sie wieder herunter. Ein leerer Cluster kostet keine EC2-Stunden.
 - **`EnableEgressAnalysis` ist temporär.** Aktiviert ACCEPT-Mode Flow Logs für die Phase-3-Step-A-Port-Baseline. Fenster 7–14 Tage, danach zurück auf `false` — ACCEPT-Logs werden pro GB abgerechnet und dominieren sonst die Logging-Kosten.
-- **`TemplateVersion`-Output (`1.1.0`) prüfen, statt Git-Historie zu rekonstruieren:** `aws cloudformation describe-stacks --stack-name <cluster> --query "Stacks[0].Outputs[?OutputKey=='TemplateVersion'].OutputValue" --output text`. Kein Output = Stand vor Einführung des Stempels.
+- **`TemplateVersion`-Output (aktuell `1.2.0`) prüfen, statt Git-Historie zu rekonstruieren:** `aws cloudformation describe-stacks --stack-name <cluster> --query "Stacks[0].Outputs[?OutputKey=='TemplateVersion'].OutputValue" --output text`. Kein Output = Stand vor Einführung des Stempels.
 - **`BackupRetentionPeriod` steht auf 1 Tag.** Automatische Aurora-Snapshots decken damit nur 24 h ab; alles darüber kommt aus dem AWS-Backup-Vault (6h-Rhythmus, 35 Tage).
 - **Alle Log-Gruppen haben 14 Tage Retention (DSGVO).** Das begrenzt jede forensische Analyse auf zwei Wochen — Auswertungen also innerhalb des Fensters fahren, nicht „irgendwann".
 - **DNS Firewall läuft im ALERT-Modus.** Der Catch-all ist hartcodiert auf `ALERT`; die Umstellung auf `BLOCK` ist Phase 4 und braucht zuerst eine vollständige Whitelist (siehe TASKS.md). Registry-Domains nicht vergessen, sonst schlägt der Image-Pull beim nächsten Task-Placement fehl.
@@ -81,12 +83,18 @@ Vollständige, eigenständige Infrastruktur für den Betrieb von ECS-Services: V
 
 **EFS-Restore**
 
-AWS Backup sichert das EFS alle 6 h (35 Tage, `${Cluster}-BackupVault`) und wöchentlich (365 Tage, `${Cluster}-BackupLongTermVault`). Der schnellste Weg nutzt zwei Eigenschaften des Stacks: die UserData mountet die **Wurzel** des Dateisystems auf jeder Instanz unter `/mnt/efs`, und die Instanzrolle hat `AmazonSSMManagedInstanceCore`. Kein neues Dateisystem, kein Mount-Target, kein Bastion — und da kein Port-22-Ingress existiert, ist SSM ohnehin der einzige Shell-Zugang.
+AWS Backup sichert das EFS alle 6 h (35 Tage, `${Cluster}-BackupVault`) und wöchentlich (365 Tage, `${Cluster}-BackupLongTermVault`). Der schnellste Weg nutzt die Instanzrolle mit `AmazonSSMManagedInstanceCore`: kein neues Dateisystem, kein Mount-Target, kein Bastion — und da kein Port-22-Ingress existiert, ist SSM ohnehin der einzige Shell-Zugang. Die **Wurzel** des Dateisystems wird dabei **von Hand** gemountet. Die UserData hat das früher automatisch getan; das wurde bewusst entfernt, damit auf einer kompromittierten Instanz (Container-Ausbruch) nicht dauerhaft ein Root-Mount mit den Daten *aller* Services bereitliegt. `amazon-efs-utils` ist im ECS-optimierten AMI enthalten, der Mount gelingt also jederzeit ohne Installation.
 
 1. Recovery Point wählen: `aws backup list-recovery-points-by-backup-vault --backup-vault-name <cluster>-BackupVault`
 2. Restore starten (Konsole ist am einfachsten): *Item-level* mit bis zu 5 relativen Pfaden (`/<service-stack-name>` = die `RootDirectory`, die jeder `ecsservice`-Stack mountet) oder *Full*. Ziel: **existierendes Dateisystem**, nicht ein neues.
 3. Restore-Rolle: **Default role**. `BackupRole` aus dem Template kann nicht restoren (nur `...ForBackup`, kein `...ForRestores`).
-4. Zugriff: `aws ssm start-session --target <instance-id>`, dann `sudo ls /mnt/efs/aws-backup-restore_*`
+4. Zugriff: `aws ssm start-session --target <instance-id>`, dann die EFS-Wurzel temporär mounten und den Restore suchen:
+   ```
+   sudo mkdir -p /mnt/efs
+   sudo mount -t efs -o tls <fs-id>:/ /mnt/efs   # <fs-id> = Export ${Cluster}-Efs
+   sudo ls /mnt/efs/aws-backup-restore_*
+   ```
+5. Nach getaner Arbeit wieder aushängen: `sudo umount /mnt/efs`. Der Mount ist absichtlich nicht in `/etc/fstab` und überlebt einen Reboot nicht.
 
 AWS Backup überschreibt beim EFS-Restore nie, sondern legt immer ein neues Verzeichnis `aws-backup-restore_<timestamp>/` in der Wurzel an — der Restore ist zerstörungsfrei. Verzeichnis danach löschen, es kostet EFS-Storage.
 
@@ -110,6 +118,27 @@ S3-Bucket für ALB-Zugriffslogs (`${ClusterName}-alb-logs`), separat vom Cluster
 - **Lifecycle deckt alle drei Fälle ab:** `DeleteLogs` (aktuelle Versionen nach `RetentionDays`, Default 14, plus `NoncurrentVersionExpiration` nach 1 Tag), `CleanupDeleteMarkers` und `AbortIncompleteMultipartUploads` nach 7 Tagen. Ohne die Noncurrent-Regel würde der Bucket trotz Versionierung unbegrenzt wachsen und die DSGVO-Obergrenze aushebeln.
 - **Bucket-Policy ist regionsgebunden** (ELB-Log-Delivery-Service-Principal). Pro Region ein Bucket.
 - ALB-Logging ist kein Selbstläufer: `access_logs.s3.enabled` kann `true` sein, während die Lieferung an der Bucket-Policy scheitert. Nach dem Aktivieren prüfen, ob unter `<prefix>/AWSLogs/<account>/elasticloadbalancing/<region>/` tatsächlich Objekte auftauchen.
+
+---
+
+### ecscluster-vpc-rds-asg/alb-waf
+
+`REGIONAL` WAFv2-WebACL, die direkt am ALB des Clusters hängt. Ein WebACL schützt damit **alle** Services hinter diesem Loadbalancer (Frankfurt 21, Paris 15). Enthalten sind die AWS Managed Rules Common, Known Bad Inputs, SQLi, WordPress und PHP, die IP Reputation List, ein Rate-Limit sowie eigene Regeln gegen den WordPress-`batch/v1`-Einstiegspunkt, gegen unauthentifizierte Benutzeranlage über `POST /wp/v2/users` und eine IP-Beschränkung für Admin-Pfade.
+
+**Abhängigkeiten:** importiert `${ClusterStackName}-LoadbalancerArn` und (nur für den Alarm) `${ClusterStackName}-AlertTopicArn` — muss also **nach** dem Cluster deployt werden. Exportiert `${AWS::StackName}-WebAclArn`.
+
+**Best Practices**
+
+- **Jede Regel hat ihren eigenen `off`/`count`/`block`-Schalter**, Default überall `count` — deployen also ohne Parameter, und es wird nichts blockiert. Managed Rules im Block-Modus vor produktivem TYPO3, Matomo und Solr erzeugen False Positives, und ein WAF, das eine Kundenseite zerschießt, wird komplett abgeschaltet. Deshalb pro Regel: eine Woche zählen, `CountedRequests` lesen, **einzeln** scharf schalten — dieselbe Reihenfolge wie beim DNS Firewall (ALERT vor BLOCK). Ein globaler Schalter würde erzwingen, alles gleichzeitig zu aktivieren, und genau das macht die Zählphase wertlos.
+- **Reihenfolge der Promotion nach Risiko:** `IpReputationAction` und `KnownBadInputsAction` zuerst — beide treffen praktisch keinen legitimen Traffic. Danach `SqliRuleSetAction` und `WordPressRulesAction` anhand der Zähldaten. `CommonRuleSetAction` zuletzt und mit Ausnahmen rechnen: `SizeRestrictions_BODY` bei Uploads, `CrossSiteScripting_BODY` bei Rich-Text-Editoren, `NoUserAgent_HEADER` bei API-Clients — Redakteure, die in TYPO3 oder WordPress Inhalte speichern, lösen die XSS-Regeln sehr wahrscheinlich aus.
+- **`WpCustomRulesAction` vor dem Scharfschalten testen.** `POST /wp/v2/users` ist unkritisch, aber `/batch/v1` ist eine **Kern-REST-Route, die der WordPress-Block-Editor beim Speichern nutzt** — blockiert man sie, kann das Backend brechen. Zählen lassen und einen Beitrag testweise speichern.
+- **`AdminRestrictionAction` ist keine False-Positive-Frage, sondern sperrt per Definition alles außerhalb der CIDRs.** Nur brauchbar, wenn die Redaktion ausschließlich über LABOR läuft. Pflegen Kunden ihre Inhalte selbst, sperrt die Regel sie aus, und eine CIDR-Liste pro Kunde ist nicht realistisch — dann `off` lassen und Admin-Pfade anders schützen.
+- **`AdminAllowedCidrs` ist die stärkste Regel in diesem Template** und per Default leer, die Regel entsteht also gar nicht. Eine Admin-Oberfläche, die nur aus dem Büronetz erreichbar ist, lässt sich aus dem Internet nicht brute-forcen — das schlägt jede Signatur.
+- **Scope `REGIONAL` statt `CLOUDFRONT`.** Dieses WebACL entsteht in der Region des Clusters und braucht kein `us-east-1`. Das WebACL in `cloudfront-alb-distribution` ist etwas anderes: es hängt an der Distribution, existiert nur in `us-east-1` und prüft ausschließlich Traffic, der tatsächlich über CloudFront läuft.
+- **WAF-Logs enthalten den vollständigen Request.** `authorization` und `cookie` sind deshalb als `RedactedFields` konfiguriert, sonst landen Session-Tokens in der Log-Gruppe. Retention 14 Tage wie bei ALB-, Flow- und DNS-Logs; Client-IPs sind personenbezogene Daten auf derselben Grundlage.
+- **Der Name der Log-Gruppe muss mit `aws-waf-logs-` beginnen**, sonst lehnt WAF die Logging-Konfiguration ab. `LogDestinationConfigs` erwartet die Log-Gruppen-ARN **ohne** das abschließende `:*`, das `Fn::GetAtt` liefert — deshalb die konstruierte ARN im Template.
+- **`BlockedRequestAlarmThreshold` erst nach dem Wechsel auf `block` setzen.** Im Count-Modus wird nichts blockiert, der Alarm bliebe dauerhaft still und würde Sicherheit vortäuschen.
+- Solr ist damit **nicht** geschützt: die Regelgruppen zielen auf PHP-Anwendungen, Solr ist Java. Siehe TASKS.md — dort ist die Netzwerk-Lösung beschrieben.
 
 ---
 
@@ -163,7 +192,7 @@ Temporärer SFTP-Zugang zum EFS des Clusters: EC2-Instanz im öffentlichen Subne
 
 Ein containerisierter Service auf einem bestehenden Cluster: Task Definition (Einzelcontainer, EFS-Mount, Doppler-Secret-Injektion), ECS Service mit ALB-Integration, Listener-Regeln für HTTP (Redirect auf HTTPS) und HTTPS, Step-Scaling-Autoscaling, operative CloudWatch-Alarme, Log-Gruppe mit Anomaly Detector und eine ImageResolver-Lambda.
 
-**Abhängigkeiten:** importiert `${ClusterStackName}-Ecscluster`, `-Vpc`, `-Efs`, `-ListenerArnHttp`, `-ListenerArnHttps`, `-LoadbalancerArn`. Exportiert `${AWS::StackName}-TargetGroupArn`. Importiert ab `1.1.0` zusätzlich `${ClusterStackName}-AlertTopicArn`. Aktuelle Template-Version: **`1.2.0`**.
+**Abhängigkeiten:** importiert `${ClusterStackName}-Ecscluster`, `-Vpc`, `-Efs`, `-ListenerArnHttp`, `-ListenerArnHttps`, `-LoadbalancerArn`. Exportiert `${AWS::StackName}-TargetGroupArn`. Importiert ab `1.1.0` zusätzlich `${ClusterStackName}-AlertTopicArn`. Aktuelle Template-Version: **`1.3.0`**.
 
 **Best Practices**
 
@@ -175,10 +204,9 @@ Ein containerisierter Service auf einem bestehenden Cluster: Task Definition (Ei
 - **Rolling Deployments verdoppeln kurzzeitig `HealthyHostCount`** (MaximumPercent 200 %). Der Scale-in-Alarm kann dabei kurz anschlagen; der Versuch ist ein No-op, weil Application Auto Scaling nie unter MinCapacity geht. `EvaluationPeriods: 5` überbrückt das Fenster.
 - **Operative Alarme sind reine Sichtbarkeit** (keine Scaling-Trigger), jeder per Threshold `0` abschaltbar: HighCpu `20` % (Baseline liegt bei <1–2 %, deshalb ist 20 % bereits auffällig), HighMemory `80` % (Frühwarnung vor OOM-Kill), LowCpu und LowMemory `0` = aus (Opt-in für Right-Sizing-Reviews). Ziel: kein Alarm ist im gesunden Zustand rot.
 - **Alarmbenachrichtigung kommt vom Cluster.** Die vier operativen Alarme importieren ab `1.1.0` `${ClusterStackName}-AlertTopicArn` als `AlarmActions`. Der **Cluster-Stack muss deshalb zuerst auf `1.1.0` deployt sein**, sonst scheitert das Service-Update an der Import-Auflösung — HighCpu und HighMemory sind per Default aktiv, ihr Import wird also immer ausgewertet. Die beiden Autoscaling-Alarme bleiben absichtlich ohne SNS: `AlarmAutoscaleScaleDown` ist bei jedem normalen Scale-in rot.
-- **Die HTTP-Alarme kommen ab `1.2.0` von der ALB, nicht aus den Container-Logs.** `AlarmHttp5xxElb` (503 keine gesunden Targets / 502 abgebrochene Antwort / 504 Timeout) ist genau der Fall, den Anwendungslogs **nicht** zeigen können — der Container läuft nicht oder beendet den Request nie. `AlarmHttp5xxTarget` ist das Gegenstück: die Anwendung antwortet, aber mit 5xx, und das steht in der Log-Gruppe. Deshalb zwei Alarme statt einer Summe: unterschiedliche Ursachen, unterschiedliche Behebung. Beide Defaults `5`/5 Min. — bewusst nicht `1`, weil Rolling Deployments und flatternde Health Checks transiente 502/503 erzeugen. `0` schaltet ab.
-- **`AlarmHttp4xxAnomaly` ist ein Stolperdraht, keine Diagnose** und per Default **aus** (`EnableHttp4xxAnomalyAlarm`). Er meldet Abweichungen von der eigenen 4xx-Baseline (Scan-Welle, Bot auf dem Login, oder ein Deployment das alle Asset-Pfade zerschossen hat), kann aber weder den Statuscode noch die URL nennen — Nachverfolgung in den ALB-Access-Logs. Die Band braucht rund zwei Wochen Traffic und ist auf Services mit wenig Verkehr laut; erst pro Service aktivieren, wenn eine Baseline existiert. Kosten: ein Anomaly-Alarm wird als drei Alarm-Metriken abgerechnet. Scanner, die den Loadbalancer ohne passende Listener-Regel treffen, landen in `HTTPCode_ELB_4XX_Count` auf Cluster-Ebene und sind hier **nicht** erfasst.
-- **`ServiceLogAnomalyAlarm` alarmiert nur `HIGH`.** `AWS/Logs`/`AnomalyCount` wird pro Detector **und** pro Priorität veröffentlicht; `MEDIUM`/`LOW` sind Normalbetrieb. `AWS/Logs` veröffentlicht ab Erstellung des Detectors eine durchgehende Null-Serie (verifiziert 2026-08-18), der Alarm steht also ab dem Deployment auf `OK` — **ununterscheidbar von „trainiert und ruhig“**. Reifegrad deshalb über `aws logs list-log-anomaly-detectors` prüfen (`anomalyDetectorStatus`), nicht am grünen Alarm ablesen: `TRAINING` heißt noch keine Erkennung, `ANALYZING` heißt produktiv. Das dauert **nicht** zwangsläufig zwei Wochen — der Detector trainiert auf den *vorangegangenen* zwei Wochen der Log-Gruppe, und bei 14 Tagen Retention steht dieser Backlog sofort zur Verfügung: `ado-lea-tut-p` und `gwa-gut-web-p` waren vier Tage nach Erstellung bereits `ANALYZING` (2026-08-18). Er hängt an derselben Condition wie der Detector, ist also mit `EnableLogAnomalyDetection=false` automatisch weg.
-- **Log Anomaly Detection** (`EnableLogAnomalyDetection`, Default `true`) trainiert zwei Wochen auf der Log-Gruppe und meldet danach neue oder ungewöhnlich häufige Log-Muster. Der Detector selbst ist kostenlos. Geeignet für Anwendungslogs mit Log-Level-Keywords; **nicht** geeignet für Access-/Audit-Logs oder sehr lange JSON-Zeilen (nur die ersten 1500 Zeichen werden analysiert) — deshalb bleiben Flow Logs und DNS-Logs bei Metric Filters. Vorabtest: Pattern-Analyse auf der Log-Gruppe; bis ~300 Patterns funktioniert es gut, darüber `false` setzen. **Achtung:** `AnomalyVisibilityTime` steht auf 21 Tagen — ein Anomaly, das so lange unbehoben bleibt, wird automatisch als Normalverhalten akzeptiert. Ein unbeobachteter Detector lernt, Fehler zu tolerieren.
+- **Die HTTP-Alarme kommen ab `1.2.0` von der ALB, nicht aus den Container-Logs.** `AlarmHttp5xxTarget` meldet, dass die Anwendung geantwortet hat — aber mit 5xx (PHP Fatal, TYPO3-Exception, fehlgeschlagene DB-Verbindung). Das steht in der Log-Gruppe, „check the logs“ ist also der richtige nächste Schritt. Default `5`/5 Min. — bewusst nicht `1`, weil Rolling Deployments und flatternde Health Checks transiente 5xx erzeugen. `0` schaltet ab. **Loadbalancer-seitige 5xx (503 keine gesunden Targets / 502 abgebrochene Antwort / 504 Timeout) werden derzeit nicht alarmiert.** Ein `AlarmHttp5xxElb` auf `HTTPCode_ELB_5XX_Count` war in `1.2.0` enthalten und wurde bewusst wieder entfernt — der Fall wird aktuell nicht benötigt.
+- **`AlarmHttp4xxTarget` ist ein Stolperdraht, keine Diagnose** (in der Konsole `${StackName}-AlarmHttp4xxTargetAnomaly`; die Baseline dazu liegt in `BaselineHttp4xxTarget`) und per Default **aus** (`EnableHttp4xxAnomalyAlarm`). Er meldet Abweichungen von der eigenen 4xx-Baseline (Scan-Welle, Bot auf dem Login, oder ein Deployment das alle Asset-Pfade zerschossen hat), kann aber weder den Statuscode noch die URL nennen — Nachverfolgung in den ALB-Access-Logs. Die Band braucht rund zwei Wochen Traffic und ist auf Services mit wenig Verkehr laut; erst pro Service aktivieren, wenn eine Baseline existiert. Kosten: ein Anomaly-Alarm wird als drei Alarm-Metriken abgerechnet. Scanner, die den Loadbalancer ohne passende Listener-Regel treffen, landen in `HTTPCode_ELB_4XX_Count` auf Cluster-Ebene und sind hier **nicht** erfasst.
+- **CloudWatch Logs Anomaly Detection wird nicht mehr verwendet.** `LogAnomalyDetector` und `ServiceLogAnomalyAlarm` waren bis `1.2.0` enthalten (Parameter `EnableLogAnomalyDetection`, Default `true`) und wurden entfernt: Das Format unserer Logs macht die Mustererkennung unbrauchbar — Apache-Access-Zeilen fallen alle auf **ein** Pattern zusammen, die gesamte Varianz steckt in den maskierten Tokens. AWS nennt Access-/Audit-Logs selbst als ungeeignet. Anwendungsfehler werden weiterhin über die Log-Gruppe untersucht, nur eben nicht automatisch gemeldet.
 - **ImageResolver-Fallstrick beim Retry nach fehlgeschlagener Erstellung:** existiert der ECS-Service nicht mehr, schlägt die Lambda hart fehl; existiert er, ist aber nie gesund geworden, wird das kaputte Image aus der laufenden Task Definition immer wieder reanimiert. In beiden Fällen hilft `SkipImageResolver=true`.
 - **Nur ein Regel-Template pro Service.** `ecsservice` erzeugt schon HTTP- und HTTPS-Listener-Regeln. `alb-ecsservice-rule` zusätzlich für denselben Service führt zu doppelten Regeln auf derselben Priorität und damit zu einem Listener-Priority-Konflikt über zwei Stacks hinweg.
 
@@ -269,6 +297,23 @@ Global Accelerator mit zwei statischen Anycast-IPv4-Adressen vor einem ALB, TCP-
 - **Für externe DNS-Provider ohne CNAME-Flattening.** Die beiden statischen IPs lassen sich direkt als A-Records eintragen — der eigentliche Grund für dieses Template.
 - Anders als CloudFront ist **kein Deployment in `us-east-1` nötig**; der Stack läuft in der Region des ALB. Global Accelerator selbst wird intern in `us-west-2` verwaltet.
 - `ClientAffinityEnabled=SOURCE_IP` nur setzen, wenn die Anwendung Sticky Sessions tatsächlich braucht.
+
+---
+
+### chatbot-slack
+
+Slack-Zustellung für die Alarm-Topics über AWS Chatbot (*Amazon Q Developer in chat applications*). CloudWatch-Alarme und GuardDuty-Findings werden nativ gerendert, es gibt also keinen Formatierungs-Code zu pflegen. Ein Stack pro Account genügt: eine Channel-Konfiguration kann die Topics mehrerer Cluster abonnieren, auch über Regionen hinweg.
+
+**Abhängigkeiten:** keine Imports. Die Topic-ARNs werden als Parameter übergeben — `Fn::ImportValue` funktioniert hier nicht, weil CloudFormation-Exporte **nicht regionsübergreifend** sind und die beiden Topics in zwei Regionen liegen.
+
+**Best Practices**
+
+- **Ein manueller Schritt bleibt.** Ein Slack-Workspace-Admin muss die AWS-App einmalig autorisieren (Konsole → *Amazon Q Developer in chat applications* → Configure new client → Slack). Erst daraus ergibt sich die `SlackWorkspaceId`; ohne sie ist der Stack nicht deploybar.
+- **`CAPABILITY_NAMED_IAM` ist erforderlich** — die Chatbot-Rolle hat einen expliziten `RoleName`.
+- **Bei privaten Channels die AWS-App in den Channel einladen**, sonst schlägt die Zustellung stillschweigend fehl.
+- **Eine reine `https`-Subscription auf einen Slack-Webhook ist kein Ersatz.** SNS schickt seinen eigenen Envelope, der an Slacks Payload-Validierung scheitert, und die Subscription wird nie bestätigt, weil niemand die `SubscribeURL` aufruft.
+- **`GuardrailPolicies` ist die harte Obergrenze** für alles, was per Kommando aus Slack ausgeführt werden kann — unabhängig von der Rolle. `ReadOnlyAccess` belässt es beim Lesen.
+- **E-Mail und Slack schließen sich nicht aus.** Subscriptions koexistieren; kein Alarm und kein Service-Stack wird angefasst. Genau dafür läuft alles über ein Topic pro Cluster.
 
 ---
 

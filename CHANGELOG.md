@@ -2,6 +2,13 @@
 
 ## Summary
 
+**_(uncommitted)_ · 2026-08-19 — `ecsservice` `1.3.0` / `ecscluster-vpc-rds-asg` `1.2.0`: alarm cleanup, 4xx rename, EFS host mount removed**
+- `AlarmHttp5xxElb` removed together with `ServiceHttp5xxElbThreshold` and `EnableHttp5xxElbAlarm` — load-balancer-side 5xx is not a case we need alarmed at the moment
+- Log anomaly detection removed entirely: `LogAnomalyDetector`, `ServiceLogAnomalyAlarm`, `EnableLogAnomalyDetection`, `EnableAnomalyDetector`. Unusable against our log format — Apache access lines collapse into a single pattern
+- 4xx pair renamed for legibility: `Http4xxAnomalyDetector` → `BaselineHttp4xxTarget`, `AlarmHttp4xxAnomaly` → `AlarmHttp4xxTarget`; `AlarmName` becomes `${AWS::StackName}-AlarmHttp4xxTargetAnomaly`. Both resources are replaced on the next update
+- `AlarmHttp4xxTarget` gained `DependsOn: [ "BaselineHttp4xxTarget" ]` — without it, deleting the pair can fail because `DeleteAnomalyDetector` is rejected while an alarm still references the metric
+- **Cluster:** the ASG launch template no longer mounts the EFS **root** at `/mnt/efs` via `/etc/fstab`. Services are unaffected (they mount through the task definition); the EFS-Restore runbook now mounts by hand
+
 **`7adefc8` · 2026-07-10 — `ecsservice`: parameterised scaling thresholds, `SkipImageResolver` default, template versioning**
 - Scale thresholds moved out of the alarms into parameters: `ServiceScaleUpCpuThreshold` (65), `ServiceScaleDownCpuThreshold` (15)
 - `SkipImageResolver` default changed `false` → `true` — new services skip the ECS lookup during creation and while iterating on a failing first deployment; set it to `false` once the service runs. Mitigates the failed-first-create retry loop.
@@ -161,6 +168,17 @@ New dedicated stack, deployed once per region. ALB access logs must be written t
 
 ## `ecscluster-vpc-rds-asg/index.template`
 
+### EFS root mount removed from the ASG launch template (`1.2.0`)
+
+The `Launchtemplate` UserData used to create `/mnt/efs`, append an `/etc/fstab` entry for the **root** of the file system (`<Efs>:/ /mnt/efs efs _netdev,tls 0 0`) and `mount -a`. All seven lines are gone; UserData now only registers the instance with the ECS cluster and sets up `dnf-automatic`.
+
+**Rationale:** a standing root mount put every service's data on every host, ready to read the moment anyone reached a shell. Containers never used it — `ecsservice` mounts EFS through the task definition (`EFSVolumeConfiguration` with `RootDirectory: /<StackName>`, `TransitEncryption: ENABLED`), which the ECS agent mounts itself; no template anywhere uses a `SourcePath` host bind mount. So removing it costs the services nothing.
+
+**What it does and does not buy.** It removes a standing mount, not the capability: an attacker with host access can still run `mount -t efs -o tls <fs-id>:/ /mnt/efs`, because `amazon-efs-utils` ships in the ECS-optimized AMI and the instance ENI carries `SgVpcEfsAccess`, which `SgVpcEfs` permits on 2049. That SG rule cannot be removed — tasks run `NetworkMode: bridge`, so the agent mounts over the host ENI and the rule serving the services is the same one an attacker would use. Real enforcement would need EFS access points plus IAM authorization; see the "EFS root-mount exposure" section in `TASKS.md`.
+
+**Operational impact.** Existing instances keep the mount until an instance refresh — a launch template change only affects newly launched instances. The EFS-Restore runbook in the README depended on this mount (AWS Backup always restores into `aws-backup-restore_<timestamp>/` at the file system root) and now mounts by hand and unmounts afterwards. The `efs-access` stack is **not** a substitute: its access point is confined to `EfsSubPath` and forces `PosixUid`/`PosixGid`.
+
+
 ### ALB Access Logs — optional via `LogsBucketName` parameter
 Added optional `LogsBucketName` parameter (default empty string). When empty, behavior is identical to before — logging stays off. When set, the `AccessLogsEnabled` condition activates and the ALB is configured with `access_logs.s3.enabled = true`, the bucket name, and the stack name as prefix. The `AWS::NoValue` pattern is used to omit the bucket and prefix attributes entirely from the array when logging is disabled.
 
@@ -212,6 +230,19 @@ Jun 03 12:37:34 ip-<private-ip>.ec2.internal systemd[1]: Finished dnf-automatic.
 ---
 
 ## `ecsservice/index.template`
+
+### Alarm cleanup and 4xx rename (`1.3.0`)
+
+**`AlarmHttp5xxElb` removed.** The alarm, its `ServiceHttp5xxElbThreshold` parameter and the `EnableHttp5xxElbAlarm` condition are gone. Load-balancer-generated 5xx (503 no healthy targets, 502 malformed or aborted response, 504 target timeout) is deliberately no longer alarmed. `AlarmHttp5xxTarget` is unchanged and still covers the case the application logs *can* explain.
+
+**Log anomaly detection removed.** `LogAnomalyDetector`, `ServiceLogAnomalyAlarm`, the `EnableLogAnomalyDetection` parameter (which defaulted to `true`, so every service at `1.1.0`+ has a live detector) and the `EnableAnomalyDetector` condition. The feature is ineffective against our log format: CloudWatch compresses events into patterns by masking dynamic content as tokens, so every Apache access line collapses into one pattern and all the variation — status, URL, client — is discarded. AWS names access/audit logs as unsuited. The service `LogGroup` itself is untouched. **Do not re-add without changing the log format first.**
+
+**4xx pair renamed.** `Http4xxAnomalyDetector` → `BaselineHttp4xxTarget` and `AlarmHttp4xxAnomaly` → `AlarmHttp4xxTarget`, following the shape that makes `AlarmHttp5xxTarget` readable: kind (`Alarm` / `Baseline`) + what (`Http4xx`) + whose (`Target`, i.e. target-side rather than LB-side). `Baseline` says the resource holds an expected range rather than detecting anything by itself. The console-visible `AlarmName` keeps the word: `${AWS::StackName}-AlarmHttp4xxTargetAnomaly`, so an operator can still tell it is band-based and not a fixed threshold. The `EnableHttp4xxAnomalyAlarm` / `ServiceHttp4xxAnomalyBand` parameters and the `EnableHttp4xxAnomaly` condition were **not** renamed — parameter renames break deployed stacks.
+
+**`DependsOn` added.** `AlarmHttp4xxTarget` now declares `DependsOn: [ "BaselineHttp4xxTarget" ]`. Nothing else ordered them: an anomaly detector is bound to its alarm implicitly, by matching namespace, metric, dimensions and stat, never by `Ref`. Without the dependency CloudFormation was free to delete the detector first when the pair is disabled or the stack removed, and `DeleteAnomalyDetector` fails while an alarm still references that metric — landing the stack in `DELETE_FAILED`.
+
+**Rollout impact.** Renaming a logical ID replaces the resource, so `BaselineHttp4xxTarget` and `AlarmHttp4xxTarget` are deleted and recreated on the next update of any stack that has the pair enabled (currently only `gwa-gut-web-p`). The detector's model rebuilds immediately from retained `HTTPCode_Target_4XX_Count` history — the metric is published continuously and kept 15 months — so no fresh training period is incurred. Removed parameters are dropped automatically by CloudFormation; no deploy tooling passes them.
+
 
 ### `InitialDockerImage` stale image fix — Lambda custom resource
 **Problem:** the pipeline uses `deploy-docker-to-ecs.sh` to update ECS directly, bypassing CloudFormation. This left `InitialDockerImage` frozen at the value from stack creation. Any subsequent CF stack update (e.g. changing `TaskMemory`) would roll the running image back to that stale value. The direct ECS deploy also gave no feedback on task health — the pipeline step always succeeded regardless of container state.
