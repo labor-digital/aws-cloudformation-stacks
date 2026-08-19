@@ -35,7 +35,7 @@
     },
     "AscalegroupMinSize": {
       "Type": "Number",
-      "Description": "The min count of EC2-Instances (for Autoscaling). Set to 0 to let ECS Managed Scaling handle capacity — instances will only start when ECS tasks are deployed.",
+      "Description": "The min count of EC2-Instances (for Autoscaling). Set to 0 to let ECS Managed Scaling handle capacity \u2014 instances will only start when ECS tasks are deployed.",
       "Default": "0",
       "MinValue": "0",
       "MaxValue": "10"
@@ -49,7 +49,7 @@
     },
     "AscalegroupDesSize": {
       "Type": "Number",
-      "Description": "The desired count of EC2-Instances (for Autoscaling). Set to 0 initially — ECS Managed Scaling will scale up automatically when tasks are deployed.",
+      "Description": "The desired count of EC2-Instances (for Autoscaling). Set to 0 initially \u2014 ECS Managed Scaling will scale up automatically when tasks are deployed.",
       "Default": "0",
       "MinValue": "0",
       "MaxValue": "15"
@@ -78,14 +78,120 @@
     },
     "DnsFirewallWhitelistDomains": {
       "Type": "CommaDelimitedList",
-      "Description": "Comma-separated list of domains to allow through the DNS Firewall (e.g. *.eu-west-3.amazonaws.com,*.ec2.internal,api.doppler.com). Note: wildcards (*) only match a single subdomain level — *.example.com matches foo.example.com but NOT foo.bar.example.com. List must not be empty and must not contain trailing commas.",
+      "Description": "Comma-separated list of domains to allow through the DNS Firewall (e.g. *.eu-west-3.amazonaws.com,*.ec2.internal,api.doppler.com). Note: wildcards (*) only match a single subdomain level \u2014 *.example.com matches foo.example.com but NOT foo.bar.example.com. List must not be empty and must not contain trailing commas.",
       "Default": "*.in-addr.arpa"
     },
     "EnableEgressAnalysis": {
       "Type": "String",
       "Default": "false",
-      "AllowedValues": ["true", "false"],
-      "Description": "Enable ACCEPT-mode VPC Flow Logs for egress port baseline analysis. Temporary — disable after 7-14 days once sufficient data is collected for Security Group hardening (LII26-95)."
+      "AllowedValues": [
+        "true",
+        "false"
+      ],
+      "Description": "Enable ACCEPT-mode VPC Flow Logs for egress port baseline analysis. Temporary \u2014 disable after 7-14 days once sufficient data is collected for Security Group hardening (LII26-95)."
+    },
+    "IpReputationAction": {
+      "Type": "String",
+      "Default": "count",
+      "AllowedValues": [
+        "off",
+        "count",
+        "block"
+      ],
+      "Description": "AWS threat intelligence on known malicious and botnet source IPs; usually the safest group to enforce first. off = the rule is not created at all; count = matches are counted and nothing is blocked; block = the rule enforces. Promote one rule at a time: deploy everything as count, read its CountedRequests metric for about a week, and switch it to block only once it counts near zero against normal traffic. A group that counts steadily needs a scope-down statement or rule exclusions before it can ever be enforced."
+    },
+    "CommonRuleSetAction": {
+      "Type": "String",
+      "Default": "count",
+      "AllowedValues": [
+        "off",
+        "count",
+        "block"
+      ],
+      "Description": "Broad OWASP-style signatures: XSS, path traversal, malformed requests, bad user agents. The most likely source of false positives on TYPO3 and Matomo. off = the rule is not created at all; count = matches are counted and nothing is blocked; block = the rule enforces. Promote one rule at a time: deploy everything as count, read its CountedRequests metric for about a week, and switch it to block only once it counts near zero against normal traffic. A group that counts steadily needs a scope-down statement or rule exclusions before it can ever be enforced."
+    },
+    "KnownBadInputsAction": {
+      "Type": "String",
+      "Default": "count",
+      "AllowedValues": [
+        "off",
+        "count",
+        "block"
+      ],
+      "Description": "Payload signatures for widely exploited CVEs (Log4Shell JNDI strings, Java deserialization). This is the virtual-patching layer between a CVE being published and a patched image being deployed. off = the rule is not created at all; count = matches are counted and nothing is blocked; block = the rule enforces. Promote one rule at a time: deploy everything as count, read its CountedRequests metric for about a week, and switch it to block only once it counts near zero against normal traffic. A group that counts steadily needs a scope-down statement or rule exclusions before it can ever be enforced."
+    },
+    "SqliRuleSetAction": {
+      "Type": "String",
+      "Default": "count",
+      "AllowedValues": [
+        "off",
+        "count",
+        "block"
+      ],
+      "Description": "Dedicated SQL injection signatures, including UNION-based injection in query arguments. off = the rule is not created at all; count = matches are counted and nothing is blocked; block = the rule enforces. Promote one rule at a time: deploy everything as count, read its CountedRequests metric for about a week, and switch it to block only once it counts near zero against normal traffic. A group that counts steadily needs a scope-down statement or rule exclusions before it can ever be enforced."
+    },
+    "WordPressRulesAction": {
+      "Type": "String",
+      "Default": "count",
+      "AllowedValues": [
+        "off",
+        "count",
+        "block"
+      ],
+      "Description": "The WordPress and PHP managed rule groups together. Harmless on non-WordPress services behind the same ALB. off = the rule is not created at all; count = matches are counted and nothing is blocked; block = the rule enforces. Promote one rule at a time: deploy everything as count, read its CountedRequests metric for about a week, and switch it to block only once it counts near zero against normal traffic. A group that counts steadily needs a scope-down statement or rule exclusions before it can ever be enforced."
+    },
+    "WpCustomRulesAction": {
+      "Type": "String",
+      "Default": "count",
+      "AllowedValues": [
+        "off",
+        "count",
+        "block"
+      ],
+      "Description": "Custom WordPress rules: the batch/v1 REST route, and unauthenticated POST to /wp/v2/users which is how a forged administrator gets created. off = the rule is not created at all; count = matches are counted and nothing is blocked; block = the rule enforces. Promote one rule at a time: deploy everything as count, read its CountedRequests metric for about a week, and switch it to block only once it counts near zero against normal traffic. A group that counts steadily needs a scope-down statement or rule exclusions before it can ever be enforced."
+    },
+    "AdminRestrictionAction": {
+      "Type": "String",
+      "Default": "count",
+      "AllowedValues": [
+        "off",
+        "count",
+        "block"
+      ],
+      "Description": "Restricts /wp-admin, /wp-login.php and /typo3/ to AdminAllowedCidrs. Has no effect unless AdminAllowedCidrs is set - the rule is then not created. The strongest control in this template: an admin surface reachable only from the office cannot be brute-forced from the internet. off = the rule is not created at all; count = matches are counted and nothing is blocked; block = the rule enforces. Promote one rule at a time: deploy everything as count, read its CountedRequests metric for about a week, and switch it to block only once it counts near zero against normal traffic. A group that counts steadily needs a scope-down statement or rule exclusions before it can ever be enforced."
+    },
+    "RateLimitAction": {
+      "Type": "String",
+      "Default": "count",
+      "AllowedValues": [
+        "off",
+        "count",
+        "block"
+      ],
+      "Description": "Rate-based rule using RateLimitRequests as the per-IP limit. off = the rule is not created at all; count = matches are counted and nothing is blocked; block = the rule enforces. Promote one rule at a time: deploy everything as count, read its CountedRequests metric for about a week, and switch it to block only once it counts near zero against normal traffic. A group that counts steadily needs a scope-down statement or rule exclusions before it can ever be enforced."
+    },
+    "WafRateLimitRequests": {
+      "Type": "Number",
+      "Default": 2000,
+      "MinValue": 100,
+      "MaxValue": 2000000000,
+      "Description": "Requests per 5 minutes from a single IP before the rate-based rule applies. WAF enforces a minimum of 100. Set RateLimitAction to off to disable the rule instead."
+    },
+    "WafAdminAllowedCidrs": {
+      "Type": "CommaDelimitedList",
+      "Default": "",
+      "Description": "Comma-separated CIDRs allowed to reach admin paths. Leave empty to skip the RestrictAdminPaths rule entirely, regardless of AdminRestrictionAction."
+    },
+    "WafLogRetentionDays": {
+      "Type": "Number",
+      "Default": 14,
+      "Description": "Retention for the WAF log group. 14 days matches the DSGVO retention used for ALB, VPC flow and DNS logs - WAF logs contain client IP addresses on the same basis."
+    },
+    "WafBlockedRequestAlarmThreshold": {
+      "Type": "Number",
+      "Default": 0,
+      "MinValue": 0,
+      "Description": "Blocked requests per 5 minutes that raise an alarm on the cluster alert topic. 0 disables the alarm. Leave at 0 while every rule is still counting, since nothing is blocked then."
     }
   },
   "Resources": {
@@ -356,7 +462,10 @@
       "Type": "AWS::EC2::NatGateway",
       "Properties": {
         "AllocationId": {
-          "Fn::GetAtt": ["NatEip", "AllocationId"]
+          "Fn::GetAtt": [
+            "NatEip",
+            "AllocationId"
+          ]
         },
         "SubnetId": {
           "Ref": "Subnet1"
@@ -990,7 +1099,10 @@
             }
           }
         ],
-        "EnableCloudwatchLogsExports": ["error", "slowquery"],
+        "EnableCloudwatchLogsExports": [
+          "error",
+          "slowquery"
+        ],
         "StorageEncrypted": true,
         "VpcSecurityGroupIds": [
           {
@@ -1240,7 +1352,7 @@
       ]
     },
     "Launchtemplate": {
-      "Type" : "AWS::EC2::LaunchTemplate",
+      "Type": "AWS::EC2::LaunchTemplate",
       "Properties": {
         "LaunchTemplateData": {
           "NetworkInterfaces": [
@@ -1328,7 +1440,10 @@
             "Ref": "Launchtemplate"
           },
           "Version": {
-            "Fn::GetAtt": ["Launchtemplate", "LatestVersionNumber"]
+            "Fn::GetAtt": [
+              "Launchtemplate",
+              "LatestVersionNumber"
+            ]
           }
         },
         "MaxSize": {
@@ -1406,16 +1521,42 @@
           },
           {
             "Key": "access_logs.s3.enabled",
-            "Value": { "Fn::If": ["AccessLogsEnabled", "true", "false"] }
+            "Value": {
+              "Fn::If": [
+                "AccessLogsEnabled",
+                "true",
+                "false"
+              ]
+            }
           },
-          { "Fn::If": ["AccessLogsEnabled", {
-            "Key": "access_logs.s3.bucket",
-            "Value": { "Ref": "LogsBucketName" }
-          }, { "Ref": "AWS::NoValue" }] },
-          { "Fn::If": ["AccessLogsEnabled", {
-            "Key": "access_logs.s3.prefix",
-            "Value": { "Ref": "AWS::StackName" }
-          }, { "Ref": "AWS::NoValue" }] },
+          {
+            "Fn::If": [
+              "AccessLogsEnabled",
+              {
+                "Key": "access_logs.s3.bucket",
+                "Value": {
+                  "Ref": "LogsBucketName"
+                }
+              },
+              {
+                "Ref": "AWS::NoValue"
+              }
+            ]
+          },
+          {
+            "Fn::If": [
+              "AccessLogsEnabled",
+              {
+                "Key": "access_logs.s3.prefix",
+                "Value": {
+                  "Ref": "AWS::StackName"
+                }
+              },
+              {
+                "Ref": "AWS::NoValue"
+              }
+            ]
+          },
           {
             "Key": "routing.http2.enabled",
             "Value": "true"
@@ -1702,7 +1843,9 @@
                       }
                     }
                   ],
-                  { "Ref": "AWS::NoValue" }
+                  {
+                    "Ref": "AWS::NoValue"
+                  }
                 ]
               }
             },
@@ -1737,7 +1880,9 @@
                       }
                     }
                   ],
-                  { "Ref": "AWS::NoValue" }
+                  {
+                    "Ref": "AWS::NoValue"
+                  }
                 ]
               }
             }
@@ -1901,7 +2046,10 @@
                     "logs:DescribeLogStreams"
                   ],
                   "Resource": {
-                    "Fn::GetAtt": ["VpcFlowLogGroup", "Arn"]
+                    "Fn::GetAtt": [
+                      "VpcFlowLogGroup",
+                      "Arn"
+                    ]
                   }
                 }
               ]
@@ -1923,7 +2071,10 @@
           "Ref": "VpcFlowLogGroup"
         },
         "DeliverLogsPermissionArn": {
-          "Fn::GetAtt": ["VpcFlowLogRole", "Arn"]
+          "Fn::GetAtt": [
+            "VpcFlowLogRole",
+            "Arn"
+          ]
         }
       }
     },
@@ -1932,7 +2083,15 @@
       "Condition": "EgressAnalysisEnabled",
       "Properties": {
         "LogGroupName": {
-          "Fn::Join": ["-", [{"Ref": "AWS::StackName"}, "VpcAcceptFlowLogs"]]
+          "Fn::Join": [
+            "-",
+            [
+              {
+                "Ref": "AWS::StackName"
+              },
+              "VpcAcceptFlowLogs"
+            ]
+          ]
         },
         "RetentionInDays": 14
       }
@@ -1968,7 +2127,10 @@
                     "logs:DescribeLogStreams"
                   ],
                   "Resource": {
-                    "Fn::GetAtt": ["VpcAcceptFlowLogGroup", "Arn"]
+                    "Fn::GetAtt": [
+                      "VpcAcceptFlowLogGroup",
+                      "Arn"
+                    ]
                   }
                 }
               ]
@@ -1991,7 +2153,10 @@
           "Ref": "VpcAcceptFlowLogGroup"
         },
         "DeliverLogsPermissionArn": {
-          "Fn::GetAtt": ["VpcAcceptFlowLogRole", "Arn"]
+          "Fn::GetAtt": [
+            "VpcAcceptFlowLogRole",
+            "Arn"
+          ]
         }
       }
     },
@@ -2146,7 +2311,10 @@
           "Fn::Sub": "${AWS::StackName}-dns-query-logging"
         },
         "DestinationArn": {
-          "Fn::GetAtt": ["DnsQueryLogGroup", "Arn"]
+          "Fn::GetAtt": [
+            "DnsQueryLogGroup",
+            "Arn"
+          ]
         }
       }
     },
@@ -2490,12 +2658,651 @@
           "Fn::Sub": "{\"start\":\"-PT3H\",\"widgets\":[{\"type\":\"metric\",\"x\":0,\"y\":0,\"width\":12,\"height\":6,\"properties\":{\"title\":\"ECS CPU by Service\",\"view\":\"timeSeries\",\"stacked\":false,\"metrics\":[[{\"expression\":\"SEARCH('{AWS/ECS,ClusterName,ServiceName} ClusterName=\\\"${AWS::StackName}-Ecscluster\\\" MetricName=\\\"CPUUtilization\\\"','Average',300)\",\"label\":\"${!LABEL}\",\"id\":\"cpu\"}]],\"period\":300,\"stat\":\"Average\",\"region\":\"${AWS::Region}\",\"yAxis\":{\"left\":{\"min\":0,\"max\":100}}}},{\"type\":\"metric\",\"x\":12,\"y\":0,\"width\":12,\"height\":6,\"properties\":{\"title\":\"ECS Memory by Service\",\"view\":\"timeSeries\",\"stacked\":false,\"metrics\":[[{\"expression\":\"SEARCH('{AWS/ECS,ClusterName,ServiceName} ClusterName=\\\"${AWS::StackName}-Ecscluster\\\" MetricName=\\\"MemoryUtilization\\\"','Average',300)\",\"label\":\"${!LABEL}\",\"id\":\"mem\"}]],\"period\":300,\"stat\":\"Average\",\"region\":\"${AWS::Region}\",\"yAxis\":{\"left\":{\"min\":0,\"max\":100}}}},{\"type\":\"metric\",\"x\":0,\"y\":6,\"width\":12,\"height\":6,\"properties\":{\"title\":\"RDS CPU & Connections\",\"view\":\"timeSeries\",\"stacked\":false,\"metrics\":[[\"AWS/RDS\",\"CPUUtilization\",\"DBClusterIdentifier\",\"${Rdscl}\",{\"stat\":\"Average\",\"label\":\"CPU %\"}],[\"AWS/RDS\",\"DatabaseConnections\",\"DBClusterIdentifier\",\"${Rdscl}\",{\"stat\":\"Average\",\"label\":\"Connections\",\"yAxis\":\"right\"}]],\"period\":300,\"region\":\"${AWS::Region}\",\"yAxis\":{\"left\":{\"min\":0,\"max\":100,\"label\":\"CPU %\"},\"right\":{\"min\":0,\"label\":\"Connections\"}}}},{\"type\":\"metric\",\"x\":12,\"y\":6,\"width\":12,\"height\":6,\"properties\":{\"title\":\"VPC Rejected Connections\",\"view\":\"timeSeries\",\"stacked\":false,\"metrics\":[[\"${AWS::StackName}/VpcFlowLogs\",\"RejectedConnections\",{\"stat\":\"Sum\",\"label\":\"Rejected/5min\"}]],\"period\":300,\"region\":\"${AWS::Region}\",\"annotations\":{\"horizontal\":[{\"label\":\"Alarm threshold\",\"value\":500}]}}}]}"
         }
       }
+    },
+    "WafAdminIpSet": {
+      "Type": "AWS::WAFv2::IPSet",
+      "Condition": "WafAdminCidrsProvided",
+      "Properties": {
+        "Name": {
+          "Fn::Sub": "${AWS::StackName}-waf-admin-allow"
+        },
+        "Scope": "REGIONAL",
+        "IPAddressVersion": "IPV4",
+        "Addresses": {
+          "Ref": "WafAdminAllowedCidrs"
+        },
+        "Description": "Source ranges permitted to reach admin paths."
+      }
+    },
+    "WafWebAcl": {
+      "Type": "AWS::WAFv2::WebACL",
+      "Metadata": {
+        "Note": "Scope REGIONAL, so this is created in the cluster's own region and attaches directly to the ALB - unlike the CLOUDFRONT-scoped WebACL in cloudfront-alb-distribution, which only exists in us-east-1 and only inspects traffic that actually travels through CloudFront. Rule order is deliberate: IP reputation first (cheapest rejection), then generic managed groups, then application-specific rules, then rate limiting last so that legitimate-looking floods are still classified by the groups above. Every rule carries its own off/count/block parameter: a single global switch would force promoting all rules at once, which defeats the point of a counting period."
+      },
+      "Properties": {
+        "Name": {
+          "Fn::Sub": "${AWS::StackName}-waf"
+        },
+        "Scope": "REGIONAL",
+        "DefaultAction": {
+          "Allow": {}
+        },
+        "Description": {
+          "Fn::Sub": "WAF for the ${AWS::StackName} ALB"
+        },
+        "VisibilityConfig": {
+          "SampledRequestsEnabled": true,
+          "CloudWatchMetricsEnabled": true,
+          "MetricName": "AlbWebAcl"
+        },
+        "Rules": [
+          {
+            "Fn::If": [
+              "IpReputationActionEnabled",
+              {
+                "Name": "AWSManagedRulesAmazonIpReputationList",
+                "Priority": 10,
+                "OverrideAction": {
+                  "Fn::If": [
+                    "IpReputationActionCounts",
+                    {
+                      "Count": {}
+                    },
+                    {
+                      "None": {}
+                    }
+                  ]
+                },
+                "Statement": {
+                  "ManagedRuleGroupStatement": {
+                    "VendorName": "AWS",
+                    "Name": "AWSManagedRulesAmazonIpReputationList"
+                  }
+                },
+                "VisibilityConfig": {
+                  "SampledRequestsEnabled": true,
+                  "CloudWatchMetricsEnabled": true,
+                  "MetricName": "AWSManagedRulesAmazonIpReputationList"
+                }
+              },
+              {
+                "Ref": "AWS::NoValue"
+              }
+            ]
+          },
+          {
+            "Fn::If": [
+              "CommonRuleSetActionEnabled",
+              {
+                "Name": "AWSManagedRulesCommonRuleSet",
+                "Priority": 20,
+                "OverrideAction": {
+                  "Fn::If": [
+                    "CommonRuleSetActionCounts",
+                    {
+                      "Count": {}
+                    },
+                    {
+                      "None": {}
+                    }
+                  ]
+                },
+                "Statement": {
+                  "ManagedRuleGroupStatement": {
+                    "VendorName": "AWS",
+                    "Name": "AWSManagedRulesCommonRuleSet"
+                  }
+                },
+                "VisibilityConfig": {
+                  "SampledRequestsEnabled": true,
+                  "CloudWatchMetricsEnabled": true,
+                  "MetricName": "AWSManagedRulesCommonRuleSet"
+                }
+              },
+              {
+                "Ref": "AWS::NoValue"
+              }
+            ]
+          },
+          {
+            "Fn::If": [
+              "KnownBadInputsActionEnabled",
+              {
+                "Name": "AWSManagedRulesKnownBadInputsRuleSet",
+                "Priority": 30,
+                "OverrideAction": {
+                  "Fn::If": [
+                    "KnownBadInputsActionCounts",
+                    {
+                      "Count": {}
+                    },
+                    {
+                      "None": {}
+                    }
+                  ]
+                },
+                "Statement": {
+                  "ManagedRuleGroupStatement": {
+                    "VendorName": "AWS",
+                    "Name": "AWSManagedRulesKnownBadInputsRuleSet"
+                  }
+                },
+                "VisibilityConfig": {
+                  "SampledRequestsEnabled": true,
+                  "CloudWatchMetricsEnabled": true,
+                  "MetricName": "AWSManagedRulesKnownBadInputsRuleSet"
+                }
+              },
+              {
+                "Ref": "AWS::NoValue"
+              }
+            ]
+          },
+          {
+            "Fn::If": [
+              "SqliRuleSetActionEnabled",
+              {
+                "Name": "AWSManagedRulesSQLiRuleSet",
+                "Priority": 40,
+                "OverrideAction": {
+                  "Fn::If": [
+                    "SqliRuleSetActionCounts",
+                    {
+                      "Count": {}
+                    },
+                    {
+                      "None": {}
+                    }
+                  ]
+                },
+                "Statement": {
+                  "ManagedRuleGroupStatement": {
+                    "VendorName": "AWS",
+                    "Name": "AWSManagedRulesSQLiRuleSet"
+                  }
+                },
+                "VisibilityConfig": {
+                  "SampledRequestsEnabled": true,
+                  "CloudWatchMetricsEnabled": true,
+                  "MetricName": "AWSManagedRulesSQLiRuleSet"
+                }
+              },
+              {
+                "Ref": "AWS::NoValue"
+              }
+            ]
+          },
+          {
+            "Fn::If": [
+              "WordPressRulesActionEnabled",
+              {
+                "Name": "AWSManagedRulesWordPressRuleSet",
+                "Priority": 50,
+                "OverrideAction": {
+                  "Fn::If": [
+                    "WordPressRulesActionCounts",
+                    {
+                      "Count": {}
+                    },
+                    {
+                      "None": {}
+                    }
+                  ]
+                },
+                "Statement": {
+                  "ManagedRuleGroupStatement": {
+                    "VendorName": "AWS",
+                    "Name": "AWSManagedRulesWordPressRuleSet"
+                  }
+                },
+                "VisibilityConfig": {
+                  "SampledRequestsEnabled": true,
+                  "CloudWatchMetricsEnabled": true,
+                  "MetricName": "AWSManagedRulesWordPressRuleSet"
+                }
+              },
+              {
+                "Ref": "AWS::NoValue"
+              }
+            ]
+          },
+          {
+            "Fn::If": [
+              "WordPressRulesActionEnabled",
+              {
+                "Name": "AWSManagedRulesPHPRuleSet",
+                "Priority": 60,
+                "OverrideAction": {
+                  "Fn::If": [
+                    "WordPressRulesActionCounts",
+                    {
+                      "Count": {}
+                    },
+                    {
+                      "None": {}
+                    }
+                  ]
+                },
+                "Statement": {
+                  "ManagedRuleGroupStatement": {
+                    "VendorName": "AWS",
+                    "Name": "AWSManagedRulesPHPRuleSet"
+                  }
+                },
+                "VisibilityConfig": {
+                  "SampledRequestsEnabled": true,
+                  "CloudWatchMetricsEnabled": true,
+                  "MetricName": "AWSManagedRulesPHPRuleSet"
+                }
+              },
+              {
+                "Ref": "AWS::NoValue"
+              }
+            ]
+          },
+          {
+            "Fn::If": [
+              "WpCustomRulesActionEnabled",
+              {
+                "Name": "BlockWpBatchRoute",
+                "Priority": 70,
+                "Action": {
+                  "Fn::If": [
+                    "WpCustomRulesActionCounts",
+                    {
+                      "Count": {}
+                    },
+                    {
+                      "Block": {}
+                    }
+                  ]
+                },
+                "Statement": {
+                  "OrStatement": {
+                    "Statements": [
+                      {
+                        "ByteMatchStatement": {
+                          "SearchString": "rest_route=/batch/v1",
+                          "FieldToMatch": {
+                            "QueryString": {}
+                          },
+                          "TextTransformations": [
+                            {
+                              "Priority": 0,
+                              "Type": "URL_DECODE"
+                            },
+                            {
+                              "Priority": 1,
+                              "Type": "LOWERCASE"
+                            }
+                          ],
+                          "PositionalConstraint": "CONTAINS"
+                        }
+                      },
+                      {
+                        "ByteMatchStatement": {
+                          "SearchString": "/wp-json/batch/v1",
+                          "FieldToMatch": {
+                            "UriPath": {}
+                          },
+                          "TextTransformations": [
+                            {
+                              "Priority": 0,
+                              "Type": "URL_DECODE"
+                            },
+                            {
+                              "Priority": 1,
+                              "Type": "LOWERCASE"
+                            }
+                          ],
+                          "PositionalConstraint": "CONTAINS"
+                        }
+                      }
+                    ]
+                  }
+                },
+                "VisibilityConfig": {
+                  "SampledRequestsEnabled": true,
+                  "CloudWatchMetricsEnabled": true,
+                  "MetricName": "BlockWpBatchRoute"
+                }
+              },
+              {
+                "Ref": "AWS::NoValue"
+              }
+            ]
+          },
+          {
+            "Fn::If": [
+              "WpCustomRulesActionEnabled",
+              {
+                "Name": "BlockWpUserCreation",
+                "Priority": 80,
+                "Action": {
+                  "Fn::If": [
+                    "WpCustomRulesActionCounts",
+                    {
+                      "Count": {}
+                    },
+                    {
+                      "Block": {}
+                    }
+                  ]
+                },
+                "Statement": {
+                  "AndStatement": {
+                    "Statements": [
+                      {
+                        "ByteMatchStatement": {
+                          "SearchString": "post",
+                          "FieldToMatch": {
+                            "Method": {}
+                          },
+                          "TextTransformations": [
+                            {
+                              "Priority": 0,
+                              "Type": "LOWERCASE"
+                            }
+                          ],
+                          "PositionalConstraint": "EXACTLY"
+                        }
+                      },
+                      {
+                        "ByteMatchStatement": {
+                          "SearchString": "/wp/v2/users",
+                          "FieldToMatch": {
+                            "UriPath": {}
+                          },
+                          "TextTransformations": [
+                            {
+                              "Priority": 0,
+                              "Type": "URL_DECODE"
+                            },
+                            {
+                              "Priority": 1,
+                              "Type": "LOWERCASE"
+                            }
+                          ],
+                          "PositionalConstraint": "CONTAINS"
+                        }
+                      }
+                    ]
+                  }
+                },
+                "VisibilityConfig": {
+                  "SampledRequestsEnabled": true,
+                  "CloudWatchMetricsEnabled": true,
+                  "MetricName": "BlockWpUserCreation"
+                }
+              },
+              {
+                "Ref": "AWS::NoValue"
+              }
+            ]
+          },
+          {
+            "Fn::If": [
+              "AdminRestrictionActionEnabledAndAdminCidrsProvided",
+              {
+                "Name": "RestrictAdminPaths",
+                "Priority": 85,
+                "Action": {
+                  "Fn::If": [
+                    "AdminRestrictionActionCounts",
+                    {
+                      "Count": {}
+                    },
+                    {
+                      "Block": {}
+                    }
+                  ]
+                },
+                "Statement": {
+                  "AndStatement": {
+                    "Statements": [
+                      {
+                        "OrStatement": {
+                          "Statements": [
+                            {
+                              "ByteMatchStatement": {
+                                "SearchString": "/wp-admin",
+                                "FieldToMatch": {
+                                  "UriPath": {}
+                                },
+                                "TextTransformations": [
+                                  {
+                                    "Priority": 0,
+                                    "Type": "URL_DECODE"
+                                  },
+                                  {
+                                    "Priority": 1,
+                                    "Type": "LOWERCASE"
+                                  }
+                                ],
+                                "PositionalConstraint": "CONTAINS"
+                              }
+                            },
+                            {
+                              "ByteMatchStatement": {
+                                "SearchString": "/wp-login.php",
+                                "FieldToMatch": {
+                                  "UriPath": {}
+                                },
+                                "TextTransformations": [
+                                  {
+                                    "Priority": 0,
+                                    "Type": "URL_DECODE"
+                                  },
+                                  {
+                                    "Priority": 1,
+                                    "Type": "LOWERCASE"
+                                  }
+                                ],
+                                "PositionalConstraint": "CONTAINS"
+                              }
+                            },
+                            {
+                              "ByteMatchStatement": {
+                                "SearchString": "/typo3/",
+                                "FieldToMatch": {
+                                  "UriPath": {}
+                                },
+                                "TextTransformations": [
+                                  {
+                                    "Priority": 0,
+                                    "Type": "URL_DECODE"
+                                  },
+                                  {
+                                    "Priority": 1,
+                                    "Type": "LOWERCASE"
+                                  }
+                                ],
+                                "PositionalConstraint": "CONTAINS"
+                              }
+                            }
+                          ]
+                        }
+                      },
+                      {
+                        "NotStatement": {
+                          "Statement": {
+                            "IPSetReferenceStatement": {
+                              "Arn": {
+                                "Fn::GetAtt": [
+                                  "WafAdminIpSet",
+                                  "Arn"
+                                ]
+                              }
+                            }
+                          }
+                        }
+                      }
+                    ]
+                  }
+                },
+                "VisibilityConfig": {
+                  "SampledRequestsEnabled": true,
+                  "CloudWatchMetricsEnabled": true,
+                  "MetricName": "RestrictAdminPaths"
+                }
+              },
+              {
+                "Ref": "AWS::NoValue"
+              }
+            ]
+          },
+          {
+            "Fn::If": [
+              "RateLimitActionEnabled",
+              {
+                "Name": "RateLimitPerIp",
+                "Priority": 90,
+                "Action": {
+                  "Fn::If": [
+                    "RateLimitActionCounts",
+                    {
+                      "Count": {}
+                    },
+                    {
+                      "Block": {}
+                    }
+                  ]
+                },
+                "Statement": {
+                  "RateBasedStatement": {
+                    "Limit": {
+                      "Ref": "WafRateLimitRequests"
+                    },
+                    "AggregateKeyType": "IP"
+                  }
+                },
+                "VisibilityConfig": {
+                  "SampledRequestsEnabled": true,
+                  "CloudWatchMetricsEnabled": true,
+                  "MetricName": "RateLimitPerIp"
+                }
+              },
+              {
+                "Ref": "AWS::NoValue"
+              }
+            ]
+          }
+        ]
+      }
+    },
+    "WafWebAclAssociation": {
+      "Type": "AWS::WAFv2::WebACLAssociation",
+      "Properties": {
+        "ResourceArn": {
+          "Ref": "Loadbalancer"
+        },
+        "WebACLArn": {
+          "Fn::GetAtt": [
+            "WafWebAcl",
+            "Arn"
+          ]
+        }
+      },
+      "Metadata": {
+        "Note": "Ref on an AWS::ElasticLoadBalancingV2::LoadBalancer returns its ARN, so no import is needed now that the WebACL lives in the cluster template. An ALB can carry only one WebACL - if one was ever attached by hand, this association collides; check with aws wafv2 get-web-acl-for-resource."
+      }
+    },
+    "WafLogGroup": {
+      "Type": "AWS::Logs::LogGroup",
+      "Metadata": {
+        "Note": "The name must start with aws-waf-logs- or WAF refuses the logging configuration."
+      },
+      "Properties": {
+        "LogGroupName": {
+          "Fn::Sub": "aws-waf-logs-${AWS::StackName}-waf"
+        },
+        "RetentionInDays": {
+          "Ref": "WafLogRetentionDays"
+        }
+      }
+    },
+    "WafLoggingConfiguration": {
+      "Type": "AWS::WAFv2::LoggingConfiguration",
+      "Metadata": {
+        "Note": "LogDestinationConfigs takes the log group ARN WITHOUT the trailing :* that Fn::GetAtt returns, hence the constructed ARN. Authorization headers and cookies are redacted: WAF logs the full request, and those carry session tokens and credentials."
+      },
+      "DependsOn": [
+        "WafLogGroup"
+      ],
+      "Properties": {
+        "ResourceArn": {
+          "Fn::GetAtt": [
+            "WafWebAcl",
+            "Arn"
+          ]
+        },
+        "LogDestinationConfigs": [
+          {
+            "Fn::Sub": "arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:aws-waf-logs-${AWS::StackName}-waf"
+          }
+        ],
+        "RedactedFields": [
+          {
+            "SingleHeader": {
+              "Name": "authorization"
+            }
+          },
+          {
+            "SingleHeader": {
+              "Name": "cookie"
+            }
+          }
+        ]
+      }
+    },
+    "WafBlockedRequestAlarm": {
+      "Type": "AWS::CloudWatch::Alarm",
+      "Condition": "WafBlockedRequestAlarmEnabled",
+      "Properties": {
+        "AlarmName": {
+          "Fn::Sub": "${AWS::StackName}-AlarmWafBlockedSurge"
+        },
+        "AlarmDescription": "Surge in requests blocked by the ALB WebACL - either an attack in progress or a rule producing false positives. Compare the per-rule metrics to tell them apart.",
+        "AlarmActions": [
+          {
+            "Ref": "AlertTopic"
+          }
+        ],
+        "Namespace": "AWS/WAFV2",
+        "MetricName": "BlockedRequests",
+        "Statistic": "Sum",
+        "Period": 300,
+        "EvaluationPeriods": 1,
+        "Threshold": {
+          "Ref": "WafBlockedRequestAlarmThreshold"
+        },
+        "ComparisonOperator": "GreaterThanThreshold",
+        "Dimensions": [
+          {
+            "Name": "WebACL",
+            "Value": {
+              "Fn::Sub": "${AWS::StackName}-waf"
+            }
+          },
+          {
+            "Name": "Region",
+            "Value": {
+              "Ref": "AWS::Region"
+            }
+          },
+          {
+            "Name": "Rule",
+            "Value": "ALL"
+          }
+        ],
+        "TreatMissingData": "notBreaching"
+      }
     }
   },
   "Outputs": {
     "Ecscluster": {
       "Value": {
-        "Ref" : "Ecscluster"
+        "Ref": "Ecscluster"
       },
       "Export": {
         "Name": {
@@ -2505,7 +3312,7 @@
     },
     "ListenerArnHttps": {
       "Value": {
-        "Ref" : "Httpsdefaultlistener"
+        "Ref": "Httpsdefaultlistener"
       },
       "Export": {
         "Name": {
@@ -2515,7 +3322,7 @@
     },
     "ListenerArnHttp": {
       "Value": {
-        "Ref" : "Httpdefaultlistener"
+        "Ref": "Httpdefaultlistener"
       },
       "Export": {
         "Name": {
@@ -2525,7 +3332,7 @@
     },
     "Vpc": {
       "Value": {
-        "Ref" : "Vpc"
+        "Ref": "Vpc"
       },
       "Export": {
         "Name": {
@@ -2634,6 +3441,26 @@
         }
       }
     },
+    "WafLogGroupName": {
+      "Description": "CloudWatch log group receiving WAF request logs.",
+      "Value": {
+        "Fn::Sub": "aws-waf-logs-${AWS::StackName}-waf"
+      }
+    },
+    "WafWebAclArn": {
+      "Description": "ARN of the REGIONAL WebACL.",
+      "Value": {
+        "Fn::GetAtt": [
+          "WafWebAcl",
+          "Arn"
+        ]
+      },
+      "Export": {
+        "Name": {
+          "Fn::Sub": "${AWS::StackName}-WebAclArn"
+        }
+      }
+    },
     "TemplateVersion": {
       "Description": "Version of the ecscluster-vpc-rds-asg template this stack was last updated with. Bump on every template change (see README).",
       "Value": "1.2.0"
@@ -2642,20 +3469,245 @@
   "Conditions": {
     "EnableCrossRegionCopy": {
       "Fn::Not": [
-        { "Fn::Equals": [ { "Ref": "BackupCopyDestinationRegion" }, "" ] }
+        {
+          "Fn::Equals": [
+            {
+              "Ref": "BackupCopyDestinationRegion"
+            },
+            ""
+          ]
+        }
       ]
     },
     "AccessLogsEnabled": {
       "Fn::Not": [
-        { "Fn::Equals": [ { "Ref": "LogsBucketName" }, "" ] }
+        {
+          "Fn::Equals": [
+            {
+              "Ref": "LogsBucketName"
+            },
+            ""
+          ]
+        }
       ]
     },
     "EgressAnalysisEnabled": {
-      "Fn::Equals": [ { "Ref": "EnableEgressAnalysis" }, "true" ]
+      "Fn::Equals": [
+        {
+          "Ref": "EnableEgressAnalysis"
+        },
+        "true"
+      ]
     },
     "AlertEmailProvided": {
       "Fn::Not": [
-        { "Fn::Equals": [ { "Ref": "AlertEmail" }, "" ] }
+        {
+          "Fn::Equals": [
+            {
+              "Ref": "AlertEmail"
+            },
+            ""
+          ]
+        }
+      ]
+    },
+    "IpReputationActionEnabled": {
+      "Fn::Not": [
+        {
+          "Fn::Equals": [
+            {
+              "Ref": "IpReputationAction"
+            },
+            "off"
+          ]
+        }
+      ]
+    },
+    "IpReputationActionCounts": {
+      "Fn::Equals": [
+        {
+          "Ref": "IpReputationAction"
+        },
+        "count"
+      ]
+    },
+    "CommonRuleSetActionEnabled": {
+      "Fn::Not": [
+        {
+          "Fn::Equals": [
+            {
+              "Ref": "CommonRuleSetAction"
+            },
+            "off"
+          ]
+        }
+      ]
+    },
+    "CommonRuleSetActionCounts": {
+      "Fn::Equals": [
+        {
+          "Ref": "CommonRuleSetAction"
+        },
+        "count"
+      ]
+    },
+    "KnownBadInputsActionEnabled": {
+      "Fn::Not": [
+        {
+          "Fn::Equals": [
+            {
+              "Ref": "KnownBadInputsAction"
+            },
+            "off"
+          ]
+        }
+      ]
+    },
+    "KnownBadInputsActionCounts": {
+      "Fn::Equals": [
+        {
+          "Ref": "KnownBadInputsAction"
+        },
+        "count"
+      ]
+    },
+    "SqliRuleSetActionEnabled": {
+      "Fn::Not": [
+        {
+          "Fn::Equals": [
+            {
+              "Ref": "SqliRuleSetAction"
+            },
+            "off"
+          ]
+        }
+      ]
+    },
+    "SqliRuleSetActionCounts": {
+      "Fn::Equals": [
+        {
+          "Ref": "SqliRuleSetAction"
+        },
+        "count"
+      ]
+    },
+    "WordPressRulesActionEnabled": {
+      "Fn::Not": [
+        {
+          "Fn::Equals": [
+            {
+              "Ref": "WordPressRulesAction"
+            },
+            "off"
+          ]
+        }
+      ]
+    },
+    "WordPressRulesActionCounts": {
+      "Fn::Equals": [
+        {
+          "Ref": "WordPressRulesAction"
+        },
+        "count"
+      ]
+    },
+    "WpCustomRulesActionEnabled": {
+      "Fn::Not": [
+        {
+          "Fn::Equals": [
+            {
+              "Ref": "WpCustomRulesAction"
+            },
+            "off"
+          ]
+        }
+      ]
+    },
+    "WpCustomRulesActionCounts": {
+      "Fn::Equals": [
+        {
+          "Ref": "WpCustomRulesAction"
+        },
+        "count"
+      ]
+    },
+    "AdminRestrictionActionEnabled": {
+      "Fn::Not": [
+        {
+          "Fn::Equals": [
+            {
+              "Ref": "AdminRestrictionAction"
+            },
+            "off"
+          ]
+        }
+      ]
+    },
+    "AdminRestrictionActionCounts": {
+      "Fn::Equals": [
+        {
+          "Ref": "AdminRestrictionAction"
+        },
+        "count"
+      ]
+    },
+    "AdminRestrictionActionEnabledAndAdminCidrsProvided": {
+      "Fn::And": [
+        {
+          "Condition": "AdminRestrictionActionEnabled"
+        },
+        {
+          "Condition": "WafAdminCidrsProvided"
+        }
+      ]
+    },
+    "RateLimitActionEnabled": {
+      "Fn::Not": [
+        {
+          "Fn::Equals": [
+            {
+              "Ref": "RateLimitAction"
+            },
+            "off"
+          ]
+        }
+      ]
+    },
+    "RateLimitActionCounts": {
+      "Fn::Equals": [
+        {
+          "Ref": "RateLimitAction"
+        },
+        "count"
+      ]
+    },
+    "WafAdminCidrsProvided": {
+      "Fn::Not": [
+        {
+          "Fn::Equals": [
+            {
+              "Fn::Join": [
+                "",
+                {
+                  "Ref": "WafAdminAllowedCidrs"
+                }
+              ]
+            },
+            ""
+          ]
+        }
+      ]
+    },
+    "WafBlockedRequestAlarmEnabled": {
+      "Fn::Not": [
+        {
+          "Fn::Equals": [
+            {
+              "Ref": "WafBlockedRequestAlarmThreshold"
+            },
+            0
+          ]
+        }
       ]
     }
   }
