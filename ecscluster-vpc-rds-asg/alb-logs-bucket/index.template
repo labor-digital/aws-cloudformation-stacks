@@ -96,6 +96,10 @@
     }
   },
   "Outputs": {
+    "TemplateVersion": {
+      "Description": "Version of the alb-logs-bucket template this stack was last updated with. Bump on every template change (see README).",
+      "Value": "1.0.0"
+    },
     "BucketName": {
       "Value": {
         "Ref": "AlbLogsBucket"

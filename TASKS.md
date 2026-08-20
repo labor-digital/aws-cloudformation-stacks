@@ -35,8 +35,23 @@ Open/in-flight changes per cluster. Rows completed in both regions get removed.
 
 | Region | Services | State |
 |---|---|---|
-| Paris `labc-eu-w3` — **all `-s`, staging** | 15 | `ado-ede-new-s` on `1.2.0`; the other 14 on `1.0.0` |
-| Frankfurt `labc-eu-c1` — **all `-p`, production** | 21 | `gwa-gut-web-p` on `1.2.0`; `ado-lea-tut-p` on `1.0.1`; 19 on `None` (pre-versioning) |
+| Paris `labc-eu-w3` — **all `-s`, staging** | 15 | ✅ **all 15 on `1.3.0` (2026-08-20)**, cluster `1.3.0`, plus `labc-eu-w3-guardduty` and `labc-eu-w3-alb-logs` stamped `1.0.0`. Every stack `UPDATE_COMPLETE`, no rollbacks. |
+| Frankfurt `labc-eu-c1` — **all `-p`, production** | 21 | Remaining work. `gwa-gut-web-p` on `1.2.0`; `ado-lea-tut-p` on `1.0.1`; 19 on `None` (pre-versioning). Cluster still on `1.2.0`. |
+
+**Paris sweep, as executed 2026-08-20 — the reference for Frankfurt.** Every `skip=false` service produced the same four-row change set: `Add AlarmHttp5xxTarget`, `Modify ServiceHighCpuAlarm` + `ServiceHighMemoryAlarm` (gaining `AlarmActions`), and a **cosmetic** `Modify LoadbalancerRuleHttp` — cosmetic because only its `Condition` and `Metadata` changed, `Properties` are byte-identical to `1.0.0`. Crucially **no `Task` row**, so no new task definition revision and no container restart. Treat that shape as the expectation in Frankfurt and stop on anything that deviates, especially a `Task` or `Service` row: that means the ImageResolver returned something other than the running image, which is the `CannotPullContainerError` path.
+
+**Pre-flight Frankfurt the same way** before starting — one call identifies the stacks that carry risk:
+
+```
+aws cloudformation describe-stacks --region eu-central-1 \
+  --query "Stacks[?Outputs[?OutputKey=='TargetGroupArn']].{stack:StackName,
+           skip:(Parameters[?ParameterKey=='SkipImageResolver'].ParameterValue)[0],
+           image:(Parameters[?ParameterKey=='InitialDockerImage'].ParameterValue)[0]}" --output table
+```
+
+In Paris only `ado-ael-adm-s` was `skip=true`; the other 14 were `skip=false` and therefore safe, since the resolver reads the live image and ignores `InitialDockerImage`. Frankfurt has 19 stacks on `None`, i.e. deployed before the version stamp existed, so expect a higher proportion of `skip=true` and check each one's tag still exists in ECR (`eu-central-1`) before deploying it.
+
+Note `Metadata`-only and `Description`-only edits also surface as `Modify` rows with no functional effect — this repo uses `Metadata.Note` heavily. The test for whether a `Modify` is real: diff that resource's `Properties` against the last-deployed commit. Identical `Properties` means documentation.
 
 Paris is a staging mirror of Frankfurt (`gwa-gut-web-s` ↔ `gwa-gut-web-p`, `lab-web-fro-s` ↔ `lab-web-fro-p`, …), which makes it the right place to rehearse a template version and the wrong place to gather traffic-shaped evidence such as the 4xx band. `1.2.0` folds the alarm notifications and the HTTP alarms into one pass, so each stack is updated once rather than three times. Suggested order (Frankfurt): `ado-lea-tut-p` → `lab-web-fro-p` (first with ≥2 tasks) → the 1/1 and 1/2 services → `dwk-zer-app-p` (baseline 0, a working scale-in ends at zero tasks) → the five at baseline 3 last. Pass `SkipImageResolver=false` explicitly. Before each update compare live `MinCapacity` against the stack parameter (`aws application-autoscaling describe-scalable-targets --service-namespace ecs`) — verified clean for all 21 on 2026-08-14.
 
@@ -252,6 +267,8 @@ Execute per cluster in order: **Paris (labc-eu-w3) → Frankfurt (labc-eu-c1)**.
 - [ ] Run `DnsFireWallLogsSummary`, group ALERT'd domains by frequency, separate legitimate services from trackers and noise
 - [ ] Build the whitelist, aggregating by root domain. Wildcards match a single subdomain level only — `*.example.com` covers `foo.example.com` but not `foo.bar.example.com`
 - [ ] **Include the container registry domains, not just ECR.** `lab-ana-mat-p` (`matomo:5.8`) and `gwa-gut-sol-p` (`solr:9.9`) pull from Docker Hub. A `BLOCK` catch-all breaks the **image pull at the next task placement**, not the running container — so the Phase 4 application test would pass while those services silently cannot restart or scale. Needs `registry-1.docker.io`, `auth.docker.io` and the layer CDN; confirm exact hostnames from the ALERT logs.
+- [ ] **ECR lives in `eu-central-1` for *both* regions — whitelist that region, not the local one.** Verified 2026-08-20 from `InitialDockerImage` across all 15 Paris stacks: every repository is `848331400135.dkr.ecr.eu-central-1.amazonaws.com/…`, including the Paris `-s` staging services. So Paris pulls images **cross-region** on every task placement. A whitelist built from `eu-west-3` endpoints would break **every** image pull in Paris — and per the item above it breaks at the next task placement, not immediately, so the Phase 4 application test would pass while nothing could restart or scale. Needs `*.dkr.ecr.eu-central-1.amazonaws.com`, the ECR API endpoint for that region, and the layer-storage S3 endpoints it redirects to (`prod-eu-central-1-starport-layer-bucket.s3.eu-central-1.amazonaws.com` and friends — confirm the exact hostnames from the ALERT logs rather than assuming).
+  - Side note for later, not a Phase 2 blocker: cross-region pulls traverse the NAT gateway and are billed as data transfer plus NAT processing on every placement. A VPC endpoint would not help, since it would have to be in `eu-central-1`. If pull cost or latency ever matters, the fix is replicating the repositories into `eu-west-3`, not more networking.
 - [ ] Update `DnsFirewallWhitelistDomains` and deploy
 - [ ] Correlate GuardDuty findings with the DNS logs
 - [ ] Record projected GuardDuty monthly cost from the Usage page

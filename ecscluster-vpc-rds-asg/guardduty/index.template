@@ -149,6 +149,10 @@
     }
   },
   "Outputs": {
+    "TemplateVersion": {
+      "Description": "Version of the guardduty template this stack was last updated with. Bump on every template change (see README).",
+      "Value": "1.0.0"
+    },
     "DetectorId": {
       "Value": {
         "Ref": "GuardDutyDetector"
