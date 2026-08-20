@@ -12,7 +12,7 @@
         },
         {
           "Label" : { "default" : "Load Balancer" },
-          "Parameters" : [ "ListenerRuleHost", "ListenerRulePath", "ListenerRulePriority" ]
+          "Parameters" : [ "ListenerRuleHost", "ListenerRulePath", "ListenerRulePriority", "ListenerArnOverride" ]
         },
         {
           "Label" : { "default" : "Service" },
@@ -50,6 +50,11 @@
       "Description" : "The Priority for the ListenerRule",
       "Type" : "Number",
       "MinValue" : 1
+    },
+    "ListenerArnOverride" : {
+      "Description" : "Attach this service to a different listener instead of the cluster's public HTTPS listener - pass ${ClusterStackName}-InternalListenerArnHttp to make the service reachable only from inside the VPC. Empty (default) keeps the public ALB behaviour unchanged. When set, the HTTP->HTTPS redirect rule is not created, since the internal listener is HTTP only.",
+      "Type" : "String",
+      "Default" : ""
     },
     "InitialDockerImage" : {
       "Description" : "The Docker image for the container. Always required on first stack creation. On updates, only used when SkipImageResolver is true - otherwise the image is read from the currently running ECS service.",
@@ -225,6 +230,12 @@
     },
     "EnableHttp4xxAnomaly": {
       "Fn::Equals" : [ { "Ref" : "EnableHttp4xxAnomalyAlarm" }, "true" ]
+    },
+    "HasListenerOverride" : {
+      "Fn::Not" : [ { "Fn::Equals" : [ { "Ref" : "ListenerArnOverride" }, "" ] } ]
+    },
+    "NoListenerOverride" : {
+      "Fn::Equals" : [ { "Ref" : "ListenerArnOverride" }, "" ]
     }
   },
   "Resources" : {
@@ -546,6 +557,10 @@
     },
     "LoadbalancerRuleHttp" : {
       "Type" : "AWS::ElasticLoadBalancingV2::ListenerRule",
+      "Condition" : "NoListenerOverride",
+      "Metadata" : {
+        "Note" : "Only exists for services on the public ALB. On the internal listener (HTTP:80, no HTTPS counterpart) a 301 to port 443 would send every request to a port nothing listens on."
+      },
       "Properties" : {
         "Actions" : [ {
           "RedirectConfig" : {
@@ -583,7 +598,13 @@
           "Field" : "path-pattern",
           "Values" : [ { "Ref" : "ListenerRulePath" } ]
         } ],
-        "ListenerArn" : { "Fn::ImportValue" : { "Fn::Sub" : "${ClusterStackName}-ListenerArnHttps" } },
+        "ListenerArn" : {
+          "Fn::If" : [
+            "HasListenerOverride",
+            { "Ref" : "ListenerArnOverride" },
+            { "Fn::ImportValue" : { "Fn::Sub" : "${ClusterStackName}-ListenerArnHttps" } }
+          ]
+        },
         "Priority" : { "Ref" : "ListenerRulePriority" }
       },
       "DependsOn" : [ "Target" ]

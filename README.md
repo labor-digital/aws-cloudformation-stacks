@@ -53,6 +53,8 @@ Pro Region in dieser Reihenfolge:
 | `${Cluster}-SgVpcEfsAccess` | Cluster (ab `1.2.0`) | `efs-access`, sonstige Instanzen mit EFS-Mount |
 | `${Cluster}-Subnet1` / `-Subnet2` | Cluster | `efs-access` (öffentliches Subnetz) |
 | `${Cluster}-DnsFirewallWhitelistId` / `-DnsFirewallRuleGroupId` | Cluster | Phase-2-Whitelist-Updates, Phase-3-Automation |
+| `${Cluster}-InternalListenerArnHttp` | Cluster (ab `1.3.0`) | `ecsservice` via `ListenerArnOverride` (private Services) |
+| `${Cluster}-InternalAlbDns` | Cluster (ab `1.3.0`) | Endpunkt für Consumer im VPC (z. B. WPSolr-Konfiguration) |
 | `${Cluster}-AlertTopicArn` | Cluster (ab `1.1.0`) | `ecsservice` (`AlarmActions`), `guardduty`-Findings-Rule, Phase-3-Step-D-Lambda |
 | `${Service}-TargetGroupArn` | `ecsservice` | `alb-ecsservice-rule` |
 | `${GuardDuty}-DetectorId` / `-QuarantineSgId` / `-IncidentResponseRoleArn` | `guardduty` | Phase-3-Step-D-Automation |
@@ -180,7 +182,7 @@ Temporärer SFTP-Zugang zum EFS des Clusters: EC2-Instanz im öffentlichen Subne
 
 Ein containerisierter Service auf einem bestehenden Cluster: Task Definition (Einzelcontainer, EFS-Mount, Doppler-Secret-Injektion), ECS Service mit ALB-Integration, Listener-Regeln für HTTP (Redirect auf HTTPS) und HTTPS, Step-Scaling-Autoscaling, operative CloudWatch-Alarme, Log-Gruppe mit Anomaly Detector und eine ImageResolver-Lambda.
 
-**Abhängigkeiten:** importiert `${ClusterStackName}-Ecscluster`, `-Vpc`, `-Efs`, `-ListenerArnHttp`, `-ListenerArnHttps`, `-LoadbalancerArn`. Exportiert `${AWS::StackName}-TargetGroupArn`. Importiert ab `1.1.0` zusätzlich `${ClusterStackName}-AlertTopicArn`. Aktuelle Template-Version: **`1.3.0`**.
+**Abhängigkeiten:** importiert `${ClusterStackName}-Ecscluster`, `-Vpc`, `-Efs`, `-ListenerArnHttp`, `-ListenerArnHttps`, `-LoadbalancerArn`. Exportiert `${AWS::StackName}-TargetGroupArn`. Importiert ab `1.1.0` zusätzlich `${ClusterStackName}-AlertTopicArn`. Ab `1.3.0` kann der Service über den Parameter `ListenerArnOverride` statt am öffentlichen ALB an einem anderen Listener hängen — siehe „Interner Loadbalancer — Services ohne öffentlichen Zugang“. Aktuelle Template-Version: **`1.3.0`**.
 
 **Best Practices**
 
@@ -207,6 +209,44 @@ aws cloudformation describe-stacks --region <region> \
 ```
 
 Der Filter auf `TargetGroupArn` begrenzt die Liste auf `ecsservice`-Stacks; `None` bedeutet ein Stand vor Einführung der Versionierung.
+
+---
+
+### Interner Loadbalancer — Services ohne öffentlichen Zugang
+
+Der Cluster-Stack legt ab `1.3.0` neben dem öffentlichen ALB einen zweiten, **internen** Loadbalancer an: `InternalLoadbalancer` (`Scheme: internal`) in den privaten Subnetzen, `SgInternalAlb` (Ingress `tcp/80` nur aus `SgVpcLoadbalancerports`, also ausschließlich von den ECS-Instanzen) und `InternalHttplistener` (`HTTP:80`, Default-Action ein festes `404`). Kein öffentlicher DNS-Name, keine öffentliche IP, keine TLS-Terminierung — die Backends dahinter sprechen ohnehin HTTP, und der Verkehr verlässt das VPC nicht.
+
+Gedacht für Backends, die nur von anderen Services konsumiert werden und auf dem öffentlichen ALB nichts zu suchen haben — der erste Fall ist Solr.
+
+**Einen Service dort anhängen:**
+
+- `ListenerArnOverride` (ab `ecsservice` `1.3.0`, Default leer) auf den Wert von `${ClusterStackName}-InternalListenerArnHttp` setzen. Leer bedeutet unverändertes Verhalten am öffentlichen ALB.
+- `ListenerRuleHost` auf `*` setzen. Der Wildcard trifft jeden Host-Header, was auf einem Listener sinnvoll ist, der ausschließlich internen Verkehr bedient — und er ist **Voraussetzung für den Admin-Zugriff per Port-Forwarding** (siehe unten): dabei sendet der Browser `Host: localhost:<port>`, was gegen einen konkreten Hostnamen nicht matchen würde.
+- Die HTTP-Regel `LoadbalancerRuleHttp` wird bei gesetztem Override **nicht** angelegt. Ein `301` auf Port 443 würde auf dem HTTP-only-Listener jeden Request an einen Port schicken, auf dem nichts lauscht.
+- Consumer konfigurieren gegen `${ClusterStackName}-InternalAlbDns`, Schema `http`, Port `80`.
+
+**Web-UI und API eines privaten Services erreichen — SSM Port Forwarding.** Kein Bastion, kein SSH, kein eingehender Port. Die Instanzrolle hat `AmazonSSMManagedInstanceCore`, lokal wird das `session-manager-plugin` benötigt.
+
+```
+INST=$(aws ssm describe-instance-information --region eu-west-3 \
+  --query 'InstanceInformationList[0].InstanceId' --output text)
+
+aws ssm start-session --region eu-west-3 --target "$INST" \
+  --document-name AWS-StartPortForwardingSessionToRemoteHost \
+  --parameters host="<InternalAlbDns>",portNumber="80",localPortNumber="8983"
+```
+
+Danach im Browser `http://localhost:8983/solr/`. Der Weg ist Laptop → SSM → Instanz → interner ALB → Task; die Instanz darf den internen ALB erreichen, weil `SgInternalAlb` Ingress aus `SgVpcLoadbalancerports` erlaubt.
+
+Für reine API-Abfragen genügt eine normale SSM-Shell auf der Instanz:
+
+```
+aws ssm start-session --region eu-west-3 --target "$INST"
+# auf der Instanz:
+curl -u <user>:<pw> 'http://<InternalAlbDns>/solr/admin/cores?action=STATUS&wt=json'
+```
+
+**Was sich am Bedrohungsmodell ändert:** die Admin-UI ist nicht mehr für jeden erreichbar, der einen Hostnamen kennt, sondern nur noch für Principals mit AWS-Credentials und SSM-Rechten — eine deutlich kleinere Menge, und **auditierbar**, weil SSM-Sessions in CloudTrail landen. Anonyme HTTP-Requests auf einen öffentlichen Hostnamen tun das nicht. Die BasicAuth von Solr gilt unverändert weiter; Admin-Pfade brauchen den Admin-User, der Query-User kann Security und Config nicht ändern.
 
 ---
 

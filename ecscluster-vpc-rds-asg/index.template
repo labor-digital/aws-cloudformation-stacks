@@ -1824,6 +1824,152 @@
         "Loadbalancer"
       ]
     },
+    "SgInternalAlb": {
+      "Type": "AWS::EC2::SecurityGroup",
+      "Properties": {
+        "GroupName": {
+          "Fn::Join": [
+            "-",
+            [
+              {
+                "Ref": "AWS::StackName"
+              },
+              "SgInternalAlb"
+            ]
+          ]
+        },
+        "GroupDescription": "Securitygroup for the internal loadbalancer - reachable only from the ECS instances",
+        "SecurityGroupIngress": [
+          {
+            "IpProtocol": "tcp",
+            "FromPort": 80,
+            "ToPort": 80,
+            "SourceSecurityGroupId": {
+              "Ref": "SgVpcLoadbalancerports"
+            }
+          }
+        ],
+        "Tags": [
+          {
+            "Key": "Name",
+            "Value": {
+              "Fn::Join": [
+                "-",
+                [
+                  {
+                    "Ref": "AWS::StackName"
+                  },
+                  "SgInternalAlb"
+                ]
+              ]
+            }
+          }
+        ],
+        "VpcId": {
+          "Ref": "Vpc"
+        }
+      },
+      "DependsOn": [
+        "Vpc",
+        "SgVpcLoadbalancerports"
+      ]
+    },
+    "InternalLoadbalancer": {
+      "Type": "AWS::ElasticLoadBalancingV2::LoadBalancer",
+      "Metadata": {
+        "Note": "Private entry point for service-to-service traffic that has no business on the public ALB - Solr first. Lives here rather than in its own stack because it is cluster-level singleton infrastructure, the sibling of Loadbalancer, and because SgInternalAlb can only reference SgVpcLoadbalancerports from inside this stack. HTTP only: the backends behind it speak plain HTTP, so terminating TLS inside the VPC would add nothing. deletion_protection is deliberately NOT enabled - it would block a CloudFormation rollback while this is new. Turn it on once the internal path is proven."
+      },
+      "Properties": {
+        "LoadBalancerAttributes": [
+          {
+            "Key": "idle_timeout.timeout_seconds",
+            "Value": "60"
+          },
+          {
+            "Key": "routing.http2.enabled",
+            "Value": "true"
+          }
+        ],
+        "Name": {
+          "Fn::Join": [
+            "-",
+            [
+              {
+                "Ref": "AWS::StackName"
+              },
+              "InternalLb"
+            ]
+          ]
+        },
+        "Scheme": "internal",
+        "SecurityGroups": [
+          {
+            "Ref": "SgInternalAlb"
+          },
+          {
+            "Ref": "SgVpcLoadbalancerportsAccess"
+          }
+        ],
+        "Subnets": [
+          {
+            "Ref": "SubnetPrivate1"
+          },
+          {
+            "Ref": "SubnetPrivate2"
+          }
+        ],
+        "Tags": [
+          {
+            "Key": "Name",
+            "Value": {
+              "Fn::Join": [
+                "-",
+                [
+                  {
+                    "Ref": "AWS::StackName"
+                  },
+                  "InternalLb"
+                ]
+              ]
+            }
+          }
+        ],
+        "Type": "application",
+        "IpAddressType": "ipv4"
+      },
+      "DependsOn": [
+        "SgInternalAlb",
+        "SgVpcLoadbalancerportsAccess",
+        "SubnetPrivate1",
+        "SubnetPrivate2"
+      ]
+    },
+    "InternalHttplistener": {
+      "Type": "AWS::ElasticLoadBalancingV2::Listener",
+      "Metadata": {
+        "Note": "Default action is a fixed 404, not a forward to a catch-all target group: a request that matches no service rule must not reach anything. Services attach to this listener by passing its ARN as ListenerArnOverride in ecsservice."
+      },
+      "Properties": {
+        "DefaultActions": [
+          {
+            "Type": "fixed-response",
+            "FixedResponseConfig": {
+              "StatusCode": "404",
+              "ContentType": "text/plain",
+              "MessageBody": "No internal route matched."
+            }
+          }
+        ],
+        "LoadBalancerArn": {
+          "Ref": "InternalLoadbalancer"
+        },
+        "Port": 80,
+        "Protocol": "HTTP"
+      },
+      "DependsOn": [
+        "InternalLoadbalancer"
+      ]
+    },
     "BackupRole": {
       "Type": "AWS::IAM::Role",
       "Properties": {
@@ -3222,6 +3368,29 @@
         }
       }
     },
+    "InternalListenerArnHttp": {
+      "Value": {
+        "Ref": "InternalHttplistener"
+      },
+      "Export": {
+        "Name": {
+          "Fn::Sub": "${AWS::StackName}-InternalListenerArnHttp"
+        }
+      }
+    },
+    "InternalAlbDns": {
+      "Value": {
+        "Fn::GetAtt": [
+          "InternalLoadbalancer",
+          "DNSName"
+        ]
+      },
+      "Export": {
+        "Name": {
+          "Fn::Sub": "${AWS::StackName}-InternalAlbDns"
+        }
+      }
+    },
     "LoadbalancerArn": {
       "Value": {
         "Ref": "Loadbalancer"
@@ -3335,7 +3504,7 @@
     },
     "TemplateVersion": {
       "Description": "Version of the ecscluster-vpc-rds-asg template this stack was last updated with. Bump on every template change (see README).",
-      "Value": "1.2.0"
+      "Value": "1.3.0"
     }
   },
   "Conditions": {
