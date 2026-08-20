@@ -1,4 +1,89 @@
 {
+  "Metadata": {
+    "AWS::CloudFormation::Interface": {
+      "ParameterGroups": [
+        {
+          "Label": {
+            "default": "EC2 & Auto Scaling"
+          },
+          "Parameters": [
+            "EC2InstanceType",
+            "KeypairName",
+            "AscalegroupMinSize",
+            "AscalegroupMaxSize",
+            "AscalegroupDesSize"
+          ]
+        },
+        {
+          "Label": {
+            "default": "Load Balancer"
+          },
+          "Parameters": [
+            "HttpsdefaultlistenerCertificate"
+          ]
+        },
+        {
+          "Label": {
+            "default": "Database"
+          },
+          "Parameters": [
+            "RdsInstanceType",
+            "RdsMasterUsername",
+            "RdsMasterPassword"
+          ]
+        },
+        {
+          "Label": {
+            "default": "Backup"
+          },
+          "Parameters": [
+            "BackupCopyDestinationRegion"
+          ]
+        },
+        {
+          "Label": {
+            "default": "Logging & Alerts"
+          },
+          "Parameters": [
+            "LogsBucketName",
+            "AlertEmail"
+          ]
+        },
+        {
+          "Label": {
+            "default": "DNS Firewall & Egress"
+          },
+          "Parameters": [
+            "DnsFirewallWhitelistDomains",
+            "EnableEgressAnalysis"
+          ]
+        },
+        {
+          "Label": {
+            "default": "WAF Rule Actions"
+          },
+          "Parameters": [
+            "CommonRuleSetAction",
+            "KnownBadInputsAction",
+            "SqliRuleSetAction",
+            "WordPressRulesAction",
+            "RateLimitAction"
+          ]
+        },
+        {
+          "Label": {
+            "default": "WAF Tuning"
+          },
+          "Parameters": [
+            "WafClientIpHeader",
+            "WafRateLimitRequests",
+            "WafLogRetentionDays",
+            "WafBlockedRequestAlarmThreshold"
+          ]
+        }
+      ]
+    }
+  },
   "Parameters": {
     "KeypairName": {
       "Description": "Name of an EC2 KeyPair to enable SSH access to the instance. Add using EC2 -> Keypairs",
@@ -90,16 +175,6 @@
       ],
       "Description": "Enable ACCEPT-mode VPC Flow Logs for egress port baseline analysis. Temporary \u2014 disable after 7-14 days once sufficient data is collected for Security Group hardening (LII26-95)."
     },
-    "IpReputationAction": {
-      "Type": "String",
-      "Default": "count",
-      "AllowedValues": [
-        "off",
-        "count",
-        "block"
-      ],
-      "Description": "AWS threat intelligence on known malicious and botnet source IPs; usually the safest group to enforce first. off = the rule is not created at all; count = matches are counted and nothing is blocked; block = the rule enforces. Promote one rule at a time: deploy everything as count, read its CountedRequests metric for about a week, and switch it to block only once it counts near zero against normal traffic. A group that counts steadily needs a scope-down statement or rule exclusions before it can ever be enforced."
-    },
     "CommonRuleSetAction": {
       "Type": "String",
       "Default": "count",
@@ -138,27 +213,7 @@
         "count",
         "block"
       ],
-      "Description": "The WordPress and PHP managed rule groups together. Harmless on non-WordPress services behind the same ALB. off = the rule is not created at all; count = matches are counted and nothing is blocked; block = the rule enforces. Promote one rule at a time: deploy everything as count, read its CountedRequests metric for about a week, and switch it to block only once it counts near zero against normal traffic. A group that counts steadily needs a scope-down statement or rule exclusions before it can ever be enforced."
-    },
-    "WpCustomRulesAction": {
-      "Type": "String",
-      "Default": "count",
-      "AllowedValues": [
-        "off",
-        "count",
-        "block"
-      ],
-      "Description": "Custom WordPress rules: the batch/v1 REST route, and unauthenticated POST to /wp/v2/users which is how a forged administrator gets created. off = the rule is not created at all; count = matches are counted and nothing is blocked; block = the rule enforces. Promote one rule at a time: deploy everything as count, read its CountedRequests metric for about a week, and switch it to block only once it counts near zero against normal traffic. A group that counts steadily needs a scope-down statement or rule exclusions before it can ever be enforced."
-    },
-    "AdminRestrictionAction": {
-      "Type": "String",
-      "Default": "count",
-      "AllowedValues": [
-        "off",
-        "count",
-        "block"
-      ],
-      "Description": "Restricts /wp-admin, /wp-login.php and /typo3/ to AdminAllowedCidrs. Has no effect unless AdminAllowedCidrs is set - the rule is then not created. The strongest control in this template: an admin surface reachable only from the office cannot be brute-forced from the internet. off = the rule is not created at all; count = matches are counted and nothing is blocked; block = the rule enforces. Promote one rule at a time: deploy everything as count, read its CountedRequests metric for about a week, and switch it to block only once it counts near zero against normal traffic. A group that counts steadily needs a scope-down statement or rule exclusions before it can ever be enforced."
+      "Description": "off = the rule is not created at all; count = matches are counted and nothing is blocked; block = the rule enforces. Gates the AWS WordPress managed rule group. Harmless on the non-WordPress services behind the same ALB. Promote after KnownBadInputs and SQLi, once its CountedRequests metric is quiet against normal traffic."
     },
     "RateLimitAction": {
       "Type": "String",
@@ -170,6 +225,13 @@
       ],
       "Description": "Rate-based rule using RateLimitRequests as the per-IP limit. off = the rule is not created at all; count = matches are counted and nothing is blocked; block = the rule enforces. Promote one rule at a time: deploy everything as count, read its CountedRequests metric for about a week, and switch it to block only once it counts near zero against normal traffic. A group that counts steadily needs a scope-down statement or rule exclusions before it can ever be enforced."
     },
+    "WafClientIpHeader": {
+      "Type": "String",
+      "Default": "",
+      "Description": "HTTP header carrying the real client IP where a CDN or proxy fronts the ALB. MUST be lowercase - 'cf-connecting-ip' for Cloudflare, 'x-forwarded-for' generically - because the header match is case-sensitive. Optional while RateLimitAction is 'off' or 'count', but REQUIRED before setting RateLimitAction to 'block' (enforced by the Rules section): this estate is mixed, and with the header unset every proxied request aggregates onto the proxy's own few addresses, so blocking on rate would take the proxy out for all sites behind it. When set, two rate rules exist: RateLimitForwardedIp keys on this header for requests that carry it, RateLimitSourceIp keys on the source IP for those that do not. Caveat: a header is only trustworthy while the ALB cannot be reached directly - otherwise anyone can set it themselves and evade the rate limit. Restrict the ALB security group to the proxy's ranges before relying on it.",
+      "AllowedPattern": "^$|^[a-z0-9-]+$",
+      "ConstraintDescription": "must be lowercase (e.g. cf-connecting-ip) or empty."
+    },
     "WafRateLimitRequests": {
       "Type": "Number",
       "Default": 2000,
@@ -177,21 +239,55 @@
       "MaxValue": 2000000000,
       "Description": "Requests per 5 minutes from a single IP before the rate-based rule applies. WAF enforces a minimum of 100. Set RateLimitAction to off to disable the rule instead."
     },
-    "WafAdminAllowedCidrs": {
-      "Type": "CommaDelimitedList",
-      "Default": "",
-      "Description": "Comma-separated CIDRs allowed to reach admin paths. Leave empty to skip the RestrictAdminPaths rule entirely, regardless of AdminRestrictionAction."
-    },
     "WafLogRetentionDays": {
       "Type": "Number",
       "Default": 14,
-      "Description": "Retention for the WAF log group. 14 days matches the DSGVO retention used for ALB, VPC flow and DNS logs - WAF logs contain client IP addresses on the same basis."
+      "Description": "Retention for the WAF log group, in days. CloudWatch accepts only a fixed set of values, hence AllowedValues - an arbitrary number such as 20 fails the stack. 14 matches the retention used for the ALB, VPC flow and DNS logs: WAF logs record the full request including client IP addresses, so they are personal data on the same DSGVO basis and anything longer needs a justification in the VVT.",
+      "AllowedValues": [
+        1,
+        3,
+        5,
+        7,
+        14,
+        30,
+        60,
+        90
+      ]
     },
     "WafBlockedRequestAlarmThreshold": {
       "Type": "Number",
       "Default": 0,
       "MinValue": 0,
       "Description": "Blocked requests per 5 minutes that raise an alarm on the cluster alert topic. 0 disables the alarm. Leave at 0 while every rule is still counting, since nothing is blocked then."
+    }
+  },
+  "Rules": {
+    "WafRateLimitNeedsClientIpHeader": {
+      "RuleCondition": {
+        "Fn::Equals": [
+          {
+            "Ref": "RateLimitAction"
+          },
+          "block"
+        ]
+      },
+      "Assertions": [
+        {
+          "Assert": {
+            "Fn::Not": [
+              {
+                "Fn::Equals": [
+                  {
+                    "Ref": "WafClientIpHeader"
+                  },
+                  ""
+                ]
+              }
+            ]
+          },
+          "AssertDescription": "WafClientIpHeader must be set (e.g. cf-connecting-ip) before RateLimitAction can be set to block. Some sites are proxied through Cloudflare; without the header every proxied request aggregates onto Cloudflare's own addresses, so enforcing the rate limit would block Cloudflare and take out every site behind it."
+        }
+      ]
     }
   },
   "Resources": {
@@ -2659,25 +2755,10 @@
         }
       }
     },
-    "WafAdminIpSet": {
-      "Type": "AWS::WAFv2::IPSet",
-      "Condition": "WafAdminCidrsProvided",
-      "Properties": {
-        "Name": {
-          "Fn::Sub": "${AWS::StackName}-waf-admin-allow"
-        },
-        "Scope": "REGIONAL",
-        "IPAddressVersion": "IPV4",
-        "Addresses": {
-          "Ref": "WafAdminAllowedCidrs"
-        },
-        "Description": "Source ranges permitted to reach admin paths."
-      }
-    },
     "WafWebAcl": {
       "Type": "AWS::WAFv2::WebACL",
       "Metadata": {
-        "Note": "Scope REGIONAL, so this is created in the cluster's own region and attaches directly to the ALB - unlike the CLOUDFRONT-scoped WebACL in cloudfront-alb-distribution, which only exists in us-east-1 and only inspects traffic that actually travels through CloudFront. Rule order is deliberate: IP reputation first (cheapest rejection), then generic managed groups, then application-specific rules, then rate limiting last so that legitimate-looking floods are still classified by the groups above. Every rule carries its own off/count/block parameter: a single global switch would force promoting all rules at once, which defeats the point of a counting period."
+        "Note": "Scope REGIONAL, so this is created in the cluster's own region and attaches directly to the ALB - unlike the CLOUDFRONT-scoped WebACL in cloudfront-alb-distribution, which only exists in us-east-1 and only inspects traffic that actually travels through CloudFront. Rule order is deliberate: IP reputation first (cheapest rejection), then generic managed groups, then application-specific rules, then rate limiting last so that legitimate-looking floods are still classified by the groups above. Every rule carries its own off/count/block parameter: a single global switch would force promoting all rules at once, which defeats the point of a counting period. Rule set deliberately trimmed 2026-08-20: the PHP group (overlaps Common and WordPress), the IP reputation group (always evaluates the source IP, so it sees only Cloudflare for proxied sites and Cloudflare does reputation itself), the admin-path IP restriction (clients edit their own content, and it cannot serve a mixed proxied/direct estate) and the two CVE-specific WordPress rules were all removed - see TASKS.md. What is left is generic: broad signatures, virtual patching, SQLi, WordPress, and rate limiting. Where a CDN fronts the ALB, set WafClientIpHeader (Cloudflare: cf-connecting-ip); without it proxied requests all aggregate onto the proxy's addresses and blocking on rate would take the proxy out for every site behind it."
       },
       "Properties": {
         "Name": {
@@ -2696,40 +2777,6 @@
           "MetricName": "AlbWebAcl"
         },
         "Rules": [
-          {
-            "Fn::If": [
-              "IpReputationActionEnabled",
-              {
-                "Name": "AWSManagedRulesAmazonIpReputationList",
-                "Priority": 10,
-                "OverrideAction": {
-                  "Fn::If": [
-                    "IpReputationActionCounts",
-                    {
-                      "Count": {}
-                    },
-                    {
-                      "None": {}
-                    }
-                  ]
-                },
-                "Statement": {
-                  "ManagedRuleGroupStatement": {
-                    "VendorName": "AWS",
-                    "Name": "AWSManagedRulesAmazonIpReputationList"
-                  }
-                },
-                "VisibilityConfig": {
-                  "SampledRequestsEnabled": true,
-                  "CloudWatchMetricsEnabled": true,
-                  "MetricName": "AWSManagedRulesAmazonIpReputationList"
-                }
-              },
-              {
-                "Ref": "AWS::NoValue"
-              }
-            ]
-          },
           {
             "Fn::If": [
               "CommonRuleSetActionEnabled",
@@ -2868,294 +2915,9 @@
           },
           {
             "Fn::If": [
-              "WordPressRulesActionEnabled",
+              "RateLimitActionEnabledAndForwardedIp",
               {
-                "Name": "AWSManagedRulesPHPRuleSet",
-                "Priority": 60,
-                "OverrideAction": {
-                  "Fn::If": [
-                    "WordPressRulesActionCounts",
-                    {
-                      "Count": {}
-                    },
-                    {
-                      "None": {}
-                    }
-                  ]
-                },
-                "Statement": {
-                  "ManagedRuleGroupStatement": {
-                    "VendorName": "AWS",
-                    "Name": "AWSManagedRulesPHPRuleSet"
-                  }
-                },
-                "VisibilityConfig": {
-                  "SampledRequestsEnabled": true,
-                  "CloudWatchMetricsEnabled": true,
-                  "MetricName": "AWSManagedRulesPHPRuleSet"
-                }
-              },
-              {
-                "Ref": "AWS::NoValue"
-              }
-            ]
-          },
-          {
-            "Fn::If": [
-              "WpCustomRulesActionEnabled",
-              {
-                "Name": "BlockWpBatchRoute",
-                "Priority": 70,
-                "Action": {
-                  "Fn::If": [
-                    "WpCustomRulesActionCounts",
-                    {
-                      "Count": {}
-                    },
-                    {
-                      "Block": {}
-                    }
-                  ]
-                },
-                "Statement": {
-                  "OrStatement": {
-                    "Statements": [
-                      {
-                        "ByteMatchStatement": {
-                          "SearchString": "rest_route=/batch/v1",
-                          "FieldToMatch": {
-                            "QueryString": {}
-                          },
-                          "TextTransformations": [
-                            {
-                              "Priority": 0,
-                              "Type": "URL_DECODE"
-                            },
-                            {
-                              "Priority": 1,
-                              "Type": "LOWERCASE"
-                            }
-                          ],
-                          "PositionalConstraint": "CONTAINS"
-                        }
-                      },
-                      {
-                        "ByteMatchStatement": {
-                          "SearchString": "/wp-json/batch/v1",
-                          "FieldToMatch": {
-                            "UriPath": {}
-                          },
-                          "TextTransformations": [
-                            {
-                              "Priority": 0,
-                              "Type": "URL_DECODE"
-                            },
-                            {
-                              "Priority": 1,
-                              "Type": "LOWERCASE"
-                            }
-                          ],
-                          "PositionalConstraint": "CONTAINS"
-                        }
-                      }
-                    ]
-                  }
-                },
-                "VisibilityConfig": {
-                  "SampledRequestsEnabled": true,
-                  "CloudWatchMetricsEnabled": true,
-                  "MetricName": "BlockWpBatchRoute"
-                }
-              },
-              {
-                "Ref": "AWS::NoValue"
-              }
-            ]
-          },
-          {
-            "Fn::If": [
-              "WpCustomRulesActionEnabled",
-              {
-                "Name": "BlockWpUserCreation",
-                "Priority": 80,
-                "Action": {
-                  "Fn::If": [
-                    "WpCustomRulesActionCounts",
-                    {
-                      "Count": {}
-                    },
-                    {
-                      "Block": {}
-                    }
-                  ]
-                },
-                "Statement": {
-                  "AndStatement": {
-                    "Statements": [
-                      {
-                        "ByteMatchStatement": {
-                          "SearchString": "post",
-                          "FieldToMatch": {
-                            "Method": {}
-                          },
-                          "TextTransformations": [
-                            {
-                              "Priority": 0,
-                              "Type": "LOWERCASE"
-                            }
-                          ],
-                          "PositionalConstraint": "EXACTLY"
-                        }
-                      },
-                      {
-                        "ByteMatchStatement": {
-                          "SearchString": "/wp/v2/users",
-                          "FieldToMatch": {
-                            "UriPath": {}
-                          },
-                          "TextTransformations": [
-                            {
-                              "Priority": 0,
-                              "Type": "URL_DECODE"
-                            },
-                            {
-                              "Priority": 1,
-                              "Type": "LOWERCASE"
-                            }
-                          ],
-                          "PositionalConstraint": "CONTAINS"
-                        }
-                      }
-                    ]
-                  }
-                },
-                "VisibilityConfig": {
-                  "SampledRequestsEnabled": true,
-                  "CloudWatchMetricsEnabled": true,
-                  "MetricName": "BlockWpUserCreation"
-                }
-              },
-              {
-                "Ref": "AWS::NoValue"
-              }
-            ]
-          },
-          {
-            "Fn::If": [
-              "AdminRestrictionActionEnabledAndAdminCidrsProvided",
-              {
-                "Name": "RestrictAdminPaths",
-                "Priority": 85,
-                "Action": {
-                  "Fn::If": [
-                    "AdminRestrictionActionCounts",
-                    {
-                      "Count": {}
-                    },
-                    {
-                      "Block": {}
-                    }
-                  ]
-                },
-                "Statement": {
-                  "AndStatement": {
-                    "Statements": [
-                      {
-                        "OrStatement": {
-                          "Statements": [
-                            {
-                              "ByteMatchStatement": {
-                                "SearchString": "/wp-admin",
-                                "FieldToMatch": {
-                                  "UriPath": {}
-                                },
-                                "TextTransformations": [
-                                  {
-                                    "Priority": 0,
-                                    "Type": "URL_DECODE"
-                                  },
-                                  {
-                                    "Priority": 1,
-                                    "Type": "LOWERCASE"
-                                  }
-                                ],
-                                "PositionalConstraint": "CONTAINS"
-                              }
-                            },
-                            {
-                              "ByteMatchStatement": {
-                                "SearchString": "/wp-login.php",
-                                "FieldToMatch": {
-                                  "UriPath": {}
-                                },
-                                "TextTransformations": [
-                                  {
-                                    "Priority": 0,
-                                    "Type": "URL_DECODE"
-                                  },
-                                  {
-                                    "Priority": 1,
-                                    "Type": "LOWERCASE"
-                                  }
-                                ],
-                                "PositionalConstraint": "CONTAINS"
-                              }
-                            },
-                            {
-                              "ByteMatchStatement": {
-                                "SearchString": "/typo3/",
-                                "FieldToMatch": {
-                                  "UriPath": {}
-                                },
-                                "TextTransformations": [
-                                  {
-                                    "Priority": 0,
-                                    "Type": "URL_DECODE"
-                                  },
-                                  {
-                                    "Priority": 1,
-                                    "Type": "LOWERCASE"
-                                  }
-                                ],
-                                "PositionalConstraint": "CONTAINS"
-                              }
-                            }
-                          ]
-                        }
-                      },
-                      {
-                        "NotStatement": {
-                          "Statement": {
-                            "IPSetReferenceStatement": {
-                              "Arn": {
-                                "Fn::GetAtt": [
-                                  "WafAdminIpSet",
-                                  "Arn"
-                                ]
-                              }
-                            }
-                          }
-                        }
-                      }
-                    ]
-                  }
-                },
-                "VisibilityConfig": {
-                  "SampledRequestsEnabled": true,
-                  "CloudWatchMetricsEnabled": true,
-                  "MetricName": "RestrictAdminPaths"
-                }
-              },
-              {
-                "Ref": "AWS::NoValue"
-              }
-            ]
-          },
-          {
-            "Fn::If": [
-              "RateLimitActionEnabled",
-              {
-                "Name": "RateLimitPerIp",
+                "Name": "RateLimitForwardedIp",
                 "Priority": 90,
                 "Action": {
                   "Fn::If": [
@@ -3173,13 +2935,105 @@
                     "Limit": {
                       "Ref": "WafRateLimitRequests"
                     },
-                    "AggregateKeyType": "IP"
+                    "AggregateKeyType": "FORWARDED_IP",
+                    "ForwardedIPConfig": {
+                      "HeaderName": {
+                        "Ref": "WafClientIpHeader"
+                      },
+                      "FallbackBehavior": "NO_MATCH"
+                    },
+                    "ScopeDownStatement": {
+                      "SizeConstraintStatement": {
+                        "FieldToMatch": {
+                          "SingleHeader": {
+                            "Name": {
+                              "Ref": "WafClientIpHeader"
+                            }
+                          }
+                        },
+                        "ComparisonOperator": "GT",
+                        "Size": 0,
+                        "TextTransformations": [
+                          {
+                            "Priority": 0,
+                            "Type": "NONE"
+                          }
+                        ]
+                      }
+                    }
                   }
                 },
                 "VisibilityConfig": {
                   "SampledRequestsEnabled": true,
                   "CloudWatchMetricsEnabled": true,
-                  "MetricName": "RateLimitPerIp"
+                  "MetricName": "RateLimitForwardedIp"
+                }
+              },
+              {
+                "Ref": "AWS::NoValue"
+              }
+            ]
+          },
+          {
+            "Fn::If": [
+              "RateLimitActionEnabled",
+              {
+                "Name": "RateLimitSourceIp",
+                "Priority": 91,
+                "Action": {
+                  "Fn::If": [
+                    "RateLimitActionCounts",
+                    {
+                      "Count": {}
+                    },
+                    {
+                      "Block": {}
+                    }
+                  ]
+                },
+                "Statement": {
+                  "RateBasedStatement": {
+                    "Limit": {
+                      "Ref": "WafRateLimitRequests"
+                    },
+                    "AggregateKeyType": "IP",
+                    "ScopeDownStatement": {
+                      "Fn::If": [
+                        "WafForwardedIpInUse",
+                        {
+                          "NotStatement": {
+                            "Statement": {
+                              "SizeConstraintStatement": {
+                                "FieldToMatch": {
+                                  "SingleHeader": {
+                                    "Name": {
+                                      "Ref": "WafClientIpHeader"
+                                    }
+                                  }
+                                },
+                                "ComparisonOperator": "GT",
+                                "Size": 0,
+                                "TextTransformations": [
+                                  {
+                                    "Priority": 0,
+                                    "Type": "NONE"
+                                  }
+                                ]
+                              }
+                            }
+                          }
+                        },
+                        {
+                          "Ref": "AWS::NoValue"
+                        }
+                      ]
+                    }
+                  }
+                },
+                "VisibilityConfig": {
+                  "SampledRequestsEnabled": true,
+                  "CloudWatchMetricsEnabled": true,
+                  "MetricName": "RateLimitSourceIp"
                 }
               },
               {
@@ -3221,13 +3075,31 @@
         }
       }
     },
+    "WafLogDeliveryPolicy": {
+      "Type": "AWS::Logs::ResourcePolicy",
+      "Metadata": {
+        "Note": "Required for WAF logging and easy to miss: PutLoggingConfiguration fails, or delivers nothing, unless the log group grants delivery.logs.amazonaws.com logs:CreateLogStream and logs:PutLogEvents. The console adds this policy implicitly; CloudFormation does not. Scoped to this stack's WAF log group only, with SourceAccount/SourceArn conditions against the confused-deputy case. Note CloudWatch Logs resource policies are account-wide per region and capped (10 per region), so one per cluster is fine but do not fan these out casually."
+      },
+      "DependsOn": [
+        "WafLogGroup"
+      ],
+      "Properties": {
+        "PolicyName": {
+          "Fn::Sub": "${AWS::StackName}-waf-log-delivery"
+        },
+        "PolicyDocument": {
+          "Fn::Sub": "{\"Version\":\"2012-10-17\",\"Statement\":[{\"Sid\":\"AWSLogDeliveryWrite\",\"Effect\":\"Allow\",\"Principal\":{\"Service\":\"delivery.logs.amazonaws.com\"},\"Action\":[\"logs:CreateLogStream\",\"logs:PutLogEvents\"],\"Resource\":\"arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:aws-waf-logs-${AWS::StackName}-waf:log-stream:*\",\"Condition\":{\"StringEquals\":{\"aws:SourceAccount\":\"${AWS::AccountId}\"},\"ArnLike\":{\"aws:SourceArn\":\"arn:aws:logs:${AWS::Region}:${AWS::AccountId}:*\"}}}]}"
+        }
+      }
+    },
     "WafLoggingConfiguration": {
       "Type": "AWS::WAFv2::LoggingConfiguration",
       "Metadata": {
         "Note": "LogDestinationConfigs takes the log group ARN WITHOUT the trailing :* that Fn::GetAtt returns, hence the constructed ARN. Authorization headers and cookies are redacted: WAF logs the full request, and those carry session tokens and credentials."
       },
       "DependsOn": [
-        "WafLogGroup"
+        "WafLogGroup",
+        "WafLogDeliveryPolicy"
       ],
       "Properties": {
         "ResourceArn": {
@@ -3511,26 +3383,6 @@
         }
       ]
     },
-    "IpReputationActionEnabled": {
-      "Fn::Not": [
-        {
-          "Fn::Equals": [
-            {
-              "Ref": "IpReputationAction"
-            },
-            "off"
-          ]
-        }
-      ]
-    },
-    "IpReputationActionCounts": {
-      "Fn::Equals": [
-        {
-          "Ref": "IpReputationAction"
-        },
-        "count"
-      ]
-    },
     "CommonRuleSetActionEnabled": {
       "Fn::Not": [
         {
@@ -3611,56 +3463,6 @@
         "count"
       ]
     },
-    "WpCustomRulesActionEnabled": {
-      "Fn::Not": [
-        {
-          "Fn::Equals": [
-            {
-              "Ref": "WpCustomRulesAction"
-            },
-            "off"
-          ]
-        }
-      ]
-    },
-    "WpCustomRulesActionCounts": {
-      "Fn::Equals": [
-        {
-          "Ref": "WpCustomRulesAction"
-        },
-        "count"
-      ]
-    },
-    "AdminRestrictionActionEnabled": {
-      "Fn::Not": [
-        {
-          "Fn::Equals": [
-            {
-              "Ref": "AdminRestrictionAction"
-            },
-            "off"
-          ]
-        }
-      ]
-    },
-    "AdminRestrictionActionCounts": {
-      "Fn::Equals": [
-        {
-          "Ref": "AdminRestrictionAction"
-        },
-        "count"
-      ]
-    },
-    "AdminRestrictionActionEnabledAndAdminCidrsProvided": {
-      "Fn::And": [
-        {
-          "Condition": "AdminRestrictionActionEnabled"
-        },
-        {
-          "Condition": "WafAdminCidrsProvided"
-        }
-      ]
-    },
     "RateLimitActionEnabled": {
       "Fn::Not": [
         {
@@ -3681,23 +3483,6 @@
         "count"
       ]
     },
-    "WafAdminCidrsProvided": {
-      "Fn::Not": [
-        {
-          "Fn::Equals": [
-            {
-              "Fn::Join": [
-                "",
-                {
-                  "Ref": "WafAdminAllowedCidrs"
-                }
-              ]
-            },
-            ""
-          ]
-        }
-      ]
-    },
     "WafBlockedRequestAlarmEnabled": {
       "Fn::Not": [
         {
@@ -3707,6 +3492,28 @@
             },
             0
           ]
+        }
+      ]
+    },
+    "WafForwardedIpInUse": {
+      "Fn::Not": [
+        {
+          "Fn::Equals": [
+            {
+              "Ref": "WafClientIpHeader"
+            },
+            ""
+          ]
+        }
+      ]
+    },
+    "RateLimitActionEnabledAndForwardedIp": {
+      "Fn::And": [
+        {
+          "Condition": "RateLimitActionEnabled"
+        },
+        {
+          "Condition": "WafForwardedIpInUse"
         }
       ]
     }

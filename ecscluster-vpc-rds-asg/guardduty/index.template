@@ -1,6 +1,6 @@
 {
   "AWSTemplateFormatVersion": "2010-09-09",
-  "Description": "GuardDuty detector and incident-response infrastructure for zero-trust egress monitoring (LII26-96). One stack per region.",
+  "Description": "GuardDuty detector and incident-response infrastructure for zero-trust egress monitoring (LII26-96). ONE STACK PER REGION, NOT PER CLUSTER - and deliberately not part of the cluster template. GuardDuty allows exactly one detector per account and region, so a second cluster in the same region could not be created at all, and deleting any one cluster stack would switch off threat detection for every other cluster in that region. eu-central-1 already holds two clusters (labc-eu-c1 and labcluster-eu-c1-cl), so this is a live constraint, not a hypothetical one.",
   "Parameters": {
     "ClusterName": {
       "Type": "String",
@@ -27,6 +27,9 @@
   "Resources": {
     "GuardDutyDetector": {
       "Type": "AWS::GuardDuty::Detector",
+      "Metadata": {
+        "Note": "The one-detector-per-account-per-region limit is why this resource cannot live in ecscluster-vpc-rds-asg: creating the second cluster in a region would fail, and deleting either cluster would disable detection for the other. Before deploying, check with 'aws guardduty list-detectors' - if one already exists, creation fails. S3Logs, Kubernetes audit logs and EBS malware protection are all disabled; CLOUD_TRAIL, DNS_LOGS and FLOW_LOGS are on by default and must be verified after deployment. Enabling EBS_MALWARE_PROTECTION and evaluating RUNTIME_MONITORING are open items in TASKS.md."
+      },
       "Properties": {
         "Enable": true,
         "FindingPublishingFrequency": {
