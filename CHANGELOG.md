@@ -2,12 +2,56 @@
 
 ## Summary
 
-**_(uncommitted)_ · 2026-08-19 — `ecsservice` `1.3.0` / `ecscluster-vpc-rds-asg` `1.2.0`: alarm cleanup, 4xx rename, EFS host mount removed**
+> **Version-numbering caveat.** `ecsservice` `1.1.0` has no committed state of its own — `0056cd0`
+> bundled the `1.1.0` alarm-actions work with the `1.2.0` HTTP alarms and stamped `1.2.0`. Every other
+> version below is a real committed state. Note also that `1.3.0` covers two `ecsservice` states,
+> before and after `8c76965` added `ListenerArnOverride` without a bump.
+
+**`2447c43` · 2026-08-20 — `TemplateVersion` output on the `guardduty` and `alb-logs-bucket` templates**
+- Both stamped `1.0.0`. Four templates now carry the output; `backup-vaults-mirror` and the leaf templates still do not — see TASKS.md.
+
+**`8c76965` · 2026-08-20 — internal ALB for VPC-only services (cluster `1.3.0`), `ListenerArnOverride` in `ecsservice`**
+- **Cluster `1.2.0` → `1.3.0`:** `InternalLoadbalancer` (`Scheme: internal`, both private subnets), `SgInternalAlb` (tcp/80 from `SgVpcLoadbalancerports`), `InternalHttplistener` (HTTP:80, `fixed-response` 404 default). New exports `${AWS::StackName}-InternalListenerArnHttp` and `-InternalAlbDns`. No TLS — the first consumer (Solr) speaks HTTP, so terminating inside the VPC adds nothing.
+- **`ecsservice`, no version bump (stays `1.3.0`):** new `ListenerArnOverride` parameter (String, default `""`) plus the `HasListenerOverride` / `NoListenerOverride` conditions. `LoadbalancerRule.ListenerArn` becomes an `Fn::If`, and `LoadbalancerRuleHttp` gains `"Condition": "NoListenerOverride"` — the 80→443 redirect must not exist on an HTTP-only internal listener. Default empty renders the other 35 stacks byte-identically, so the pending `1.3.0` rollout picks this up at no risk.
+- Deployed to Paris 2026-08-20 and verified live (`Scheme: internal`, `state: active`, subnets `SubnetPrivate1`/`SubnetPrivate2`). Frankfurt pending.
+
+**`a675e7d` · 2026-08-20 — WAF rule set trimmed and per-rule promotion made expressible (cluster stays `1.2.0`)**
+- Rule set cut from eleven rules to six on the principle that a rule must be generic to be worth its WCU: `AWSManagedRulesCommonRuleSet`, `KnownBadInputsRuleSet`, `SQLiRuleSet`, `WordPressRuleSet` plus two rate rules. Removed `PHPRuleSet`, `AmazonIpReputationList`, `BlockWpBatchRoute`, `BlockWpUserCreation` and `RestrictAdminPaths` — reasons and re-evaluation criteria in TASKS.md.
+- The eight per-rule action parameters introduced in `846c0be` are cut to five — `CommonRuleSetAction`, `KnownBadInputsAction`, `SqliRuleSetAction`, `WordPressRulesAction`, `RateLimitAction` — as `IpReputationAction`, `WpCustomRulesAction` and `AdminRestrictionAction` lost their rules. `WafAdminAllowedCidrs` is gone with them.
+- **`WafClientIpHeader` is new here**, and with it the split rate rules: `RateLimitForwardedIp` (priority 90) keys on the header for requests that carry it, `RateLimitSourceIp` (91) on the source IP for those that do not, each scope-down-ed so they never double-count. `RateLimitAction=block` is now refused unless the header parameter is set — proxied requests would otherwise aggregate onto Cloudflare's own addresses and blocking would take out every proxied site.
+- Rule priorities drop from 23 to 8.
+- Measured on the live Paris stack: **1202 WCU of the 1,500 default ceiling.** With the PHP and IP-reputation groups still present it was over 1,300. Read it with `aws wafv2 get-web-acl-for-resource --resource-arn <alb-arn> --query 'WebACL.Capacity'`.
+- Also stamps `TemplateVersion` on the `guardduty` template.
+
+**`846c0be` · 2026-08-19 — AWS WAF integrated into the cluster template (`1.2.0`)**
+- `WafWebAcl` (`${AWS::StackName}-waf`, scope `REGIONAL`) associates directly with `Loadbalancer`, so no import is needed and one WebACL covers every service behind that ALB. `REGIONAL` works in `eu-west-3`/`eu-central-1` with no `us-east-1` deployment and no CloudFront — unlike the `CLOUDFRONT`-scope WebACL in `cloudfront-alb-distribution`.
+- Merged into the cluster template by decision rather than kept as a separate `alb-waf` stack.
+- **Per-rule promotion made expressible:** the single global `RuleAction` is replaced by eight `off`/`count`/`block` parameters (`IpReputationAction`, `CommonRuleSetAction`, `KnownBadInputsAction`, `SqliRuleSetAction`, `WordPressRulesAction`, `WpCustomRulesAction`, `AdminRestrictionAction`, `RateLimitAction`), all defaulting to `count`; `off` omits the rule entirely. Eleven rules, 23 priorities — trimmed the next day in `a675e7d`.
+- Every rule ships as `count`; nothing is blocked until a parameter is flipped. WAF logging plus a `WafBlockedRequestAlarmThreshold`-gated alarm on the cluster `AlertTopic` make the WebACL observable rather than a black box — at threshold `0` the alarm resource is not created at all.
+- **The template crossed 51,200 bytes here** (104 KB), so every cluster deploy now needs an S3 upload or the console; `--template-body` no longer works.
+- Note cluster `1.2.0` spans three commits without an intermediate bump: `8f1826d` (EFS host mount removed), this one (WAF added) and `a675e7d` (WAF trimmed). A stack reporting `1.2.0` could be any of the three — check whether `WafWebAcl` exists and how many rules it carries.
+
+**`8f1826d` · 2026-08-19 — alarm cleanup, 4xx rename, EFS host mount removed (`ecsservice` `1.3.0`, cluster `1.2.0`)**
 - `AlarmHttp5xxElb` removed together with `ServiceHttp5xxElbThreshold` and `EnableHttp5xxElbAlarm` — load-balancer-side 5xx is not a case we need alarmed at the moment
-- Log anomaly detection removed entirely: `LogAnomalyDetector`, `ServiceLogAnomalyAlarm`, `EnableLogAnomalyDetection`, `EnableAnomalyDetector`. Unusable against our log format — Apache access lines collapse into a single pattern
+- Log anomaly detection removed entirely: `LogAnomalyDetector`, `ServiceLogAnomalyAlarm`, `EnableLogAnomalyDetection`, `EnableAnomalyDetector`. Unusable against our log format — Apache access lines collapse into a single pattern. Added three days earlier in `3e5ad18`; deployed stacks lose the detector on their next update
 - 4xx pair renamed for legibility: `Http4xxAnomalyDetector` → `BaselineHttp4xxTarget`, `AlarmHttp4xxAnomaly` → `AlarmHttp4xxTarget`; `AlarmName` becomes `${AWS::StackName}-AlarmHttp4xxTargetAnomaly`. Both resources are replaced on the next update
 - `AlarmHttp4xxTarget` gained `DependsOn: [ "BaselineHttp4xxTarget" ]` — without it, deleting the pair can fail because `DeleteAnomalyDetector` is rejected while an alarm still references the metric
-- **Cluster:** the ASG launch template no longer mounts the EFS **root** at `/mnt/efs` via `/etc/fstab`. Services are unaffected (they mount through the task definition); the EFS-Restore runbook now mounts by hand
+- **Cluster:** the ASG launch template no longer mounts the EFS **root** at `/mnt/efs` via `/etc/fstab`. Services are unaffected (they mount through the task definition); the EFS-Restore runbook now mounts by hand. Takes effect on running instances only after an instance refresh
+
+**`0056cd0` · 2026-08-19 — SNS alert path and ALB-native HTTP alarms (cluster `1.1.0`, `ecsservice` `1.2.0`)**
+- Filed under a TASKS-sounding subject, but this is the notification work: **cluster `1.0.0` → `1.1.0`** adds `AlertTopic` (`${AWS::StackName}-alerts`), the optional `AlertEmail` parameter, a topic policy for `cloudwatch.amazonaws.com` + `events.amazonaws.com`, the `${AWS::StackName}-AlertTopicArn` export, and `AlarmActions` on all four cluster alarms.
+- **`ecsservice` `1.0.1` → `1.2.0`** in one step, bundling what the rollout plan called `1.1.0` and `1.2.0`: `AlarmActions` on `ServiceHigh{Cpu,Memory}Alarm` and `ServiceLow{Cpu,Memory}Alarm` importing `${ClusterStackName}-AlertTopicArn`, plus the ALB-native alarms `AlarmHttp5xxTarget` (`ServiceHttp5xxTargetThreshold`), `AlarmHttp5xxElb` (`ServiceHttp5xxElbThreshold`) and the `Http4xxAnomalyDetector` / `AlarmHttp4xxAnomaly` pair (`ServiceHttp4xxAnomalyBand`), the last two shipping disabled.
+- **Deploy order matters:** the High alarms are on by default, so their `Fn::ImportValue` fails the service update if the cluster stack has not been deployed first.
+- `AlarmActions` is deliberately **not** wired to `AlarmAutoscaleScaleDown` — it is red during every normal scale-in by design.
+- `AlertTopic` is deliberately not KMS-encrypted: payloads carry metric names, thresholds and stack names only. If that changes, the key policy must also grant `kms:GenerateDataKey*`/`kms:Decrypt` to both service principals or delivery fails silently.
+- Delivery verified end-to-end in both regions with `aws cloudwatch set-alarm-state`, which exercises the topic policy — `aws sns publish` does not.
+
+**`3e5ad18` · 2026-08-16 — optional log anomaly detection in `ecsservice` (`1.0.1`)**
+- `LogAnomalyDetector` + `ServiceLogAnomalyAlarm`, gated by `EnableLogAnomalyDetection` (defaulting to `true`). **Reverted three days later in `8f1826d`** — kept in this history because every stack deployed at `1.0.1` carries a live detector until its next update.
+
+**`597e8c5` · 2026-08-14 — `TemplateVersion` output and egress analysis query fix (cluster `1.0.0`)**
+- First `TemplateVersion` output on the cluster template. Stacks reporting `None` predate it — see README "Template-Versionierung"
+- `VpcEgressPortsAnalysis` narrowed to the private subnets (`/^10\.1\.[34]\./`) with a `srcport != 443/80` backstop and `limit` raised to 500, fixing two defects in the saved query: it counted inbound replies, and NAT double-counted connections. **Not yet deployed to Paris**, whose 2026-08-07 analysis ran against the old query.
 
 **`7adefc8` · 2026-07-10 — `ecsservice`: parameterised scaling thresholds, `SkipImageResolver` default, template versioning**
 - Scale thresholds moved out of the alarms into parameters: `ServiceScaleUpCpuThreshold` (65), `ServiceScaleDownCpuThreshold` (15)
@@ -151,7 +195,7 @@ Outputs exported: `DnsFirewallWhitelistId`, `DnsFirewallRuleGroupId` — for aut
 
 ---
 
-## `alb-logs-bucket/index.template` — new template
+## `ecscluster-vpc-rds-asg/alb-logs-bucket/index.template` — new template
 
 ### Shared ALB access logs bucket
 New dedicated stack, deployed once per region. ALB access logs must be written to S3 (no CloudWatch option) — without the correct bucket policy, ALB silently fails to write with no error. The bucket is shared across cluster stacks, each writing under its own prefix (the stack name; `AWSLogs/<account-id>/...` is appended automatically by ALB).
@@ -168,6 +212,37 @@ New dedicated stack, deployed once per region. ALB access logs must be written t
 
 ## `ecscluster-vpc-rds-asg/index.template`
 
+### Internal ALB for VPC-only services (`1.3.0`)
+
+Three resources plus two exports, alongside the existing public `Loadbalancer` / `Httpdefaultlistener` / `Httpsdefaultlistener` / `Deftarget` set:
+
+- **`InternalLoadbalancer`** — `Scheme: internal`, placed in `SubnetPrivate1` and `SubnetPrivate2`
+- **`SgInternalAlb`** — ingress tcp/80 from `{Ref: SgVpcLoadbalancerports}`, which is precise rather than VPC-CIDR-wide and only possible because this lives in the same stack. `SecurityGroups` also carries `SgVpcLoadbalancerportsAccess`, so the internal ALB may already reach container dynamic ports 32768–61000 with no extra instance-side rule
+- **`InternalHttplistener`** — `HTTP:80`, `DefaultActions` a `fixed-response` 404. No TLS: the first consumer speaks HTTP, so terminating inside the VPC would add nothing
+- Exports `${AWS::StackName}-InternalListenerArnHttp` and `-InternalAlbDns`
+
+**Why in the cluster template rather than its own stack.** It is cluster-level singleton infrastructure, the sibling of the resources listed above. The split-stack precedents (`guardduty`, `alb-logs-bucket`) exist for things that are optional per cluster and iterated often, which this is not — and a separate stack could not use `SgVpcLoadbalancerports` for its ingress rule without the cluster stack exporting it anyway.
+
+**No DNS record.** Consumers use the exported hostname rather than a private hosted zone. Trade-off accepted: an ALB *replacement* (a `Name` or subnet change, not a plain update) changes the hostname, so a consumer holding it in configuration goes stale — rare, and the failure is loud. Services attach with `ListenerRuleHost=*`, which is fine on a listener serving only internal traffic.
+
+**First consumer is Solr** (`gwa-gut-sol-s`, then `gwa-gut-sol-p`), which is consumed by `gwa-gut-web-p` on the same cluster in the same VPC — the public round-trip was a template artefact. Rollout steps and the two snags (listener-rule replacement, health checks moving to the internal ALB) are in TASKS.md.
+
+
+### AWS WAF on the cluster ALB (`1.2.0`, trimmed in `a675e7d`)
+
+`WafWebAcl` (`${AWS::StackName}-waf`, scope `REGIONAL`) associates directly with `Loadbalancer`, so no import is needed and one WebACL covers every service behind that ALB — 21 in Frankfurt, 15 in Paris. Scope `REGIONAL` works in `eu-west-3`/`eu-central-1` without any `us-east-1` deployment and without CloudFront, which is what the `CLOUDFRONT`-scope WebACL in `cloudfront-alb-distribution` cannot do.
+
+**As built** (after the `a675e7d` trim): `AWSManagedRulesCommonRuleSet`, `KnownBadInputsRuleSet`, `SQLiRuleSet`, `WordPressRuleSet`, plus two general rate rules at 2,000 requests per IP per 5 minutes. **1202 WCU of the 1,500 default ceiling**, measured live. `CommonRuleSet` exclusions and scope-down statements consume WCU, so budget from the 298 headroom rather than from 1,500.
+
+**Everything ships as `count`.** Five `off`/`count`/`block` parameters — `CommonRuleSetAction`, `KnownBadInputsAction`, `SqliRuleSetAction`, `WordPressRulesAction`, `RateLimitAction` — all default to `count`, so promotion is a parameter change on a normal stack update and never a template edit; `off` omits the rule entirely. Block-mode managed rules in front of production TYPO3, Matomo and Solr will produce false positives, and a WAF that breaks a client site gets switched off wholesale — the same evidence-before-enforcement discipline as the DNS Firewall ALERT→BLOCK phases.
+
+**Two guards worth knowing.** `RateLimitAction=block` is refused unless `WafClientIpHeader` is set, because proxied requests would otherwise aggregate onto Cloudflare's own addresses. And `WafBlockedRequestAlarmThreshold` at `0` leaves the alarm resource uncreated, so the first real block would be invisible — set it in the same deploy as any promotion.
+
+**Two consequences of it living here.** Each cluster update re-resolves the SSM AMI reference and so shows the four-row cascade (harmless — nothing is recreated, running instances untouched), and **at 104 KB the template exceeds the 51,200-byte inline limit**, so deploys go via S3 or the console.
+
+AWS also enables `OnSourceDDoSProtectionConfig` on the WebACL by default (`ALBLowReputationMode: ACTIVE_UNDER_DDOS`, observed on the Paris deployment). This template does not configure it. It blocks low-reputation sources automatically *while a DDoS is detected*, which partially offsets dropping `AmazonIpReputationList` — but only under attack conditions, not for routine traffic.
+
+
 ### EFS root mount removed from the ASG launch template (`1.2.0`)
 
 The `Launchtemplate` UserData used to create `/mnt/efs`, append an `/etc/fstab` entry for the **root** of the file system (`<Efs>:/ /mnt/efs efs _netdev,tls 0 0`) and `mount -a`. All seven lines are gone; UserData now only registers the instance with the ECS cluster and sets up `dnf-automatic`.
@@ -182,7 +257,7 @@ The `Launchtemplate` UserData used to create `/mnt/efs`, append an `/etc/fstab` 
 ### ALB Access Logs — optional via `LogsBucketName` parameter
 Added optional `LogsBucketName` parameter (default empty string). When empty, behavior is identical to before — logging stays off. When set, the `AccessLogsEnabled` condition activates and the ALB is configured with `access_logs.s3.enabled = true`, the bucket name, and the stack name as prefix. The `AWS::NoValue` pattern is used to omit the bucket and prefix attributes entirely from the array when logging is disabled.
 
-**To enable:** deploy `alb-logs-bucket/index.template` in `eu-west-3` first, then pass the resulting bucket name as `LogsBucketName` when creating or updating the cluster stack.
+**To enable:** deploy `ecscluster-vpc-rds-asg/alb-logs-bucket/index.template` in `eu-west-3` first, then pass the resulting bucket name as `LogsBucketName` when creating or updating the cluster stack.
 
 ### NACL removed
 Removed all five NACL resources (`Netacl`, `NetaclEntry1`, `NetaclEntry2`, `AssociateNetacl1`, `AssociateNetacl2`). Both entries allowed all traffic in both directions (`Protocol: -1`, `0.0.0.0/0`) — functionally identical to the AWS default NACL. Subnets automatically fall back to the default NACL on removal; no change in traffic behavior.
@@ -230,6 +305,16 @@ Jun 03 12:37:34 ip-<private-ip>.ec2.internal systemd[1]: Finished dnf-automatic.
 ---
 
 ## `ecsservice/index.template`
+
+### `ListenerArnOverride` — attach a service to a non-default listener (`1.3.0`, `8c76965`)
+
+New `ListenerArnOverride` parameter (String, default `""`) plus the `HasListenerOverride` / `NoListenerOverride` conditions. `LoadbalancerRule.ListenerArn` becomes an `Fn::If` choosing between the parameter and the usual `${ClusterStackName}-ListenerArnHttps` import.
+
+- **`LoadbalancerRuleHttp` gains `"Condition": "NoListenerOverride"`.** The 80→443 redirect must not exist on an HTTP-only internal listener, or every request 301s to a port nothing is listening on.
+- **The target group is deliberately kept.** This is smaller than the `ExposeViaLoadBalancer` idea it replaced and avoids its side effect: `AlarmAutoscaleScaleDown` reads task count from ALB `HealthyHostCount`, so a service with no target group would need a different source or the alarm disabled.
+- **Default empty renders the other 35 stacks byte-identically**, so the pending `1.3.0` rollout picks this up at no risk. Shipped without a version bump — `1.3.0` therefore means two different template states depending on whether a stack was updated before or after `8c76965`.
+- Changing `ListenerArn` on a deployed stack *replaces* the listener rule, and CloudFormation creates the replacement before deleting the original — so the target group is briefly referenced from two load balancers. Rolls back cleanly if AWS rejects it, but do it in a window.
+
 
 ### Alarm cleanup and 4xx rename (`1.3.0`)
 
