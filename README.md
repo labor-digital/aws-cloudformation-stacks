@@ -2,7 +2,7 @@
 
 Dieses Repository enthält die AWS CloudFormation Stack-Templates, die von LABOR für die Bereitstellung von Infrastruktur und Anwendungen verwendet werden.
 
-Parameter sind nicht hier dokumentiert: jeder Parameter trägt im Template eine `Description` und ist über `AWS::CloudFormation::Interface` gruppiert, die Konsole zeigt beides beim Deployment an. Diese Datei beschreibt **Zweck, Abhängigkeiten und Best Practices** pro Template. Offene Aufgaben und laufende Rollouts stehen in [TASKS.md](TASKS.md), die Änderungshistorie in [CHANGELOG.md](CHANGELOG.md).
+Parameter sind nicht hier dokumentiert: jeder Parameter trägt im Template eine `Description` und ist über `AWS::CloudFormation::Interface` gruppiert, die Konsole zeigt beides beim Deployment an. Diese Datei beschreibt pro Template **Zweck, Abhängigkeiten und Betriebswissen** — und zwar unabhängig davon, was gerade deployt ist. Was an den Templates noch aussteht und was die Cluster aktuell fahren, steht in [TASKS.md](TASKS.md); die Änderungshistorie ist die Git-Historie.
 
 ---
 
@@ -14,7 +14,6 @@ Parameter sind nicht hier dokumentiert: jeder Parameter trägt im Template eine 
 | `ecscluster-vpc-rds-asg/alb-logs-bucket` | S3-Bucket für ALB-Zugriffslogs mit DSGVO-Lifecycle. Separater Stack, Bucket überlebt Stack-Löschung. |
 | `ecscluster-vpc-rds-asg/guardduty` | GuardDuty Detector, Quarantine-SG und Incident-Response-Rolle. Ein Stack pro Region. |
 | `ecscluster-vpc-rds-asg/backup-vaults-mirror` | Backup-Vaults in der Zielregion für regionsübergreifende Backup-Kopien. |
-| `ecscluster-vpc-rds-asg/efs-access` | Temporärer SFTP-Zugang zum Cluster-EFS. Stack deployen, Daten übertragen, Stack löschen. |
 | `ecsservice` | Ein containerisierter Service auf einem bestehenden Cluster. |
 | `alb-ecsservice-rule` | Zusätzliche Host/Pfad-Regel auf die TargetGroup eines bestehenden ECS-Service. |
 | `alb-redirect-rule` | URL-Redirect-Regel auf dem ALB eines bestehenden Clusters. |
@@ -22,7 +21,6 @@ Parameter sind nicht hier dokumentiert: jeder Parameter trägt im Template eine 
 | `certificate` | Eigenständiges ACM-Zertifikat mit DNS-Validierung. |
 | `cloudfront-alb-distribution` | CloudFront-Distribution vor einem ALB, inkl. WAF WebACL. |
 | `global-accelerator-alb` | Global Accelerator mit zwei statischen Anycast-IPv4-Adressen vor einem ALB. |
-| `chatbot-slack` | Slack-Zustellung der Cluster-Alarme über AWS Chatbot. Ein Stack für alle Cluster, regionsübergreifend. |
 
 > `ecscluster-ext-additional-cluster` ist veraltet und wird nicht mehr unterstützt.
 
@@ -30,18 +28,18 @@ Parameter sind nicht hier dokumentiert: jeder Parameter trägt im Template eine 
 
 ## Abhängigkeiten und Deployment-Reihenfolge
 
-Pro Region in dieser Reihenfolge:
+Pro Region in dieser Reihenfolge — der Name des Cluster-Stacks steht dabei schon vor Schritt 1 fest, weil Schritt 1 und 2 ihn brauchen:
 
 1. **`alb-logs-bucket`** — liefert `BucketName` für den `LogsBucketName`-Parameter des Clusters. Alternativ den Cluster zuerst mit leerem `LogsBucketName` deployen und den Wert später nachziehen.
-2. **`ecscluster-vpc-rds-asg`** — der Cluster selbst.
-3. **`ecscluster-vpc-rds-asg/guardduty`** — **nach** dem Cluster, nicht davor: die Quarantine-SG importiert `${ClusterStackName}-Vpc`.
-4. **`ecscluster-vpc-rds-asg/backup-vaults-mirror`** — in der Zielregion (`BackupCopyDestinationRegion`, Default `eu-north-1`). Muss existieren, bevor Backup-Kopien greifen.
+2. **`ecscluster-vpc-rds-asg/backup-vaults-mirror`** — **vor** dem Cluster, und in der **Zielregion** (`BackupCopyDestinationRegion` des Clusters, Default `eu-north-1`). Der Backup-Plan des Clusters läuft alle 6 h ab `00:30 UTC` und kopiert in fest benannte Vaults; fehlen sie, schlägt die erste Copy-Action fehl. `ClusterName` muss **exakt dem Namen des Cluster-Stacks** entsprechen, dieser Schritt setzt den Namen also voraus.
+3. **`ecscluster-vpc-rds-asg`** — der Cluster selbst.
+4. **`ecscluster-vpc-rds-asg/guardduty`** — **nach** dem Cluster, nicht davor: die Quarantine-SG importiert `${ClusterStackName}-Vpc`. Einmal pro Region, nicht pro Cluster.
 5. **`ecsservice`** — pro Anwendung.
 6. Optional: `alb-ecsservice-rule`, `alb-redirect-rule`, `alb-additional-certificate`, `cloudfront-alb-distribution`, `global-accelerator-alb`.
 
-Außerhalb dieser Reihenfolge: **`chatbot-slack`** einmal pro Account (regionsübergreifend, Topic-ARNs als Parameter) und **`efs-access`** ad hoc — deployen, übertragen, löschen.
+Die Reihenfolge ist nur zwischen 3 und 4 durch einen Import erzwungen. Schritt 1 und 2 lassen sich technisch auch nachziehen — dann fehlen aber bis dahin ALB-Logs bzw. die regionsübergreifenden Backup-Kopien.
 
-**Cross-Stack-Kontrakt.** Die Abhängigkeiten laufen ausschließlich über CloudFormation-Exports:
+**Cross-Stack-Kontrakt.** Die Abhängigkeiten laufen bis auf `LogsBucketName` über CloudFormation-Exports:
 
 | Export | Erzeugt von | Genutzt von |
 |---|---|---|
@@ -50,21 +48,20 @@ Außerhalb dieser Reihenfolge: **`chatbot-slack`** einmal pro Account (regionsü
 | `${Cluster}-Efs` | Cluster | `ecsservice` |
 | `${Cluster}-ListenerArnHttp` / `-ListenerArnHttps` | Cluster | `ecsservice`, `alb-ecsservice-rule`, `alb-redirect-rule`, `alb-additional-certificate` |
 | `${Cluster}-LoadbalancerArn` | Cluster | `ecsservice` (Scale-in-Alarm), `global-accelerator-alb` |
-| `${Cluster}-SubnetPrivate1` / `-SubnetPrivate2` | Cluster | weitere RDS/VPN-Konfiguration |
-| `${Cluster}-SgVpcLoadbalancerportsAccess` | Cluster | zusätzliche Instanzen mit ALB-Zugriff |
-| `${Cluster}-WafLogGroupName` / `-WafWebAclArn` | Cluster (ab `1.2.0`) | Auswertung der WAF-Metriken und -Logs |
-| `${Cluster}-Subnet1` / `-Subnet2` | Cluster | `efs-access` (öffentliches Subnetz) |
-| `${Cluster}-DnsFirewallWhitelistId` / `-DnsFirewallRuleGroupId` | Cluster | Phase-2-Whitelist-Updates, Phase-3-Automation |
-| `${Cluster}-InternalListenerArnHttp` | Cluster (ab `1.3.0`) | `ecsservice` via `ListenerArnOverride` (private Services) |
-| `${Cluster}-InternalAlbDns` | Cluster (ab `1.3.0`) | Endpunkt für Consumer im VPC (z. B. WPSolr-Konfiguration) |
-| `${Cluster}-AlertTopicArn` | Cluster (ab `1.1.0`) | `ecsservice` (`AlarmActions`), `guardduty`-Findings-Rule, Phase-3-Step-D-Lambda |
+| `${Cluster}-SubnetPrivate1` / `-SubnetPrivate2` | Cluster | derzeit von keinem Template importiert (für weitere RDS/VPN-Konfiguration) |
+| `${Cluster}-SgVpcLoadbalancerportsAccess` | Cluster | derzeit von keinem Template importiert (zusätzliche Instanzen mit ALB-Zugriff) |
+| `${Cluster}-WebAclArn` | Cluster (ab `1.2.0`) | derzeit von keinem Template importiert (Auswertung der WAF-Metriken) |
+| `${Cluster}-Subnet1` / `-Subnet2` | Cluster | derzeit von keinem Template importiert (öffentliche Subnetze) |
+| `${Cluster}-DnsFirewallWhitelistId` / `-DnsFirewallRuleGroupId` | Cluster | derzeit von keinem Template importiert (vorgesehen für Whitelist-Automation) |
+| `${Cluster}-AlertTopicArn` | Cluster (ab `1.1.0`) | `ecsservice` (`AlarmActions`, `ImageRegressionGuard`); geplant: GuardDuty-Findings-Rule, Quarantäne-Automatik |
+| `${LogsBucket}-BucketName` / `-BucketArn` | `alb-logs-bucket` | Cluster — aber **als Parameter `LogsBucketName` von Hand übergeben**, nicht per `Fn::ImportValue` |
 | `${Service}-TargetGroupArn` | `ecsservice` | `alb-ecsservice-rule` |
-| `${GuardDuty}-DetectorId` / `-QuarantineSgId` / `-IncidentResponseRoleArn` | `guardduty` | Phase-3-Step-D-Automation |
+| `${GuardDuty}-DetectorId` / `-DetectorArn` / `-QuarantineSgId` / `-IncidentResponseRoleArn` | `guardduty` | derzeit von keinem Template importiert (vorgesehen für die Quarantäne-Automatik) |
 | `${Cert}-CertificateArn` | `certificate`, `alb-additional-certificate` | manuelle Zuweisung |
 
-Ein Stack lässt sich nicht löschen, solange ein anderer seine Exports importiert. Beim Entfernen von Exports zuerst prüfen, ob externe Stacks sie referenzieren.
+Ein Stack lässt sich nicht löschen, solange ein anderer seine Exports importiert. Beim Entfernen von Exports zuerst prüfen, ob externe Stacks sie referenzieren. Die Hälfte der Cluster-Exports wird aktuell von keinem Template im Repository importiert — sie sind trotzdem verbindlich, weil außerhalb des Repositories liegende Stacks sie referenzieren können.
 
-> **Fehlender Export: `${Cluster}-SgVpcEfsAccess`.** `efs-access` importiert ihn, der Cluster-Stack exportiert ihn aber **nicht** — der Output fiel beim Juni-Refactor heraus und liegt seit 2026-08-18 als `ecscluster-vpc-rds-asg/efs-access/SgVpcEfsAccess-export.patch` auf Halde. Ohne `git apply` dieses Patches und ein anschließendes Cluster-Update hat der EFS-Mount von `efs-access` **stillschweigend keine Security Group**. Siehe TASKS.md.
+Zwei Cluster-Outputs sind **keine** Exports und damit nicht importierbar, sondern nur über `describe-stacks` lesbar: `WafLogGroupName` und `TemplateVersion`.
 
 ---
 
@@ -72,140 +69,205 @@ Ein Stack lässt sich nicht löschen, solange ein anderer seine Exports importie
 
 ### ecscluster-vpc-rds-asg
 
-Vollständige, eigenständige Infrastruktur für den Betrieb von ECS-Services: VPC mit öffentlichen und privaten Subnetzen über zwei AZs samt NAT Gateway, ECS-Cluster (EC2 Launch Type), Auto Scaling Group mit ECS Managed Scaling, ALB mit HTTP- und HTTPS-Listener, Aurora-MySQL-Cluster, EFS, AWS Backup mit optionaler Regionskopie, Route 53 DNS Firewall, VPC Flow Logs, CloudWatch-Alarme mit gespeicherten Logs-Insights-Queries, ein SNS-Topic für Alarmbenachrichtigungen, ein `REGIONAL` WAF-WebACL am ALB, ab `1.3.0` ein zweiter **interner** ALB für VPC-only-Services und ein Overview-Dashboard.
+Die vollständige Infrastruktur für den Betrieb von ECS-Services — ein Stack pro Region und Umgebung. Alle anderen Templates hängen an seinen Exports.
 
-**Best Practices**
+**Template-Version:** `1.5.0` — Output `TemplateVersion`, kein Export, also nur über `describe-stacks` lesbar.
 
-- **Jedes Stack-Update zeigt vier Zeilen AMI-Kaskade — das ist kein Drift.** `ImageId` ist eine SSM-Dynamic-Reference auf die aktuelle ECS-optimized AMI, die CloudFormation bei jedem Update neu auflöst. Im Change Set erscheinen dann `Launchtemplate` (`DirectModification`, `RequiresRecreation: Never`) und als Folge `Ascalegroup`, `CapacityProvider`, `EcsclusterCapacityProviderAssociation` — die letzten zwei mit `Replacement: Conditional`. Es wird nichts neu erstellt: das Launch Template bekommt eine neue Version, die ASG wird in-place aktualisiert, ihre ARN bleibt stabil. Laufende Instanzen bleiben unberührt, die neue AMI greift erst bei künftigen Launches. Unterscheiden lässt sich das über `ChangeSource` im Change Set: nur `DirectModification` stammt aus dem Template, `ResourceAttribute`/`ResourceReference` sind Folgeänderungen.
-- **`AscalegroupDesSize` auf `0` lassen.** ECS Managed Scaling (Target Capacity 80 %) startet Instanzen, wenn Tasks Kapazität brauchen, und fährt sie wieder herunter. Ein leerer Cluster kostet keine EC2-Stunden.
-- **`EnableEgressAnalysis` ist temporär.** Aktiviert ACCEPT-Mode Flow Logs für die Phase-3-Step-A-Port-Baseline. Fenster 7–14 Tage, danach zurück auf `false` — ACCEPT-Logs werden pro GB abgerechnet und dominieren sonst die Logging-Kosten.
-- **`TemplateVersion`-Output (aktuell `1.3.0`) prüfen, statt Git-Historie zu rekonstruieren:** `aws cloudformation describe-stacks --stack-name <cluster> --query "Stacks[0].Outputs[?OutputKey=='TemplateVersion'].OutputValue" --output text`. Kein Output = Stand vor Einführung des Stempels.
-- **`BackupRetentionPeriod` steht auf 1 Tag.** Automatische Aurora-Snapshots decken damit nur 24 h ab; alles darüber kommt aus dem AWS-Backup-Vault (6h-Rhythmus, 35 Tage).
-- **Alle Log-Gruppen haben 14 Tage Retention (DSGVO).** Das begrenzt jede forensische Analyse auf zwei Wochen — Auswertungen also innerhalb des Fensters fahren, nicht „irgendwann".
-- **DNS Firewall läuft im ALERT-Modus.** Der Catch-all ist hartcodiert auf `ALERT`; die Umstellung auf `BLOCK` ist Phase 4 und braucht zuerst eine vollständige Whitelist (siehe TASKS.md). Registry-Domains nicht vergessen, sonst schlägt der Image-Pull beim nächsten Task-Placement fehl.
-- **Alarme benachrichtigen über genau ein SNS-Topic** (`${AWS::StackName}-alerts`, Export `-AlertTopicArn`). Empfänger über `AlertEmail` setzen; leer erzeugt das Topic ohne Subscription — Alarme publizieren dann ins Leere. Eine `email`-Subscription muss per Link bestätigt werden, CloudFormation meldet währenddessen `CREATE_COMPLETE` (`aws sns list-subscriptions-by-topic` prüfen). Empfänger **nie pro Service** pflegen: jeder `ecsservice`-Stack importiert denselben Export, ein Wechsel ist ein Cluster-Update statt 35 Service-Updates. Der `AWS::SNS::TopicPolicy` ersetzt die Default-Policy, deshalb steht die Owner-Statement dort explizit — und ohne `events.amazonaws.com` liefert die GuardDuty-Findings-Rule stillschweigend nichts. Slack später am selben Topic über AWS Chatbot; eine reine `https`-Subscription auf einen Slack-Webhook funktioniert nicht.
-- **Das WAF-WebACL (`${AWS::StackName}-waf`, Scope `REGIONAL`) hängt direkt am ALB** und schützt alle Services dahinter. Enthalten sind sechs Regeln: die AWS Managed Rule Groups **Common**, **Known Bad Inputs**, **SQLi** und **WordPress**, plus die beiden Rate-Regeln `RateLimitForwardedIp` und `RateLimitSourceIp` (2.000 Requests/IP/5 Min.). Kapazität **1202 von 1500 WCU** — Exclusions und Scope-down-Statements kosten WCU, es bleiben also 298 zu vergeben, nicht 1500. **Nicht** zu verwechseln mit dem WebACL in `cloudfront-alb-distribution`: das hängt an der Distribution, existiert nur in `us-east-1` und prüft ausschließlich Traffic, der tatsächlich über CloudFront läuft.
-- **Jede WAF-Regel hat ihren eigenen `off`/`count`/`block`-Schalter**, Default überall `count` — beim ersten Deploy wird also nichts blockiert. Managed Rules im Block-Modus vor produktivem TYPO3, Matomo und Solr erzeugen False Positives, und ein WAF, das eine Kundenseite zerschießt, wird komplett abgeschaltet. Deshalb pro Regel: eine Woche `CountedRequests` beobachten, dann scharf schalten — dieselbe Reihenfolge wie beim DNS Firewall (ALERT vor BLOCK). **Das Scharfschalten ist eine reine Parameteränderung** (`*Action` von `count` auf `block`), kein Template-Eingriff; da das WebACL im Cluster-Template liegt, zeigt jedes solche Update die übliche AMI-Kaskade — unkritisch, siehe oben. **Regeln nie per `aws wafv2 update-web-acl` scharf schalten:** das ist Drift, die das nächste Stack-Update stillschweigend zurückdreht und die Durchsetzung damit unbemerkt abschaltet — dieselbe Falle wie beim hartcodierten DNS-Firewall-Catch-all.
-- **Achtung Cloudflare:** Einige Sites laufen proxied über Cloudflare, andere direkt. Deshalb `WafClientIpHeader=cf-connecting-ip` setzen (kleingeschrieben, wird per `AllowedPattern` erzwungen): dann greift `RateLimitForwardedIp` für Requests **mit** Header und `RateLimitSourceIp` für die **ohne**, jeweils per Scope-down getrennt. Ohne den Header aggregieren alle proxied Requests auf Cloudflares eigene Adressen — `RateLimitAction=block` würde Cloudflare für **alle** dahinterliegenden Sites aussperren. **Ein Header ist nur so vertrauenswürdig wie der Netzwerkpfad:** solange der ALB direkt erreichbar ist, kann `cf-connecting-ip` gefälscht werden und umgeht damit Rate-Limit und IP-Allowlist — `SgPublicHttpHttps` vorher auf die Cloudflare-Ranges einschränken.
-- **Der Regelsatz wurde am 2026-08-20 von elf auf sechs Regeln gekürzt** — nur Generisches bleibt. Entfernt samt ihrer `*Action`-Parameter: die PHP-Gruppe, die IP-Reputation-Gruppe, die Admin-Pfad-IP-Beschränkung (`WafAdminAllowedCidrs`) und zwei WordPress-spezifische Eigenregeln. Von acht Action-Parametern bleiben fünf. Begründungen, Re-Evaluierungskriterien und die Promotion-Reihenfolge in TASKS.md.
-- **Login-Endpunkte sind nicht geschützt — eine Lücke, die es schon vor der Kürzung gab.** Die Signatur-Gruppen prüfen den Request-*Inhalt*, und ein Login-POST mit falschem Passwort ist ein völlig regulärer Request; das allgemeine Rate-Limit greift erst bei 2.000 Requests pro IP und 5 Minuten, ein Botnet mit 300 Versuchen/Minute bleibt darunter. Optionen in TASKS.md.
-- **WAF-Logs enthalten den vollständigen Request.** `authorization` und `cookie` sind als `RedactedFields` konfiguriert, sonst landen Session-Tokens in der Log-Gruppe. Der Name der Log-Gruppe **muss** mit `aws-waf-logs-` beginnen, sonst lehnt WAF die Logging-Konfiguration ab; `LogDestinationConfigs` erwartet die ARN **ohne** das abschließende `:*`, das `Fn::GetAtt` liefert. Außerdem braucht die Log-Gruppe eine **Resource Policy** für `delivery.logs.amazonaws.com` (`WafLogDeliveryPolicy`) — die Konsole legt sie implizit an, CloudFormation nicht, und ohne sie scheitert `PutLoggingConfiguration` oder es kommen einfach keine Logs an. CloudWatch-Logs-Resource-Policies sind account-weit pro Region und auf 10 begrenzt: eine pro Cluster ist unkritisch, aber nicht beliebig vervielfachen.
-- **Ein ALB kann nur ein WebACL tragen.** Wurde je eines manuell angehängt, kollidiert die Association — vorher `aws wafv2 get-web-acl-for-resource --resource-arn <alb-arn>` prüfen.
-- **`WafBlockedRequestAlarmThreshold` im selben Deploy setzen wie die erste `block`-Promotion.** Bei `0` ist die Condition `WafBlockedRequestAlarmEnabled` falsch und die Alarm-Ressource wird **gar nicht erst angelegt** — der erste echte Block wäre unsichtbar. Vorher setzen bringt nichts (im Count-Modus wird nichts blockiert, der Alarm bliebe still und würde Sicherheit vortäuschen), hinterher setzen lässt ein Fenster offen. Der Alarm ist pro `Rule` dimensioniert, benennt also die auslösende Regel — das unterscheidet einen Angriff von einer fehlzündenden Regel.
-- Solr ist damit **nicht** geschützt: die Regelgruppen zielen auf PHP-Anwendungen, Solr ist Java. Siehe TASKS.md.
-- **RDS-Logs:** `error` und `slowquery` werden nach CloudWatch exportiert, Schwelle ist `long_query_time` (Engine-Default 10 s). Für einen vollständigen Query-Trace `long_query_time = 0` setzen (dynamisch, kein Reboot) — dann aber `RdsSlowQueryAlarm` (>5/5 Min.) vorübergehend anheben, sonst ist er sofort rot. Der General Log ist keine bessere Wahl: gleiche Statements, aber ohne `Query_time`/`Rows_examined`. Ergebniszeilen enthält keines der beiden Logs. `RdsErrorAlarm` hat Threshold `0` und feuert bei **jedem** `[ERROR]`-Eintrag — mit angeschlossener Benachrichtigung die wahrscheinlichste Rauschquelle, nach dem ersten Deploy beobachten.
+> **Das Template ist zu groß für einen Inline-Deploy.** CloudFormation nimmt per `--template-body` höchstens 51.200 Byte; dieses Template liegt weit darüber. Deploys laufen deshalb über S3 (`--template-url`) oder die Konsole, die den Upload selbst übernimmt.
 
-**EFS-Restore**
+#### Netzwerk
 
-AWS Backup sichert das EFS alle 6 h (35 Tage, `${Cluster}-BackupVault`) und wöchentlich (365 Tage, `${Cluster}-BackupLongTermVault`). Der schnellste Weg nutzt die Instanzrolle mit `AmazonSSMManagedInstanceCore`: kein neues Dateisystem, kein Mount-Target, kein Bastion — und da kein Port-22-Ingress existiert, ist SSM ohnehin der einzige Shell-Zugang. Die **Wurzel** des Dateisystems wird dabei **von Hand** gemountet. Die UserData hat das früher automatisch getan; das wurde bewusst entfernt, damit auf einer kompromittierten Instanz (Container-Ausbruch) nicht dauerhaft ein Root-Mount mit den Daten *aller* Services bereitliegt. `amazon-efs-utils` ist im ECS-optimierten AMI enthalten, der Mount gelingt also jederzeit ohne Installation.
+- DHCP-Options setzen hartcodiert `DomainName: ec2.internal` — das ist die `us-east-1`-Schreibweise, außerhalb heißt die Zone `<region>.compute.internal`. Relevant beim Pflegen der DNS-Firewall-Whitelist.
 
-1. Recovery Point wählen: `aws backup list-recovery-points-by-backup-vault --backup-vault-name <cluster>-BackupVault`
-2. Restore starten (Konsole ist am einfachsten): *Item-level* mit bis zu 5 relativen Pfaden (`/<service-stack-name>` = die `RootDirectory`, die jeder `ecsservice`-Stack mountet) oder *Full*. Ziel: **existierendes Dateisystem**, nicht ein neues.
-3. Restore-Rolle: **Default role**. `BackupRole` aus dem Template kann nicht restoren (nur `...ForBackup`, kein `...ForRestores`).
-4. Zugriff: `aws ssm start-session --target <instance-id>`, dann die EFS-Wurzel temporär mounten und den Restore suchen:
-   ```
-   sudo mkdir -p /mnt/efs
-   sudo mount -t efs -o tls <fs-id>:/ /mnt/efs   # <fs-id> = Export ${Cluster}-Efs
-   sudo ls /mnt/efs/aws-backup-restore_*
-   ```
-5. Nach getaner Arbeit wieder aushängen: `sudo umount /mnt/efs`. Der Mount ist absichtlich nicht in `/etc/fstab` und überlebt einen Reboot nicht.
+#### Datenbank — Aurora MySQL
 
-AWS Backup überschreibt beim EFS-Restore nie, sondern legt immer ein neues Verzeichnis `aws-backup-restore_<timestamp>/` in der Wurzel an — der Restore ist zerstörungsfrei. Verzeichnis danach löschen, es kostet EFS-Storage.
+- **TLS erzwungen** (`require_secure_transport = ON`), Storage verschlüsselt, nicht öffentlich erreichbar.
+- **Backup:** `BackupRetentionPeriod` hartcodiert auf **1 Tag** — automatische Aurora-Snapshots decken nur 24 h ab, alles darüber kommt aus AWS Backup (siehe unten).
+- `slow_query_log = 1`, Schwelle ist `long_query_time` (Engine-Default 10 s). Für einen vollständigen Trace `long_query_time = 0` setzen (dynamisch) — dann `RdsSlowQueryAlarm` vorübergehend anheben.
 
-- Bei `AscalegroupDesSize=0` und leerem Cluster gibt es keine Instanz zum Verbinden — Desired temporär auf 1 setzen.
-- Ein Recovery Point aus dem `eu-north-1`-Mirror lässt sich nicht direkt in die Quellregion restoren; erst zurückkopieren. Der Mirror ist für Regionsverlust, nicht für Bequemlichkeit.
-- **Daten nicht durch den SSM-Tunnel herunterladen** — der ist ein Control Channel (ein gerahmter WebSocket über den SSM-Service) und für Bulk-Transfer ungeeignet; es gibt keinen Durchsatz-Regler. Für Downloads ist `efs-access` der vorgesehene Weg, **weil dabei keine Kopie der Daten außerhalb des EFS entsteht**.
-- **Der Weg über S3 ist die Notfalloption, nicht die Regel:** `sudo tar -C /mnt/efs/aws-backup-restore_<ts>/<stack> -cf - . | zstd -T0 -3 | aws s3 cp - s3://<bucket>/restore/<stack>.tar.zst` (temporäre `s3:PutObject`-Policy auf `<cluster>-Instancerole`, lokal per Multipart abholen). `tar` bündelt viele kleine Dateien zu einem Stream — auf EFS meist der eigentliche Engpass. **Er erzeugt aber eine zweite Kopie personenbezogener Daten** mit eigener Zugriffsfläche und Aufbewahrung, ist also ein DSGVO-Datenminimierungsproblem und im VVT zu berücksichtigen. Wenn unvermeidbar: SSE-KMS mit eigenem CMK, Block Public Access, Lifecycle-Expiry auf 1 Tag. Ohne S3-Gateway-Endpoint läuft der Upload zusätzlich über das NAT Gateway und kostet Data Processing.
-- Ist EFS der Engpass, `ThroughputMode` und `BurstCreditBalance` prüfen — aufgebrauchtes Guthaben deckelt auf ~50 KiB/s pro GiB. `t3.small` limitiert Netz und EBS zusätzlich; für große Restores lohnt eine temporäre größere Instanz mit `SgVpcEfsAccess` (`EC2InstanceType` nicht ändern, dort sind nur `t3.small`/`t3.micro` erlaubt).
-- Sollen die Daten nur zurück in ein Service-Verzeichnis: `sudo cp -a /mnt/efs/aws-backup-restore_<ts>/<stack>/… /mnt/efs/<stack>/…` bleibt komplett innerhalb EFS.
+#### Dateisystem — EFS
+
+- **TLS beim Mount** — jeder Service mountet über die Task Definition mit `TransitEncryption: ENABLED`; Storage verschlüsselt.
+- **Backup:** derselbe Plan wie RDS (siehe unten), EFS und RDS hängen als zwei Selections am selben Plan.
+
+#### Backup
+
+- **Zwei Regeln, beide auf EFS *und* RDS:** alle 6 h ab `00:30 UTC` → 35 Tage (`${Stack}-BackupVault`); sonntags `05:00 UTC` → 365 Tage (`${Stack}-BackupLongTermVault`).
+- **Mirror-Copy in die Zielregion** für beide Regeln, Ziel-Vaults `…-Mirror`. Die legt dieser Stack **nicht** an — dafür ist `backup-vaults-mirror`, deployt **vor** dem Cluster.
+
+#### DNS Firewall
+
+- Zwei Regeln: Whitelist `ALLOW` (Prio 100), Catch-all `*` **`ALERT`** (Prio 200). **Es wird nichts blockiert, nur protokolliert.** Die Umstellung auf `BLOCK` ist ein Template-Eingriff, kein Parameter.
+- **Wildcards matchen nur eine Ebene:** `*.example.com` trifft `foo.example.com`, nicht `foo.bar.example.com`.
+- Auswertung: Log-Gruppe `${Stack}-DnsFirewallLogs`, Metrik `AlertedQueries`, Alarm `${Stack}-dns-firewall-alert-surge`, Query `DnsFireWallLogsSummary`.
+- Parameter: `DnsFirewallWhitelistDomains` (Kommaliste, darf nicht leer sein).
+
+#### VPC Flow Logs
+
+- **Ein Flow Log auf VPC-Ebene nach CloudWatch, `TrafficType: REJECT`** — nur abgelehnte Verbindungen. `ALL` erzeugt ein Vielfaches an Volumen und Kosten und liefert für die Portscan-Erkennung nichts dazu.
+- **`EnableEgressAnalysis=true` legt einen zweiten Flow Log im ACCEPT-Modus an** (eigene Log-Gruppe und eigene Rolle) — die Grundlage für die Egress-Port-Baseline der SG-Härtung. Temporär gedacht: nach 7–14 Tagen zurück auf `false`, ACCEPT-Logs werden pro GB abgerechnet.
+- Auswertung: Metrik `RejectedConnections`, Alarm `${Stack}-vpc-rejected-surge`, Query `VpcFlowLogsRejectedTraffic`, dazu das einzige Alarm-Widget auf dem Dashboard. Der ACCEPT-Log wird nur von `VpcEgressPortsAnalysis` gelesen, nicht alarmiert.
+- Parameter: `EnableEgressAnalysis` (`false`).
+
+#### WAF
+
+Ein `REGIONAL` WebACL am ALB (`DefaultAction: Allow`), schützt alle Services dahinter. Nicht zu verwechseln mit dem WebACL in `cloudfront-alb-distribution`.
+
+| Prio | Regel | Action-Parameter | Prüft |
+|---|---|---|---|
+| 20 | `AWSManagedRulesCommonRuleSet` | `CommonRuleSetAction` | XSS, Path Traversal, fehlerhafte Requests, schlechte User Agents — häufigste False-Positive-Quelle auf TYPO3/Matomo |
+| 30 | `AWSManagedRulesKnownBadInputsRuleSet` | `KnownBadInputsAction` | Payloads breit ausgenutzter CVEs (Log4Shell, Java-Deserialisierung) |
+| 40 | `AWSManagedRulesSQLiRuleSet` | `SqliRuleSetAction` | SQL-Injection |
+| 50 | `AWSManagedRulesWordPressRuleSet` | `WordPressRulesAction` | WordPress-Signaturen |
+| 90 | `RateLimitForwardedIp` | `RateLimitAction` | Rate-Limit auf den Client-IP-Header; existiert nur mit `WafClientIpHeader` |
+| 91 | `RateLimitSourceIp` | `RateLimitAction` | Rate-Limit auf die Source IP |
+
+- **Fünf `off`/`count`/`block`-Schalter für sechs Regeln** (beide Rate-Regeln teilen `RateLimitAction`), Default überall `count` — **beim ersten Deploy wird nichts blockiert.** Promotion pro Regel: eine Woche `CountedRequests` lesen, dann auf `block`.
+- **`RateLimitAction=block` ohne `WafClientIpHeader` lehnt CloudFormation ab** (`Rules`-Sektion `WafRateLimitNeedsClientIpHeader`). Grund: bei proxied Sites aggregieren sonst alle Requests auf Cloudflares Adressen und ein Block sperrt Cloudflare für alle Sites aus. Der Header ist nur vertrauenswürdig, solange der ALB nicht direkt erreichbar ist — sonst fälschbar.
+- **Logging:** vollständige Requests nach `aws-waf-logs-${Stack}-waf`, `authorization` und `cookie` redigiert. Retention **14 Tage, festverdrahtet** wie bei allen Log-Gruppen — nicht parametrisierbar.
+- **Ein ALB kann nur ein WebACL tragen.** Dieses Template hängt seines per `WafWebAclAssociation` direkt an den Loadbalancer. Wurde je eines manuell angehängt, kollidiert die Association und das Stack-Update scheitert — vorher `aws wafv2 get-web-acl-for-resource --resource-arn <alb-arn>` prüfen.
+- Weitere Parameter: `WafRateLimitRequests` (`2000`), `WafClientIpHeader` (leer; zwingend kleingeschrieben).
+
+#### Logs
+
+Sechs CloudWatch-Log-Gruppen plus die ALB Access Logs in S3. **Alle auf 14 Tage Retention festverdrahtet (DSGVO)** — keine ist per Parameter einstellbar, jede Analyse ist damit auf zwei Wochen begrenzt.
+
+**Ansehen:** Konsole → CloudWatch → Logs → Log groups.
+
+| Log-Gruppe | Was drinsteht | Wozu | Parameter |
+|---|---|---|---|
+| `${Stack}-VpcFlowLogs` | abgelehnte VPC-Verbindungen (**nur `REJECT`**) | Portscans, falsch konfigurierte Services. `ALL` erzeugt ein Vielfaches an Volumen und Kosten und liefert für diesen Zweck nichts dazu | — |
+| `${Stack}-VpcAcceptFlowLogs` | erlaubte VPC-Verbindungen (`ACCEPT`) | temporäre Egress-Port-Baseline für die SG-Härtung. **Nach 7–14 Tagen wieder aus** — wird pro GB abgerechnet | `EnableEgressAnalysis` (`false`) legt Log + Gruppe an |
+| `${Stack}-DnsFirewallLogs` | alle DNS-Anfragen aus der VPC inkl. Firewall-Aktion | Whitelist-Kandidaten sammeln, unerwartete Ziele erkennen | — |
+| `/aws/rds/cluster/<Rdscl>/error` | Aurora Error Log | DB-Fehler | — |
+| `/aws/rds/cluster/<Rdscl>/slowquery` | Aurora Slow Query Log (über `long_query_time`) | langsame Statements mit `Query_time`/`Rows_examined` | Schwelle über den DB-Parameter, nicht über den Stack |
+| `aws-waf-logs-${Stack}-waf` | vollständige Requests, `authorization`/`cookie` redigiert | nachvollziehen, welche Regel warum getroffen hat | — |
+| S3 `<LogsBucket>/<Stack>/` | ALB Access Logs | Statuscodes und URLs — die Nachverfolgung für alle HTTP-Alarme | `LogsBucketName` (leer = aus) |
+
+##### Gespeicherte Queries zu diesen Logs
+
+Für die typischen Fragen liegen fünf Logs-Insights-Queries im Stack — Konsole → CloudWatch → Logs Insights → *Queries*. Jede bringt ihre Log-Gruppe und ein passendes Zeitfenster schon mit:
+
+| Query | Fenster | Zweck |
+|---|---|---|
+| `VpcEgressPortsAnalysis` | 7 Tage | Ziel-Ports und Volumen ausgehender Verbindungen (braucht `EnableEgressAnalysis=true`) |
+| `DnsFireWallLogsSummary` | 14 Tage | ALERT-Domains nach Häufigkeit — die Whitelist-Kandidatenliste |
+| `VpcFlowLogsRejectedTraffic` | 1 Stunde | abgelehnte Verbindungen nach Quell-IP und Ziel-Port |
+| `RdsErrorLogSummary` | 24 Stunden | `[ERROR]`- und `[Warning]`-Zeilen |
+| `RdsSlowQuerySummary` | 24 Stunden | Slow Queries nach `Query_time` sortiert |
+
+##### Vom Logeintrag zum Alarm
+
+Vier **Metric Filter** zählen passende Zeilen und schreiben sie als Metrik fort — erst dadurch wird ein Log alarmierbar: `${Stack}-DnsFirewallLogs` → `AlertedQueries`, `${Stack}-VpcFlowLogs` → `RejectedConnections`, RDS Error Log → `ErrorCount`, RDS Slow Query Log → `SlowQueryCount`. Diese vier Metriken tragen die ersten vier Alarme unten; die sechs WAF-Alarme lesen dagegen direkt die Metriken aus `AWS/WAFV2`.
+
+#### Alarme
+
+Zehn Alarme, alle nach demselben Muster: **Summe über 5 Minuten, eine Auswertungsperiode, `notBreaching` bei fehlenden Daten.** Keine Dauer- oder Trendalarme.
+
+**Jeder hat einen `off`/`dashboard`/`alert`-Schalter, Default überall `dashboard`:**
+
+- `off` — Alarm wird nicht angelegt.
+- `dashboard` — Alarm existiert, Zustand und History laufen, aber `ActionsEnabled: false`: **keine Benachrichtigung**. Der Zustand zum Kalibrieren, ohne die Historie wegzuwerfen.
+- `alert` — publiziert zusätzlich ins Cluster-Topic.
+
+**Konsequenz: nach einem frischen Deploy benachrichtigt der Cluster-Stack niemanden.** Einzelne Alarme bewusst auf `alert` heben, sobald ihre Schwelle gegen echten Traffic gelesen wurde — sinnvoll zuerst bei `KnownBadInputs` und `SQLi` (leise und aussagekräftig), nicht bei `CommonRuleSet` (Grundrauschen).
+
+| Alarm (Name in der Konsole) | Was er misst | Schwelle | Wozu | Parameter |
+|---|---|---|---|---|
+| `${Stack}-dns-firewall-alert-surge` | DNS-Anfragen mit Firewall-Aktion `ALERT` | `100` | Sprung = unerwarteter externer Zugriff → `DnsFireWallLogsSummary` | `DnsFirewallAlarmAction` / `…AlarmThreshold` |
+| `${Stack}-vpc-rejected-surge` | abgelehnte VPC-Verbindungen | `500` | Portscan oder kaputte Service-Konfiguration → `VpcFlowLogsRejectedTraffic` | `VpcFlowLogsAlarmAction` / `…AlarmThreshold` |
+| `${Stack}-rds-error` | `[ERROR]`-Zeilen im Aurora Error Log | `0` | feuert bei **jedem** Eintrag — die lauteste Quelle, erst beobachten. Hochsetzen verschluckt Datenbankfehler | `RdsErrorAlarmAction` / `…AlarmThreshold` |
+| `${Stack}-rds-slow-queries` | Slow-Query-Zeilen | `5` | mehr als fünf langsame Queries/5 Min. Bei `long_query_time = 0` vorübergehend anheben | `RdsSlowQueryAlarmAction` / `…AlarmThreshold` |
+| `${Stack}-AlarmWafCommonRuleSet` | WAF-Treffer dieser Regel | `300` | mit Abstand die trefferstärkste Regel — eine niedrige Schwelle wäre dauerhaft rot | `CommonRuleSetAlarmAction` / `…AlarmThreshold` |
+| `${Stack}-AlarmWafKnownBadInputs` | WAF-Treffer dieser Regel | `50` | sollte auf legitimem Traffic fast still sein — ein Anstieg ist das interessanteste Signal der fünf | `KnownBadInputsAlarmAction` / `…AlarmThreshold` |
+| `${Stack}-AlarmWafSQLi` | WAF-Treffer dieser Regel | `20` | die leiseste Managed-Gruppe — verträgt eine enge Schwelle | `SqliRuleSetAlarmAction` / `…AlarmThreshold` |
+| `${Stack}-AlarmWafWordPress` | WAF-Treffer dieser Regel | `20` | ähnlich leise wie SQLi | `WordPressRulesAlarmAction` / `…AlarmThreshold` |
+| `${Stack}-AlarmWafRateLimitSourceIp` | WAF-Treffer dieser Regel | `10` | schlägt praktisch nie an, solange das Limit nicht gesenkt wird | `RateLimitAlarmAction` / `…AlarmThreshold` |
+| `${Stack}-AlarmWafRateLimitForwardedIp` | WAF-Treffer dieser Regel | `10` | wie oben; existiert nur mit `WafClientIpHeader` | dieselben — beide Rate-Alarme teilen Schalter und Schwelle |
+
+- **Jeder Alarm hat neben dem Schalter auch einen Schwellenparameter** (`…AlarmThreshold`), die Defaults stehen oben. Einzige Ausnahme: die beiden Rate-Limit-Alarme teilen sich `RateLimitAlarmThreshold`, wie schon ihre Regel. Kalibrieren endet damit überall in einer Parameteränderung, nicht in einem Template-Eingriff.
+- **`RdsErrorAlarmThreshold` ist der einzige, der `0` erlaubt** — und `0` ist dort der eigentliche Zweck: jede `[ERROR]`-Zeile schlägt an. Alle anderen beginnen bei `1`.
+- **Jeder WAF-Alarm folgt dem Modus seiner Regel:** `CountedRequests` solange sie zählt, `BlockedRequests` sobald sie blockt. Dieselbe Schwelle gilt vor und nach der Promotion.
+- **Ansehen:** Konsole → CloudWatch → Alarms (auch die `dashboard`-Alarme stehen dort mit Zustand und History). Die Alarme der Service-Stacks liegen in `ecsservice`, benachrichtigen aber über dasselbe Topic.
+
+#### Benachrichtigung und Dashboard
+
+- **Ein SNS-Topic pro Cluster** (`${Stack}-alerts`, Export `-AlertTopicArn`) — für Cluster- *und* Service-Alarme. Empfänger nie pro Service pflegen: ein Wechsel ist ein Cluster-Update statt eines Updates je Service.
+- `AlertEmail` leer = Topic ohne Subscription, Alarme publizieren ins Leere. Die `email`-Subscription muss per Link bestätigt werden, während CloudFormation schon `CREATE_COMPLETE` meldet (`aws sns list-subscriptions-by-topic` prüfen).
+- **Slack ist nicht angebunden** — es gibt kein `chatbot-slack`-Template im Repository (Stand und Alternativen in [TASKS.md](TASKS.md)). Eine reine `https`-Subscription auf einen Slack-Webhook funktioniert nicht.
+- **Dashboard `${Stack}-Overview`** (CloudWatch → Dashboards), 3-Stunden-Fenster, vier Widgets: ECS-CPU und -Memory je Service (per `SEARCH()`, neue Services erscheinen automatisch), RDS-CPU/-Connections, abgelehnte VPC-Verbindungen mit eingezeichneter Schwelle. **WAF und DNS Firewall haben keine Widgets.**
+
+#### Löschverhalten
+
+- **Keine einzige Ressource im Template trägt eine `DeletionPolicy`.** Ein `delete-stack` löscht damit **RDS-Cluster und EFS samt Daten**, ohne finalen Snapshot. Die Backup-Vaults überleben, aber der Weg zurück ist ein Restore, kein Rollback. (Offener Punkt in TASKS.md: `Snapshot` für RDS, `Retain` für EFS.)
+- **Die ALB Deletion Protection blockiert das Löschen** und muss vorher manuell abgeschaltet werden — der einzige eingebaute Bremsklotz.
 
 ---
 
 ### ecscluster-vpc-rds-asg/alb-logs-bucket
 
-S3-Bucket für ALB-Zugriffslogs (`${ClusterName}-alb-logs`), separat vom Cluster deployt.
+S3-Bucket für ALB-Zugriffslogs, separat vom Cluster deployt. Ein Bucket pro Region, den sich alle Cluster-Stacks dieser Region teilen — jeder schreibt unter seinem eigenen Prefix.
 
-**Abhängigkeiten:** keine. Output `BucketName` wird als `LogsBucketName` in den Cluster-Stack übergeben.
+**Abhängigkeiten:** keine Imports. Exportiert `BucketName` und `BucketArn`; `BucketName` wird als `LogsBucketName` in den Cluster-Stack übergeben. Template-Version `1.0.0`.
 
-**Best Practices**
+| Parameter | Default | Wirkung |
+|---|---|---|
+| `ClusterName` | — | der Bucket heißt `<ClusterName>-alb-logs` |
+| `RetentionDays` | `14` | Tage bis zur endgültigen Löschung der Log-Objekte |
 
 - **Separater Stack mit Absicht.** `DeletionPolicy: Retain` und `UpdateReplacePolicy: Retain` — CloudFormation löscht den Bucket nie, auch nicht beim Löschen des Stacks. So lässt sich der Cluster iterieren, ohne den Audit-Trail zu riskieren.
-- **Lifecycle deckt alle drei Fälle ab:** `DeleteLogs` (aktuelle Versionen nach `RetentionDays`, Default 14, plus `NoncurrentVersionExpiration` nach 1 Tag), `CleanupDeleteMarkers` und `AbortIncompleteMultipartUploads` nach 7 Tagen. Ohne die Noncurrent-Regel würde der Bucket trotz Versionierung unbegrenzt wachsen und die DSGVO-Obergrenze aushebeln.
-- **Bucket-Policy ist regionsgebunden** (ELB-Log-Delivery-Service-Principal). Pro Region ein Bucket.
-- ALB-Logging ist kein Selbstläufer: `access_logs.s3.enabled` kann `true` sein, während die Lieferung an der Bucket-Policy scheitert. Nach dem Aktivieren prüfen, ob unter `<prefix>/AWSLogs/<account>/elasticloadbalancing/<region>/` tatsächlich Objekte auftauchen.
+- **Lifecycle deckt alle drei Fälle ab:** `DeleteLogs` (aktuelle Versionen nach `RetentionDays`, dazu `NoncurrentVersionExpiration` nach 1 Tag), `CleanupDeleteMarkers` und `AbortIncompleteMultipartUploads` nach 7 Tagen. Ohne die Noncurrent-Regel würde der Bucket trotz Versionierung unbegrenzt wachsen und die DSGVO-Obergrenze aushebeln.
+- **Bucket-Policy ist regionsgebunden** — sie erlaubt dem Service-Principal `logdelivery.elasticloadbalancing.amazonaws.com` (die Form seit August 2022) das Schreiben unter `AWSLogs/<account-id>/*`. Deshalb pro Region ein Bucket.
+- **Verschlüsselung ist SSE-S3 (AES256), nicht KMS — und das ist kein Versäumnis.** ALB-Log-Delivery unterstützt kein KMS. Wer den Bucket „härtet" und auf SSE-KMS umstellt, bricht die Lieferung **stillschweigend**: der ALB meldet keinen Fehler, es kommen nur keine Objekte mehr an.
+- **ALB-Logging ist kein Selbstläufer:** `access_logs.s3.enabled` kann `true` sein, während die Lieferung an der Bucket-Policy scheitert. Nach dem Aktivieren prüfen, ob unter `<prefix>/AWSLogs/<account>/elasticloadbalancing/<region>/` tatsächlich Objekte auftauchen.
 
 ---
 
 ### ecscluster-vpc-rds-asg/guardduty
 
-GuardDuty Detector, Quarantine Security Group (null Egress-Regeln) und Incident-Response-IAM-Rolle. Grundlage für Phase 1 und Phase 3 Step D.
+GuardDuty Detector, Quarantine Security Group (null Egress-Regeln) und Incident-Response-IAM-Rolle. Der Detector läuft; Findings-Zustellung und Quarantäne-Automatik sind offen (TASKS.md).
 
-**Abhängigkeiten:** importiert `${ClusterStackName}-Vpc` für die Quarantine-SG — **muss also nach dem Cluster deployt werden.** Exportiert `DetectorId`, `DetectorArn`, `QuarantineSgId`, `IncidentResponseRoleArn`.
+**Abhängigkeiten:** importiert `${ClusterStackName}-Vpc` für die Quarantine-SG — **muss also nach dem Cluster deployt werden.** Exportiert `DetectorId`, `DetectorArn`, `QuarantineSgId`, `IncidentResponseRoleArn`. Template-Version `1.0.0`.
 
-**Best Practices**
+| Parameter | Default | Wirkung |
+|---|---|---|
+| `ClusterStackName` | — | Quelle des VPC-Imports für die Quarantine-SG |
+| `ClusterName` | — | **nur Tagging und Wiedererkennung** — schränkt nichts ein, der Detector gilt für die ganze Region |
+| `FindingPublishingFrequency` | `FIFTEEN_MINUTES` | `SIX_HOURS` ist billiger, aber für zeitnahe Reaktion untauglich |
 
-- **Ein Stack pro Region, nicht pro Cluster.** GuardDuty erlaubt genau einen Detector pro Account und Region. Läge er im Cluster-Template, würde das Löschen eines Cluster-Stacks die Threat Detection der gesamten Region abschalten. Vor dem Deployment prüfen: `aws guardduty list-detectors` — existiert schon einer, schlägt die Erstellung fehl.
+- **Ein Stack pro Region, nicht pro Cluster.** GuardDuty erlaubt genau einen Detector pro Account und Region. Läge er im Cluster-Template, würde das Löschen eines Cluster-Stacks die Threat Detection der gesamten Region abschalten. Vor dem Deployment prüfen: `aws guardduty list-detectors` — existiert schon einer, schlägt die Erstellung fehl. Dass `ClusterName` und `ClusterStackName` nach Cluster-Bindung aussehen, ändert daran nichts.
 - **`--capabilities CAPABILITY_NAMED_IAM` ist erforderlich** (die Incident-Response-Rolle hat einen expliziten `RoleName`).
 - **Nach dem Deployment die Data Sources verifizieren:** `CLOUD_TRAIL`, `DNS_LOGS`, `FLOW_LOGS` müssen `ENABLED` sein. GuardDuty liest diese Streams aus AWS-internen Kopien, nicht aus unseren Log-Gruppen — Detection funktioniert also auch dort, wo unser Flow Log nur `REJECT` erfasst.
 - **Findings-Pipeline mit Sample-Findings testen:** `aws guardduty create-sample-findings --detector-id <id> --finding-types Recon:EC2/PortProbeUnprotectedPort`, dann `list-findings` (Propagation dauert 1–2 Minuten) und anschließend `archive-findings`, damit die Testdaten das echte Signal nicht verwässern.
-- **Findings benachrichtigen aktuell niemanden** — sie stehen nur in der Konsole (offener Punkt in TASKS.md).
-- **Runtime Monitoring ist aus.** Der Detector läuft mit ungesetztem `Features`, `RUNTIME_MONITORING` also `DISABLED`. Damit wird nichts erfasst, was *innerhalb* eines Containers passiert: eine dort geschriebene Datei ist für Flow Logs, DNS Logs und CloudTrail unsichtbar, und die Writable Layer verschwindet beim nächsten Deployment. Anders als der Basis-Detector wird Runtime Monitoring **pro vCPU-Stunde** abgerechnet — vor dem Aktivieren die Usage-Seite prüfen (Bewertung offen, siehe TASKS.md).
+- **Findings benachrichtigen aktuell niemanden** — sie stehen nur in der Konsole. Es gibt keine EventBridge-Regel zum Alert-Topic (offener Punkt in TASKS.md).
+- **Runtime Monitoring ist aus.** Der Detector läuft mit ungesetztem `Features`, `RUNTIME_MONITORING` also `DISABLED`. Damit wird nichts erfasst, was *innerhalb* eines Containers passiert: eine dort geschriebene Datei ist für Flow Logs, DNS Logs und CloudTrail unsichtbar, und die Writable Layer verschwindet beim nächsten Deployment. Anders als der Basis-Detector wird Runtime Monitoring **pro vCPU-Stunde** abgerechnet.
 - Root-Console-Zugriffe erzeugen wiederkehrend `Policy:IAMUser/RootCredentialUsage`. Eine IAM-Identität für den Account-Inhaber hält das Signal sauber.
 
 ---
 
 ### ecscluster-vpc-rds-asg/backup-vaults-mirror
 
-Backup-Vaults in der Zielregion für regionsübergreifende Kopien: `${ClusterName}-BackupVault-Mirror` und `${ClusterName}-BackupLongTermVault-Mirror`.
+Zwei Backup-Vaults in der Zielregion, in die der Cluster seine Recovery Points kopiert: `${ClusterName}-BackupVault-Mirror` und `${ClusterName}-BackupLongTermVault-Mirror`.
 
-**Best Practices**
+**Abhängigkeiten:** keine Imports, keine Exports, **kein `TemplateVersion`-Output** — anders als Cluster, `ecsservice`, `guardduty` und `alb-logs-bucket` lässt sich der Stand dieses Stacks nicht abfragen (offener Punkt in TASKS.md).
 
-- In der **Zielregion** deployen (`BackupCopyDestinationRegion` des Clusters, Default `eu-north-1`), bevor Kopien erwartet werden — sonst schlagen die Copy-Actions des Backup-Plans fehl.
+| Parameter | Default | Wirkung |
+|---|---|---|
+| `ClusterName` | — | Namenspräfix beider Vaults; **muss der Cluster-Stackname sein** |
+
+- **`ClusterName` ist der Name des Cluster-*Stacks*, nicht ein freier Bezeichner.** Der Cluster baut die Ziel-ARN der Copy-Action aus seinem eigenen `${AWS::StackName}` zusammen (`arn:aws:backup:<Zielregion>:<Account>:backup-vault:<Cluster-Stackname>-BackupVault-Mirror`). Weicht der Name ab, existiert der Vault unter falschem Namen und die Copy-Actions schlagen fehl — die täglichen Backups selbst laufen weiter, nur die Regionskopie fehlt.
+- **In der Zielregion und vor dem Cluster deployen** (`BackupCopyDestinationRegion` des Clusters, Default `eu-north-1`). Der 6h-Plan startet um `00:30 UTC`, der Wochenplan sonntags um `05:00 UTC`; ab dem ersten Lauf werden beide Vaults erwartet.
+- **Ein leerer `BackupCopyDestinationRegion` am Cluster schaltet die Kopien ganz ab** (Condition `EnableCrossRegionCopy`) — dann wird dieser Stack nicht gebraucht.
 - Der Mirror ist für Regionsverlust. Ein Restore daraus in die Quellregion braucht erst eine Rückkopie des Recovery Points.
-
----
-
-### ecscluster-vpc-rds-asg/efs-access
-
-Temporärer SFTP-Zugang zum EFS des Clusters: EC2-Instanz im öffentlichen Subnetz mit Public IP, EFS unter `/mnt/efs` gemountet, Port 22 nur für eine Operator-CIDR offen. Deployen, mit einem beliebigen SFTP-Client übertragen, Stack löschen. **Es entsteht keine Kopie der Daten außerhalb des EFS** — das ist der Grund für diesen Weg.
-
-**Abhängigkeiten:** importiert `${ClusterStackName}-Efs`, `-Vpc`, `-Subnet1` und `-SgVpcEfsAccess`.
-
-> **Dieser Stack ist noch nicht deploybar.** `${Cluster}-SgVpcEfsAccess` wird vom Cluster-Template derzeit **nicht** exportiert (siehe Hinweis oben bei den Cross-Stack-Exports). Erst `efs-access/SgVpcEfsAccess-export.patch` anwenden und den Cluster aktualisieren. Auch alles andere hier ist ungetestet — der Stack wurde geschrieben, aber nie deployt.
-
-**Best Practices**
-
-- **Nicht über den SSM-Tunnel übertragen — deshalb existiert dieser Stack.** Session Manager ist ein Control Channel (ein gerahmter WebSocket über den SSM-Service, keine Parallelität, kein Multipart) und hat keinen Durchsatz-Regler. `scp`/`rsync` über einen SSM-`ProxyCommand` lösen nur die Bedienbarkeit, nicht die Geschwindigkeit. SSM bleibt hier als Fallback-Shell verfügbar.
-- **`EfsSubPath` auf einen Service einschränken**, z. B. `/lab-web-fro-p`. Der Default `/` legt die Daten aller Services offen. Das Verzeichnis **muss existieren** — es wird kein `CreationInfo` gesetzt, ein falscher Pfad lässt den Mount fehlschlagen statt ihn anzulegen.
-- **`PosixUid`/`PosixGid` entscheiden über Lesbarkeit.** Ein EFS Access Point erzwingt diese Identität für jede Anfrage durch den Mount — ohne ihn bekommt `ec2-user` „permission denied" auf Dateien des Container-Users. Default `0` (root) liest alles; für weniger Rechte vorher `sudo ls -ln /mnt/efs/<stack>/` prüfen und die dortige uid/gid setzen.
-- **`AllowedCidr` ist auf /24–/32 begrenzt** (Regex im Parameter). Die Instanz hat eine Public IP; ein weiter gefasstes Präfix wird abgelehnt.
-- **FileZilla:** Protokoll SFTP, Logon Type *Key file*, User `ec2-user`, Host = Output `PublicIp`. *Action on existing files* auf **Resume** stellen (der Grund, SFTP gegenüber `cp` zu bevorzugen), und unter Einstellungen → Übertragungen die gleichzeitigen Übertragungen von 2 auf 8–10 erhöhen — EFS skaliert über Parallelität, und jede kleine Datei kostet ~1 ms Round-Trip.
-- **Stack nach Gebrauch löschen.** Die Instanz stoppt sich nach `AutoStopAfterHours` selbst (Default 8), damit ein vergessener Stack keine Compute-Kosten mehr erzeugt — der Stack mit Public IP und offenem Port 22 bleibt aber bestehen, bis er gelöscht wird.
-- **Der Engpass ist danach die eigene Uplink-Bandbreite.** Ein Dateisystem von ~73 GiB braucht ~1h45m bei 100 Mbit/s. Vorher prüfen, ob wirklich alles gebraucht wird — ein Restore ist pro Service (`/<service-stack-name>`), und eine selektive Auswahl ist meist ein Bruchteil.
 
 ---
 
 ### ecsservice
 
-Ein containerisierter Service auf einem bestehenden Cluster: Task Definition (Einzelcontainer, EFS-Mount, Doppler-Secret-Injektion), ECS Service mit ALB-Integration, Listener-Regeln für HTTP (Redirect auf HTTPS) und HTTPS, Step-Scaling-Autoscaling, operative CloudWatch-Alarme, ALB-seitige HTTP-Alarme, Log-Gruppe und eine ImageResolver-Lambda.
+Ein containerisierter Service auf einem bestehenden Cluster — ein Stack pro Anwendung.
 
-**Abhängigkeiten:** importiert `${ClusterStackName}-Ecscluster`, `-Vpc`, `-Efs`, `-ListenerArnHttp`, `-ListenerArnHttps`, `-LoadbalancerArn`. Exportiert `${AWS::StackName}-TargetGroupArn`. Importiert ab `1.2.0` zusätzlich `${ClusterStackName}-AlertTopicArn`. Ab `1.3.0` kann der Service über den Parameter `ListenerArnOverride` statt am öffentlichen ALB an einem anderen Listener hängen — siehe „Interner Loadbalancer — Services ohne öffentlichen Zugang“. Aktuelle Template-Version: **`1.3.0`**.
-
-**Best Practices**
-
-- **Vor einem Template-Wechsel den Drift reduzieren.** Ein Service-Stack driftet normalerweise nur in der Task Definition. Schlägt ein Update fehl, rollt CloudFormation auf die letzte bekannte Konfiguration zurück — deren Docker-Image kann sehr alt oder gar nicht mehr vorhanden sein. Vorgehen: Drift erkennen, Abweichungen jenseits der Task Definition manuell zurücksetzen, den Stack **ohne** Template-Austausch mit `InitialDockerImage` = aktuell laufendes Image aktualisieren, und erst danach das Template ersetzen.
-- **`SkipImageResolver` bewusst setzen.** `true` (Default) nutzt `InitialDockerImage` direkt — richtig für die Stack-Erstellung und solange das erste Deployment noch nicht stabil läuft. Nach erfolgreichem Start auf `false`, damit Updates das Image vom laufenden Service übernehmen. Bei bestehenden Stacks mit `false` diesen Wert beim Update explizit mitgeben, sonst greift der neue Default und ein veraltetes `InitialDockerImage` wird deployt.
-- **`TaskMemory` passt auf die Instanzgröße:** `478`, `956`, `1434`, `1913` MB entsprechen 4, 2, 1 Task(s) pro `t3.small`. Andere Werte verschwenden Kapazität.
-- **`ServiceDesiredCount` ist gleichzeitig `MinCapacity`.** Wird die MinCapacity am Scalable Target per Konsole verändert, entsteht Drift, die den Scale-in unsichtbar blockiert; das nächste Stack-Update setzt sie zurück und löst dabei einen Scale-in aus. Vor dem Update vergleichen: `aws application-autoscaling describe-scalable-targets --service-namespace ecs`.
-- **`Stat: Average` am Scale-in-Alarm nicht auf `Sum` ändern.** Der Alarm ist eine Metric-Math-Expression (`CPU < ServiceScaleDownCpuThreshold AND HealthyHostCount > ServiceDesiredCount`) und damit im Normalbetrieb `OK` statt dauerhaft rot. Die ALB veröffentlicht `HealthyHostCount` pro AZ, was den Schluss nahelegt, `Average` liefere den AZ-Mittelwert — der Schluss ist falsch: durch Cross-Zone Load Balancing meldet jede AZ die **vollständige** Zahl. Gemessen an `lab-web-fro-p` (2 Tasks, 2 AZs): `Average = 2.0`, `Sum = 4.0`. Mit `Sum` wäre `tasks > ServiceDesiredCount` dauerhaft wahr und jeder Service würde permanent auf MinCapacity gedrückt. Nur neu bewerten, falls `load_balancing.cross_zone.enabled` an einer TargetGroup auf `false` gesetzt wird.
-- **Rolling Deployments verdoppeln kurzzeitig `HealthyHostCount`** (MaximumPercent 200 %). Der Scale-in-Alarm kann dabei kurz anschlagen; der Versuch ist ein No-op, weil Application Auto Scaling nie unter MinCapacity geht. `EvaluationPeriods: 5` überbrückt das Fenster.
-- **Operative Alarme sind reine Sichtbarkeit** (keine Scaling-Trigger), jeder per Threshold `0` abschaltbar: HighCpu `20` % (Baseline liegt bei <1–2 %, deshalb ist 20 % bereits auffällig), HighMemory `80` % (Frühwarnung vor OOM-Kill), LowCpu und LowMemory `0` = aus (Opt-in für Right-Sizing-Reviews). Ziel: kein Alarm ist im gesunden Zustand rot.
-- **Alarmbenachrichtigung kommt vom Cluster.** Die vier operativen Alarme importieren ab `1.2.0` `${ClusterStackName}-AlertTopicArn` als `AlarmActions`. Der **Cluster-Stack muss deshalb zuerst mindestens auf `1.1.0` deployt sein**, sonst scheitert das Service-Update an der Import-Auflösung — HighCpu und HighMemory sind per Default aktiv, ihr Import wird also immer ausgewertet. Die beiden Autoscaling-Alarme bleiben absichtlich ohne SNS: `AlarmAutoscaleScaleDown` ist bei jedem normalen Scale-in rot.
-- **Die HTTP-Alarme kommen ab `1.2.0` von der ALB, nicht aus den Container-Logs.** `AlarmHttp5xxTarget` meldet, dass die Anwendung geantwortet hat — aber mit 5xx (PHP Fatal, TYPO3-Exception, fehlgeschlagene DB-Verbindung). Das steht in der Log-Gruppe, „check the logs“ ist also der richtige nächste Schritt. Default `5`/5 Min. — bewusst nicht `1`, weil Rolling Deployments und flatternde Health Checks transiente 5xx erzeugen. `0` schaltet ab. **Loadbalancer-seitige 5xx (503 keine gesunden Targets / 502 abgebrochene Antwort / 504 Timeout) werden derzeit nicht alarmiert.** Ein `AlarmHttp5xxElb` auf `HTTPCode_ELB_5XX_Count` war in `1.2.0` enthalten und wurde bewusst wieder entfernt — der Fall wird aktuell nicht benötigt.
-- **`AlarmHttp4xxTarget` ist ein Stolperdraht, keine Diagnose** (in der Konsole `${StackName}-AlarmHttp4xxTargetAnomaly`; die Baseline dazu liegt in `BaselineHttp4xxTarget`) und per Default **aus** (`EnableHttp4xxAnomalyAlarm`). Er meldet Abweichungen von der eigenen 4xx-Baseline (Scan-Welle, Bot auf dem Login, oder ein Deployment das alle Asset-Pfade zerschossen hat), kann aber weder den Statuscode noch die URL nennen — Nachverfolgung in den ALB-Access-Logs. Es gibt **keine Wartezeit**: `HTTPCode_Target_4XX_Count` wird von der ALB durchgehend veröffentlicht und 15 Monate aufbewahrt, ein neu erstellter Detector trainiert also sofort auf dieser Historie — die Band ist heute so gut wie in zwei Wochen. Beurteilen lässt sie sich nur grafisch (`Sum`/5 Min. gegen zwei Wochen echten Traffic, siehe TASKS.md), nicht durch Warten. Auf Services mit wenig Verkehr bleibt sie laut; Staging ist zur Beurteilung untauglich. Kosten: ein Anomaly-Alarm wird als drei Alarm-Metriken abgerechnet. Scanner, die den Loadbalancer ohne passende Listener-Regel treffen, landen in `HTTPCode_ELB_4XX_Count` auf Cluster-Ebene und sind hier **nicht** erfasst.
-- **CloudWatch Logs Anomaly Detection wird nicht mehr verwendet.** `LogAnomalyDetector` und `ServiceLogAnomalyAlarm` waren bis `1.2.0` enthalten (Parameter `EnableLogAnomalyDetection`, Default `true`) und wurden entfernt: Das Format unserer Logs macht die Mustererkennung unbrauchbar — Apache-Access-Zeilen fallen alle auf **ein** Pattern zusammen, die gesamte Varianz steckt in den maskierten Tokens. AWS nennt Access-/Audit-Logs selbst als ungeeignet. Anwendungsfehler werden weiterhin über die Log-Gruppe untersucht, nur eben nicht automatisch gemeldet.
-- **ImageResolver-Fallstrick beim Retry nach fehlgeschlagener Erstellung:** existiert der ECS-Service nicht mehr, schlägt die Lambda hart fehl; existiert er, ist aber nie gesund geworden, wird das kaputte Image aus der laufenden Task Definition immer wieder reanimiert. In beiden Fällen hilft `SkipImageResolver=true`.
-- **Nur ein Regel-Template pro Service.** `ecsservice` erzeugt schon HTTP- und HTTPS-Listener-Regeln. `alb-ecsservice-rule` zusätzlich für denselben Service führt zu doppelten Regeln auf derselben Priorität und damit zu einem Listener-Priority-Konflikt über zwei Stacks hinweg.
+**Abhängigkeiten:** importiert `${ClusterStackName}-Ecscluster`, `-Vpc`, `-Efs`, `-ListenerArnHttp`, `-ListenerArnHttps`, `-LoadbalancerArn` sowie ab `1.2.0` `-AlertTopicArn`. Exportiert `${AWS::StackName}-TargetGroupArn`.
+**Template-Version:** `1.4.0` — Output `TemplateVersion`, kein Export.
 
 Deployte Versionen aller Service-Stacks einer Region:
 
@@ -215,140 +277,261 @@ aws cloudformation describe-stacks --region <region> \
   --output table
 ```
 
-Der Filter auf `TargetGroupArn` begrenzt die Liste auf `ecsservice`-Stacks; `None` bedeutet ein Stand vor Einführung der Versionierung.
+Der Filter auf `TargetGroupArn` begrenzt die Liste auf `ecsservice`-Stacks; `None` bedeutet einen Stand vor Einführung der Versionierung.
 
----
+#### Container und Task Definition
 
-### Interner Loadbalancer — Services ohne öffentlichen Zugang
+| Parameter | Default | Wirkung |
+|---|---|---|
+| `InitialDockerImage` | — | Image bei Stack-Erstellung und bei `SkipImageResolver=true` |
+| `SkipImageResolver` | `true` | siehe ImageResolver unten |
+| `TaskMemory` | `478` | Soft Limit; nur `478`/`956`/`1434`/`1913` erlaubt |
+| `VolumeMountPath` | `/var/www/html_data` | Mountpunkt des EFS im Container |
+| `ContainerCommand` | `''` | Kommaliste; leer = Image-Default |
+| `ProjectNameShort` / `ProjectEnv` / `ProjectToken` | — / `prd` / — | Doppler-Projekt, -Config und -Token |
 
-Der Cluster-Stack legt ab `1.3.0` neben dem öffentlichen ALB einen zweiten, **internen** Loadbalancer an: `InternalLoadbalancer` (`Scheme: internal`) in den privaten Subnetzen, `SgInternalAlb` (Ingress `tcp/80` nur aus `SgVpcLoadbalancerports`, also ausschließlich von den ECS-Instanzen) und `InternalHttplistener` (`HTTP:80`, Default-Action ein festes `404`). Kein öffentlicher DNS-Name, keine öffentliche IP, keine TLS-Terminierung — die Backends dahinter sprechen ohnehin HTTP, und der Verkehr verlässt das VPC nicht.
+- **`NetworkMode: bridge` mit dynamischem Host-Port** (`HostPort: 0`) — deshalb der Ingress-Bereich 32768–61000 in der Cluster-Security-Group.
+- **`TaskMemory` passt auf die Instanzgröße:** die vier erlaubten Werte sind ganze Bruchteile des belegbaren Speichers einer `t3.small` — `1913` füllt sie ganz, `956` halb (2 Tasks), `478` zu einem Viertel (4 Tasks), `1434` lässt daneben genau noch ein Viertel frei. Andere Werte hinterlassen einen Rest, der zu klein für einen weiteren Task ist. Der Wert ist eine Reservierung: ECS platziert danach, ein zu großer kostet also Cluster-Kapazität.
+- **EFS-Volume `data`**, `RootDirectory: /<Stackname>`, `TransitEncryption: ENABLED`. Die Trennung der Services ist damit eine Verzeichniskonvention, kein erzwungener Access Point.
+- **Das Image kommt nicht aus dem Parameter**, sondern aus `Fn::GetAtt: [ImageResolver, Value]` — siehe unten.
+- **`DOPPLER_TOKEN` steht als Klartext-`Environment`-Wert in der Task Definition** und ist damit über `ecs:DescribeTaskDefinition` lesbar; das `NoEcho` am Parameter ist dadurch aufgehoben. Umzug nach `Secrets` steht in TASKS.md.
+- **Eine Rolle für beides:** `TaskRole` wird sowohl als `ExecutionRoleArn` als auch als `TaskRoleArn` gesetzt — sie darf ECR ziehen und in die eigene Log-Gruppe schreiben, sonst nichts.
 
-Gedacht für Backends, die nur von anderen Services konsumiert werden und auf dem öffentlichen ALB nichts zu suchen haben — der erste Fall ist Solr.
+#### Service und Deployment
 
-**Einen Service dort anhängen:**
+| Parameter | Default | Wirkung |
+|---|---|---|
+| `ClusterStackName` | — | Name des Cluster-Stacks, aus dem importiert wird |
+| `ServiceDesiredCount` | — | Soll-Tasks (0–4), zugleich `MinCapacity` des Autoscalings |
+| `ECSHealthCheckGracePeriod` | `0` | Karenz, bevor ECS einen Task als ungesund tötet |
 
-- `ListenerArnOverride` (ab `ecsservice` `1.3.0`, Default leer) auf den Wert von `${ClusterStackName}-InternalListenerArnHttp` setzen. Leer bedeutet unverändertes Verhalten am öffentlichen ALB.
-- `ListenerRuleHost` auf `*` setzen. Der Wildcard trifft jeden Host-Header, was auf einem Listener sinnvoll ist, der ausschließlich internen Verkehr bedient — und er ist **Voraussetzung für den Admin-Zugriff per Port-Forwarding** (siehe unten): dabei sendet der Browser `Host: localhost:<port>`, was gegen einen konkreten Hostnamen nicht matchen würde.
-- Die HTTP-Regel `LoadbalancerRuleHttp` wird bei gesetztem Override **nicht** angelegt. Ein `301` auf Port 443 würde auf dem HTTP-only-Listener jeden Request an einen Port schicken, auf dem nichts lauscht.
-- Consumer konfigurieren gegen `${ClusterStackName}-InternalAlbDns`, Schema `http`, Port `80`.
+- **Rolling Deployment mit `MaximumPercent: 200` / `MinimumHealthyPercent: 50`** — während eines Deployments laufen kurzzeitig doppelt so viele Tasks.
+- **`DeploymentCircuitBreaker` mit `Rollback: true`** — ECS erkennt scheiternde Tasks und rollt automatisch auf die vorherige Task Definition zurück. Er greift nur bei **Health**-Fehlern: ein altes, aber funktionierendes Image passiert ihn (dafür der ImageRegressionGuard).
+- **Platzierung:** erst `spread` über die AZs, dann `binpack` nach Memory.
 
-**Web-UI und API eines privaten Services erreichen — SSM Port Forwarding.** Kein Bastion, kein SSH, kein eingehender Port. Die Instanzrolle hat `AmazonSSMManagedInstanceCore`, lokal wird das `session-manager-plugin` benötigt.
+#### Load-Balancer-Anbindung
 
-```
-INST=$(aws ssm describe-instance-information --region eu-west-3 \
-  --query 'InstanceInformationList[0].InstanceId' --output text)
+| Parameter | Default | Wirkung |
+|---|---|---|
+| `ListenerRuleHost` | — | Hostname der Listener-Regel |
+| `ListenerRulePath` | `*` | Pfadmuster |
+| `ListenerRulePriority` | — | muss pro Listener eindeutig sein |
+| `ServiceTrafficPort` | `443` | Container-Port, zugleich Health-Check-Port |
+| `ServiceTrafficProtocol` | `HTTPS` | `HTTP` oder `HTTPS` |
+| `ECSHealthCheckPath` | `/test.php` | Health-Check-Pfad |
 
-aws ssm start-session --region eu-west-3 --target "$INST" \
-  --document-name AWS-StartPortForwardingSessionToRemoteHost \
-  --parameters host="<InternalAlbDns>",portNumber="80",localPortNumber="8983"
-```
+- **Zwei Listener-Regeln auf derselben Priorität:** am HTTP-Listener eine `301`-Umleitung auf HTTPS unter Beibehaltung von Host, Pfad und Query; am HTTPS-Listener der Forward auf die eigene Target Group. Die 80→443-Umleitung macht also jeder Service für seinen Host selbst, nicht der Cluster.
+- **Target Group:** Health Check alle 45 s, Timeout 15 s, gesund nach 2, ungesund nach 4 Prüfungen, Matcher `200`, Deregistration Delay 120 s, keine Stickiness, `TargetType: instance`.
+- **Nur ein Regel-Template pro Service.** `alb-ecsservice-rule` zusätzlich für denselben Service erzeugt doppelte Regeln auf derselben Priorität — ein Listener-Konflikt über zwei Stacks hinweg.
 
-Danach im Browser `http://localhost:8983/solr/`. Der Weg ist Laptop → SSM → Instanz → interner ALB → Task; die Instanz darf den internen ALB erreichen, weil `SgInternalAlb` Ingress aus `SgVpcLoadbalancerports` erlaubt.
+#### Autoscaling
 
-Für reine API-Abfragen genügt eine normale SSM-Shell auf der Instanz:
+| Parameter | Default | Wirkung |
+|---|---|---|
+| `ServiceMaxCapacity` | — | obere Grenze (1–10) |
+| `ServiceScaleUpCpuThreshold` | `65` | CPU-Schwelle für +1 Task |
+| `ServiceScaleDownCpuThreshold` | `15` | CPU-Schwelle für −1 Task |
 
-```
-aws ssm start-session --region eu-west-3 --target "$INST"
-# auf der Instanz:
-curl -u <user>:<pw> 'http://<InternalAlbDns>/solr/admin/cores?action=STATUS&wt=json'
-```
+- **Step Scaling, ±1 Task, Cooldown 300 s.** `MinCapacity` ist `ServiceDesiredCount`, `MaxCapacity` ist `ServiceMaxCapacity`.
+- **Der Scale-in-Alarm ist eine Metric-Math-Expression:** `IF(cpu < ServiceScaleDownCpuThreshold AND tasks > ServiceDesiredCount, 1, 0)`. Dadurch steht er im Normalbetrieb auf `OK` statt dauerhaft rot.
+- **`Stat: Average` dort nicht auf `Sum` ändern.** Die ALB veröffentlicht `HealthyHostCount` pro AZ, was nahelegt, `Average` liefere den AZ-Mittelwert — falsch: durch Cross-Zone Load Balancing meldet jede AZ die **vollständige** Zahl. Bei 2 Tasks über 2 AZs liefert `Average` also `2.0`, `Sum` dagegen `4.0`; mit `Sum` wäre `tasks > ServiceDesiredCount` dauerhaft wahr und jeder Service würde permanent auf MinCapacity gedrückt. Nur neu bewerten, falls `load_balancing.cross_zone.enabled` an einer Target Group auf `false` gesetzt wird.
+- **Rolling Deployments verdoppeln kurzzeitig `HealthyHostCount`**, der Scale-in-Alarm kann dabei kurz anschlagen. Der Versuch ist ein No-op, weil Application Auto Scaling nie unter MinCapacity geht; `EvaluationPeriods: 5` überbrückt das Fenster.
+- **`ServiceDesiredCount` ist gleichzeitig `MinCapacity`.** Wird die MinCapacity am Scalable Target per Konsole verändert, entsteht Drift, die den Scale-in unsichtbar blockiert; das nächste Stack-Update setzt sie zurück und löst dabei einen Scale-in aus. Vorher vergleichen: `aws application-autoscaling describe-scalable-targets --service-namespace ecs`.
 
-**Was sich am Bedrohungsmodell ändert:** die Admin-UI ist nicht mehr für jeden erreichbar, der einen Hostnamen kennt, sondern nur noch für Principals mit AWS-Credentials und SSM-Rechten — eine deutlich kleinere Menge, und **auditierbar**, weil SSM-Sessions in CloudTrail landen. Anonyme HTTP-Requests auf einen öffentlichen Hostnamen tun das nicht. Die BasicAuth von Solr gilt unverändert weiter; Admin-Pfade brauchen den Admin-User, der Query-User kann Security und Config nicht ändern.
+#### Alarme
+
+Acht Alarme. Die beiden Autoscaling-Alarme steuern die Scaling Policies und melden **absichtlich nicht** ans Cluster-Topic — `AlarmAutoscaleScaleDown` ist bei jedem normalen Scale-in rot. Alle übrigen importieren `${ClusterStackName}-AlertTopicArn`; **der Cluster-Stack muss deshalb zuerst mindestens auf `1.1.0` stehen**, sonst scheitert das Service-Update an der Import-Auflösung.
+
+| Alarm (Name in der Konsole) | Was er misst | Parameter | Default |
+|---|---|---|---|
+| `${Stack}-AlarmAutoscaleScaleUp` | ECS-CPU, 3×60 s | `ServiceScaleUpCpuThreshold` | `65` % — Scaling-Trigger, nicht abschaltbar |
+| `${Stack}-AlarmAutoscaleScaleDown` | Metric Math, 5×60 s | `ServiceScaleDownCpuThreshold` | `15` % — Scaling-Trigger, nicht abschaltbar |
+| `${Stack}-AlarmHighCpu` | ECS-CPU, 5 Min. | `ServiceHighCpuThreshold` | `20` % |
+| `${Stack}-AlarmHighMemory` | ECS-Memory, 5 Min. | `ServiceHighMemoryThreshold` | `80` % |
+| `${Stack}-AlarmLowCpu` | ECS-CPU, 2×5 Min. | `ServiceLowCpuThreshold` | `0` = aus |
+| `${Stack}-AlarmLowMemory` | ECS-Memory, 2×5 Min. | `ServiceLowMemoryThreshold` | `0` = aus |
+| `${Stack}-AlarmHttp5xxTarget` | `HTTPCode_Target_5XX_Count` | `ServiceHttp5xxTargetThreshold` | `5`/5 Min. |
+| `${Stack}-AlarmHttp4xxTargetAnomaly` | Anomalieband auf `HTTPCode_Target_4XX_Count` | `EnableHttp4xxAnomalyAlarm`, Breite über `ServiceHttp4xxAnomalyBand` | aus; Band `3` |
+
+- **Threshold `0` heißt „Alarm gar nicht anlegen"** — das gilt für die vier operativen Alarme und den 5xx-Alarm. Das ist das ältere Idiom dieses Templates — der Cluster benutzt dafür inzwischen `off`/`dashboard`/`alert`.
+- **Die vier operativen Alarme sind reine Sichtbarkeit**, keine Scaling-Trigger: HighCpu `20` % (Baseline liegt bei <1–2 %, deshalb ist 20 % schon auffällig), HighMemory `80` % (Frühwarnung vor OOM-Kill), Low* per Default aus (Opt-in für Right-Sizing-Reviews). Ziel: kein Alarm ist im gesunden Zustand rot.
+- **`AlarmHttp5xxTarget` meldet, dass die Anwendung geantwortet hat — mit 5xx** (PHP Fatal, TYPO3-Exception, fehlgeschlagene DB-Verbindung). Das steht in der Log-Gruppe, „check the logs" ist also der richtige nächste Schritt. Default `5`/5 Min. statt `1`, weil Rolling Deployments und flatternde Health Checks transiente 5xx erzeugen. **Loadbalancer-seitige 5xx** (503 keine gesunden Targets, 502 abgebrochene Antwort, 504 Timeout) werden **nicht** alarmiert — ein `AlarmHttp5xxElb` war in `1.2.0` enthalten und wurde bewusst entfernt.
+- **`AlarmHttp4xxTargetAnomaly` ist ein Stolperdraht, keine Diagnose.** Er meldet Abweichungen von der eigenen 4xx-Baseline (Scan-Welle, Bot auf dem Login, ein Deployment das alle Asset-Pfade zerschossen hat), kann aber weder Statuscode noch URL nennen — Nachverfolgung in den ALB-Access-Logs. Nur die **obere** Bandgrenze alarmiert; ein Einbruch der 4xx ist uninteressant. Es gibt **keine Wartezeit**: `HTTPCode_Target_4XX_Count` wird durchgehend veröffentlicht und 15 Monate aufbewahrt, ein neuer Detector trainiert also sofort auf dieser Historie. Auf Services mit wenig Verkehr bleibt er laut, deshalb Default aus. Kosten: ein Anomaly-Alarm wird als drei Alarm-Metriken abgerechnet. Scanner, die den ALB ohne passende Listener-Regel treffen, landen in `HTTPCode_ELB_4XX_Count` auf Cluster-Ebene und sind hier **nicht** erfasst.
+- **`BaselineHttp4xxTarget` und `AlarmHttp4xxTarget` sind per `DependsOn` gekoppelt — nicht entfernen.** Ein Anomaly Detector ist seinem Alarm nur implizit zugeordnet, über übereinstimmende Namespace/Metrik/Dimensionen/Statistik, nie über einen `Ref`. Ohne die Kante darf CloudFormation beim Abschalten des Paares oder beim Löschen des Stacks den Detector zuerst entfernen, und `DeleteAnomalyDetector` scheitert, solange ein Alarm die Metrik referenziert — der Stack landet in `DELETE_FAILED`.
+- **CloudWatch Logs Anomaly Detection wird nicht mehr verwendet.** `LogAnomalyDetector` und `ServiceLogAnomalyAlarm` waren bis `1.2.0` enthalten (Parameter `EnableLogAnomalyDetection`, Default `true`) und wurden entfernt: Apache-Access-Zeilen fallen alle auf **ein** Pattern zusammen, die gesamte Varianz steckt in den maskierten Tokens. Nicht wieder einbauen, ohne vorher das Logformat zu ändern.
+
+#### Logs
+
+Drei Log-Gruppen, alle mit 14 Tagen Retention, alle fest verdrahtet:
+
+| Log-Gruppe | Inhalt |
+|---|---|
+| `${Stack}-LogGroup` | stdout/stderr des Containers (`awslogs`, Stream-Prefix `ECSDockerTask`) |
+| `/aws/lambda/<Stack>-ImageResolver` | Auflösung des Images bei jedem Stack-Update |
+| `/aws/lambda/<Stack>-ImageRegressionGuard` | Entscheidung des Regressions-Wächters bei jedem Rollout |
+
+#### Updates
+
+- **Vor einem Template-Wechsel den Drift reduzieren.** Ein Service-Stack driftet normalerweise nur in der Task Definition. Schlägt ein Update fehl, rollt CloudFormation auf die letzte bekannte Konfiguration zurück — deren Docker-Image kann sehr alt oder gar nicht mehr vorhanden sein. Vorgehen: Drift erkennen, Abweichungen jenseits der Task Definition manuell zurücksetzen, den Stack **ohne** Template-Austausch mit `InitialDockerImage` = aktuell laufendes Image aktualisieren, und erst danach das Template ersetzen.
+
+#### ImageResolver
+
+**Problem:** Deployt wird über die Pipeline, nicht über CloudFormation — das laufende Image ist also immer ein anderes als der Stack-Parameter `InitialDockerImage`. Ohne Gegenmaßnahme würde jedes Stack-Update (Alarmschwelle, Listener-Regel) die Task Definition neu bauen und den Service auf ein womöglich Monate altes, in ECR längst gelöschtes Image zurückwerfen (`CannotPullContainerError`).
+
+**Lösung:** Eine Custom Resource liest bei jedem Update das *tatsächlich laufende* Image aus ECS; die Task Definition referenziert `Fn::GetAtt: [ImageResolver, Value]` statt des Parameters.
+
+Ablauf der Lambda (IAM: `ecs:DescribeServices` + `ecs:DescribeTaskDefinition`):
+
+1. `Delete` → sofort `SUCCESS`.
+2. `Create` **oder** `SkipImageResolver=true` → gibt `InitialDockerImage` zurück. Beim Anlegen existiert noch kein Service.
+3. Sonst: aktive Task Definition des Service holen, davon das Image des ersten Containers zurückgeben.
+4. Jeder Fehler ist `FAILED` — das Update schlägt fehl, statt still ein falsches Image zu setzen.
+
+- **`SkipImageResolver`** (Default `true`): `true` für die Stack-Erstellung und solange das erste Deployment nicht stabil läuft, danach `false`. **Bei bestehenden Stacks mit `false` den Wert bei jedem Update explizit mitgeben**, sonst greift der Default und ein veraltetes `InitialDockerImage` wird deployt.
+- **Retry nach fehlgeschlagener Erstellung:** existiert der Service nicht mehr, schlägt die Lambda hart fehl; existiert er, ist aber nie gesund geworden, wird das kaputte Image immer wieder reanimiert. Beides löst `SkipImageResolver=true` mit korrektem `InitialDockerImage`.
+- **Die Lücke — `ProjectToken`.** Jeder Parameter, der die Task Definition beeinflusst, ist Trigger-Property der Custom Resource. Außer `ProjectToken`: der ist `NoEcho`, und CloudFormation lehnt `NoEcho`-Werte an Custom Resources ab. **Ein isoliertes Token-Update baut die Task Definition neu, ohne den Resolver auszuführen** — `Fn::GetAtt` liefert den zwischengespeicherten alten Wert und das Image fällt auf `InitialDockerImage` zurück. Deshalb: **Doppler-Token nie allein rotieren**, sondern zusammen mit einem aktuellen `InitialDockerImage`.
+
+**Verworfene Alternativen** — damit sie nicht alle paar Monate neu vorgeschlagen werden:
+
+| Ansatz | Warum nicht |
+|---|---|
+| `cloudformation deploy` in der Pipeline | Bringt `ROLLBACK_FAILED` als Fehlerbild ins Spiel — schlimmer als ein fehlgeschlagener direkter ECS-Deploy |
+| SSM Parameter Store + direkter ECS-Deploy | Der Parameter überlebt das Löschen des Stacks als Waise, und die Pipeline müsste vor der Stack-Erstellung laufen |
+| Mutabler ECR-Tag (`latest`) | Verliert die Rückverfolgbarkeit pro Deploy, und ECS zieht ohne Force-Deployment kein neues Image |
+| Nur Prozessdisziplin | Nicht durchsetzbar |
+
+Die präventive Lösung wäre, `DOPPLER_TOKEN` über Secrets Manager `valueFrom` zu beziehen — dann liefe das Token gar nicht mehr durch ein Stack-Update und das Problem wäre strukturell weg. Als Option vermerkt, nicht umgesetzt.
+
+#### ImageRegressionGuard
+
+`EnableImageRegressionAlarm` (Default `true`, ab `1.4.0`). Trotz des Namens **kein CloudWatch-Alarm**, sondern EventBridge-Regel + Lambda, die direkt ins Cluster-`AlertTopic` publiziert.
+
+1. Die Regel horcht auf `ECS Deployment State Change` / `SERVICE_DEPLOYMENT_IN_PROGRESS`, per `resources` auf genau diesen Service eingegrenzt — feuert also bei jedem Rollout.
+2. Die Lambda vergleicht die Deployments `PRIMARY` (eingehend) und `ACTIVE` (abgelöst); fehlt eines oder sind die Images gleich, bricht sie ab.
+3. Für beide Images `ecr:DescribeImages` → `imagePushedAt`. Ist das eingehende **älter**, geht eine Meldung mit beiden Referenzen und Push-Zeiten ins Topic.
+
+- **Vergleich bewusst „älter als das bisher laufende", nicht „nicht das neueste in ECR"** — das Repo ist über Umgebungen geteilt, ein Staging-Push sähe sonst neuer aus als ein korrektes Produktions-Image.
+- Deckt beide Wege ab: das CloudFormation-Update, das die Task Definition zurückdreht (der `ProjectToken`-Fall), und das versehentliche Redeploy eines alten Builds.
+- **Detektiv, nicht präventiv** — feuert beim Rollout-*Start*. Ergänzt den `DeploymentCircuitBreaker`, der nur bei Health-Fehlern zurückrollt; ein altes, funktionierendes Image ist gesund.
+- **Absichtliche Rollbacks lösen ihn ebenfalls aus** — als Hinweis behandeln, nicht als Page.
+- Er schweigt still, wenn eine ECR-Abfrage fehlschlägt oder eine Push-Zeit fehlt: kein Alarm heißt nicht „geprüft und in Ordnung". Nachsehen in `/aws/lambda/<Stack>-ImageRegressionGuard`.
 
 ---
 
 ### alb-ecsservice-rule
 
-Zusätzliche Host/Pfad-Regel (HTTP und HTTPS) auf die TargetGroup eines bestehenden ECS-Service.
+Eine zusätzliche Host/Pfad-Regel auf die Target Group eines bestehenden ECS-Service — je eine am HTTP- und am HTTPS-Listener.
 
-**Abhängigkeiten:** importiert `${ClusterStackName}-ListenerArnHttp`/`-ListenerArnHttps` und `${EcsServiceStackName}-TargetGroupArn`.
+**Abhängigkeiten:** importiert `${ClusterStackName}-ListenerArnHttp`/`-ListenerArnHttps` und `${EcsServiceStackName}-TargetGroupArn`. Keine Exports, kein `TemplateVersion`-Output.
 
-**Best Practices**
+| Parameter | Default | Wirkung |
+|---|---|---|
+| `ClusterStackName` | — | liefert die beiden Listener-ARNs |
+| `EcsServiceStackName` | — | liefert die Target Group, auf die geforwardet wird |
+| `ListenerRuleHost` | — | Hostname der Regel |
+| `ListenerRulePath` | `*` | Pfadmuster |
+| `ListenerRulePriority` | — | muss pro Listener eindeutig sein |
 
-- **Nur für Services, die außerhalb von `ecsservice` deployt wurden**, oder für zusätzliche Hostnamen. Zusammen mit `ecsservice` für denselben Service entstehen doppelte Regeln auf derselben Priorität.
-- `ListenerRulePriority` muss pro Listener eindeutig sein — Konflikte fallen erst beim Deployment auf.
+- **Nur für Services, die außerhalb von `ecsservice` deployt wurden**, oder für zusätzliche Hostnamen. `ecsservice` legt seine beiden Listener-Regeln selbst an; dieses Template zusätzlich für denselben Service erzeugt doppelte Regeln auf derselben Priorität — ein Listener-Konflikt über zwei Stacks hinweg, den keiner der beiden Stacks allein erkennen kann.
+- **`ListenerRulePriority` kollidiert erst beim Deployment.** CloudFormation kann die Belegung der anderen Stacks nicht sehen.
 
 ---
 
 ### alb-redirect-rule
 
-URL-Redirect-Regel auf dem ALB: HTTP wird auf HTTPS umgeleitet, HTTPS auf den Ziel-Hostnamen unter Beibehaltung von Pfad und Query-String.
+Reine Redirect-Regel auf dem ALB, ohne Target Group und ohne Service dahinter: HTTP wird auf HTTPS umgeleitet, HTTPS auf den Ziel-Hostnamen.
 
-**Abhängigkeiten:** importiert die Listener-ARNs des Clusters.
+**Abhängigkeiten:** importiert `${ClusterStackName}-ListenerArnHttp`/`-ListenerArnHttps`. Keine Exports, kein `TemplateVersion`-Output.
 
-**Best Practices**
+| Parameter | Default | Wirkung |
+|---|---|---|
+| `ClusterStackName` | — | liefert die beiden Listener-ARNs |
+| `ListenerRuleHost` | — | Hostname, der umgeleitet werden soll |
+| `ListenerRulePath` | `*` | Pfadmuster |
+| `ListenerRulePriority` | — | muss pro Listener eindeutig sein |
+| `ListenerRuleRedirectHost` | — | Ziel-Hostname |
+| `ListenerRuleRedirectPath` | `''` | leer = Pfad und Query bleiben erhalten; gesetzt = feste Zieladresse **ohne** Query |
+| `ListenerRuleRedirectHttpCode` | `301` | `301` oder `302` |
 
-- `301` (Default) nur verwenden, wenn der Redirect dauerhaft ist — Browser cachen ihn hartnäckig. Für temporäre Umleitungen `302`.
-- `ListenerRulePriority` muss pro Listener eindeutig sein.
+- **`301` nur bei dauerhaften Umleitungen.** Browser cachen ihn hartnäckig, eine Korrektur erreicht bereits besuchte Clients lange nicht. Für alles Vorläufige `302`.
+- **`ListenerRuleRedirectPath` wirft die Query weg.** Für einen reinen Domain-Umzug leer lassen, sonst verlieren alle Deep Links ihre Parameter.
+- **`ListenerRulePriority` kollidiert erst beim Deployment**, gemeinsam mit allen anderen Regeln desselben Listeners.
 
 ---
 
 ### alb-additional-certificate
 
-ACM-Zertifikat mit DNS-Validierung, zugewiesen als zusätzliches Zertifikat am HTTPS-Listener. Bestehende Zertifikate bleiben unverändert.
+ACM-Zertifikat mit DNS-Validierung, zugewiesen als **zusätzliches** Zertifikat am HTTPS-Listener des Clusters. Bestehende Zertifikate bleiben unverändert.
 
-**Abhängigkeiten:** importiert `${ClusterStackName}-ListenerArnHttps`. Exportiert `${AWS::StackName}-CertificateArn`.
+**Abhängigkeiten:** importiert `${ClusterStackName}-ListenerArnHttps`. Exportiert `${AWS::StackName}-CertificateArn`. Kein `TemplateVersion`-Output.
 
-**Best Practices**
+| Parameter | Default | Wirkung |
+|---|---|---|
+| `ClusterStackName` | — | liefert den HTTPS-Listener |
+| `CertificateCommonName` | — | die Domain, z. B. `www.example.com` |
+| `AddWildcardSan` | `false` | ergänzt `*.<CommonName>` als SAN |
 
-- **Der Stack pausiert bei `CREATE_IN_PROGRESS`, bis die DNS-Validierung abgeschlossen ist.** In dieser Zeit manuell: in ACM das Zertifikat mit Status *Pending Validation* öffnen, die CNAME-Einträge kopieren und in der zuständigen DNS-Zone anlegen. Danach läuft CloudFormation automatisch weiter.
-- Bei Root-Domains `AddWildcardSan=true` setzen, damit `*.example.com` mitabgedeckt ist.
+- **Der Stack pausiert bei `CREATE_IN_PROGRESS`, bis die DNS-Validierung abgeschlossen ist.** In dieser Zeit manuell: in ACM das Zertifikat mit Status *Pending Validation* öffnen, die CNAME-Einträge kopieren und in der zuständigen DNS-Zone anlegen. Danach läuft CloudFormation von selbst weiter.
+- **Bei Root-Domains `AddWildcardSan=true` setzen**, sonst deckt das Zertifikat `example.com`, aber kein `www.example.com` ab.
 - **Die Stack-Löschung schlägt beim ersten Versuch oft fehl**, weil das Zertifikat noch als „in Verwendung" am Listener gilt. Einige Minuten warten und erneut löschen.
 
 ---
 
 ### certificate
 
-Eigenständiges ACM-Zertifikat mit DNS-Validierung, ohne Load-Balancer-Bindung — für spätere manuelle Verwendung oder andere Stacks. Exportiert `${AWS::StackName}-CertificateArn`.
+Eigenständiges ACM-Zertifikat mit DNS-Validierung, ohne Bindung an einen Load Balancer — für manuelle Verwendung oder andere Stacks.
 
-**Best Practices**
+**Abhängigkeiten:** keine Imports. Exportiert `${AWS::StackName}-CertificateArn`. Kein `TemplateVersion`-Output.
+
+| Parameter | Default | Wirkung |
+|---|---|---|
+| `CertificateCommonName` | — | die Domain |
+| `AddWildcardSan` | `false` | ergänzt `*.<CommonName>` als SAN |
 
 - Gleiche DNS-Validierung wie bei `alb-additional-certificate`: der Stack wartet, bis die CNAME-Einträge gesetzt sind.
-- Für CloudFront muss das Zertifikat in **`us-east-1`** liegen.
+- **Für CloudFront muss das Zertifikat in `us-east-1` liegen** — also diesen Stack dort deployen, unabhängig davon, wo der Rest läuft.
 
 ---
 
 ### cloudfront-alb-distribution
 
-CloudFront-Distribution vor einem ALB: HTTP/2 und HTTP/3, IPv6, SNI-only TLS ab TLSv1.2, WAF WebACL (AWS Managed Rules: Common Rule Set, Known Bad Inputs, IP Reputation List, plus Rate Limiting 2.000 Anfragen/IP/5 Min.), Cache Policy die Cache-Control des Origins respektiert und Cookies aus dem Cache-Key ausschließt, `AllViewer` Origin Request Policy, `SecurityHeadersPolicy` und ein Origin-Verify-Header.
+CloudFront-Distribution vor einem ALB: HTTP/2 und HTTP/3, IPv6, SNI-only TLS ab TLSv1.2, eigene Cache Policy (respektiert `Cache-Control` des Origins, schließt Cookies aus dem Cache-Key aus), `AllViewer` Origin Request Policy, `SecurityHeadersPolicy`, Origin-Verify-Header und optional ein eigenes WAF-WebACL.
 
-**Best Practices**
+**Abhängigkeiten:** keine Imports — der ALB wird über seinen DNS-Namen als Parameter übergeben, nicht importiert. Exportiert `DistributionId` und `DistributionDomainName`. Kein `TemplateVersion`-Output.
 
-- **Der WAF-Scope `CLOUDFRONT` existiert ausschließlich in `us-east-1`.** Ein Deployment mit `EnableWAF=true` in einer anderen Region schlägt sofort fehl (`WAFInvalidOperationException`). Aktuell ungelöst — siehe TASKS.md. Für einen ALB gilt das nicht: ein WebACL mit Scope `REGIONAL` wird in derselben Region wie der ALB erstellt.
-- **Das ACM-Zertifikat muss in `us-east-1` liegen**, und das **ALB**-Zertifikat muss den `DomainName` abdecken (SAN oder Wildcard), weil CloudFront den originalen `Host`-Header weiterleitet.
-- **`OriginVerifyValue` ist nur wirksam, wenn der ALB ihn auch erzwingt.** Die Listener-Regeln müssen Anfragen ohne diesen Header ablehnen, sonst bleibt der ALB direkt aus dem Internet erreichbar und CloudFront ist umgehbar.
-- `EnableWAF=false` spart die WAF-Fixkosten (~9 $/Monat), entfernt aber SQLi-, XSS-, Bad-Input-, IP-Reputation- und Rate-Limiting-Schutz. AWS Shield Standard (L3/L4-DDoS) bleibt immer aktiv und kostenlos.
+| Parameter | Default | Wirkung |
+|---|---|---|
+| `DomainName` | — | FQDN der Distribution, muss zum Zertifikat passen |
+| `AcmCertificateArn` | — | **muss in `us-east-1` liegen** |
+| `AlbDnsName` | — | DNS-Name des Origin-ALB |
+| `OriginVerifyHeader` | `X-Origin-Verify` | Name des Headers, den CloudFront mitschickt |
+| `OriginVerifyValue` | — | dessen geheimer Wert |
+| `PriceClass` | `PriceClass_100` | nur Nordamerika und Europa; `_200`/`_All` erweitern die Edge-Standorte und die Kosten |
+| `EnableWAF` | `true` | legt ein `CLOUDFRONT`-WebACL an (Common, Known Bad Inputs, IP Reputation, Rate Limit 2.000/IP/5 Min.) |
+
+- **Der WAF-Scope `CLOUDFRONT` existiert ausschließlich in `us-east-1`.** Ein Deployment mit `EnableWAF=true` in einer anderen Region schlägt sofort mit `WAFInvalidOperationException` fehl. Offener Punkt in TASKS.md. Für einen ALB gilt das nicht — dessen `REGIONAL`-WebACL entsteht in derselben Region wie der ALB.
+- **Auch das ALB-Zertifikat muss `DomainName` abdecken** (SAN oder Wildcard), weil CloudFront den originalen `Host`-Header durchreicht.
+- **`OriginVerifyValue` ist nur wirksam, wenn der ALB ihn auch erzwingt.** Das Template *sendet* den Header; die Listener-Regeln am Cluster müssen Anfragen ohne ihn ablehnen — sonst bleibt der ALB direkt aus dem Internet erreichbar und CloudFront ist umgehbar. Diese Durchsetzung fehlt bislang (TASKS.md).
+- **`EnableWAF=false` spart die WAF-Fixkosten (~9 $/Monat)**, entfernt aber SQLi-, XSS-, Bad-Input-, IP-Reputation- und Rate-Limiting-Schutz. AWS Shield Standard (L3/L4-DDoS) bleibt immer aktiv und kostenlos.
 
 ---
 
 ### global-accelerator-alb
 
-Global Accelerator mit zwei statischen Anycast-IPv4-Adressen vor einem ALB, TCP-Listener auf 80 und 443, Endpoint Group in der Stack-Region mit Client-IP-Weiterleitung.
+Global Accelerator mit zwei statischen Anycast-IPv4-Adressen vor einem ALB, TCP-Listener auf 80 und 443, eine Endpoint Group in der Stack-Region mit Client-IP-Weiterleitung.
 
-**Abhängigkeiten:** importiert `${ClusterStackName}-LoadbalancerArn`.
+**Abhängigkeiten:** importiert `${ClusterStackName}-LoadbalancerArn`. Exportiert `AcceleratorArn`, `AcceleratorDnsName`, `StaticIp1`, `StaticIp2`. Kein `TemplateVersion`-Output.
 
-**Best Practices**
+| Parameter | Default | Wirkung |
+|---|---|---|
+| `ClusterStackName` | — | liefert den ALB als Endpoint |
+| `ClientAffinityEnabled` | `NONE` | `SOURCE_IP` bindet einen Client dauerhaft an denselben Endpoint |
+| `EndpointWeight` | `128` | Gewichtung innerhalb der Endpoint Group |
 
 - **Für externe DNS-Provider ohne CNAME-Flattening.** Die beiden statischen IPs lassen sich direkt als A-Records eintragen — der eigentliche Grund für dieses Template.
+- **`EndpointWeight` ist hier wirkungslos**, solange die Endpoint Group nur diesen einen ALB enthält: Gewichte verteilen Traffic *zwischen* Endpoints.
+- **`ClientAffinityEnabled=SOURCE_IP` nur setzen, wenn die Anwendung Sticky Sessions wirklich braucht** — es verschlechtert die Lastverteilung.
 - Anders als CloudFront ist **kein Deployment in `us-east-1` nötig**; der Stack läuft in der Region des ALB. Global Accelerator selbst wird intern in `us-west-2` verwaltet.
-- `ClientAffinityEnabled=SOURCE_IP` nur setzen, wenn die Anwendung Sticky Sessions tatsächlich braucht.
-
----
-
-### chatbot-slack
-
-Slack-Zustellung für die Alarm-Topics über AWS Chatbot (*Amazon Q Developer in chat applications*). CloudWatch-Alarme und GuardDuty-Findings werden nativ gerendert, es gibt also keinen Formatierungs-Code zu pflegen. Ein Stack pro Account genügt: eine Channel-Konfiguration kann die Topics mehrerer Cluster abonnieren, auch über Regionen hinweg.
-
-**Abhängigkeiten:** keine Imports. Die Topic-ARNs werden als Parameter übergeben — `Fn::ImportValue` funktioniert hier nicht, weil CloudFormation-Exporte **nicht regionsübergreifend** sind und die beiden Topics in zwei Regionen liegen.
-
-**Best Practices**
-
-- **Ein manueller Schritt bleibt.** Ein Slack-Workspace-Admin muss die AWS-App einmalig autorisieren (Konsole → *Amazon Q Developer in chat applications* → Configure new client → Slack). Erst daraus ergibt sich die `SlackWorkspaceId`; ohne sie ist der Stack nicht deploybar.
-- **`CAPABILITY_NAMED_IAM` ist erforderlich** — die Chatbot-Rolle hat einen expliziten `RoleName`.
-- **Bei privaten Channels die AWS-App in den Channel einladen**, sonst schlägt die Zustellung stillschweigend fehl.
-- **Eine reine `https`-Subscription auf einen Slack-Webhook ist kein Ersatz.** SNS schickt seinen eigenen Envelope, der an Slacks Payload-Validierung scheitert, und die Subscription wird nie bestätigt, weil niemand die `SubscribeURL` aufruft.
-- **`GuardrailPolicies` ist die harte Obergrenze** für alles, was per Kommando aus Slack ausgeführt werden kann — unabhängig von der Rolle. `ReadOnlyAccess` belässt es beim Lesen.
-- **E-Mail und Slack schließen sich nicht aus.** Subscriptions koexistieren; kein Alarm und kein Service-Stack wird angefasst. Genau dafür läuft alles über ein Topic pro Cluster.
 
 ---
 

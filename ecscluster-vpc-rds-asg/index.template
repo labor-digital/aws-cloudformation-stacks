@@ -19,7 +19,8 @@
             "default": "Load Balancer"
           },
           "Parameters": [
-            "HttpsdefaultlistenerCertificate"
+            "HttpsdefaultlistenerCertificate",
+            "LogsBucketName"
           ]
         },
         {
@@ -29,7 +30,11 @@
           "Parameters": [
             "RdsInstanceType",
             "RdsMasterUsername",
-            "RdsMasterPassword"
+            "RdsMasterPassword",
+            "RdsErrorAlarmAction",
+            "RdsErrorAlarmThreshold",
+            "RdsSlowQueryAlarmAction",
+            "RdsSlowQueryAlarmThreshold"
           ]
         },
         {
@@ -42,43 +47,54 @@
         },
         {
           "Label": {
-            "default": "Logging & Alerts"
+            "default": "Notifications"
           },
           "Parameters": [
-            "LogsBucketName",
             "AlertEmail"
           ]
         },
         {
           "Label": {
-            "default": "DNS Firewall & Egress"
+            "default": "DNS Firewall"
           },
           "Parameters": [
             "DnsFirewallWhitelistDomains",
-            "EnableEgressAnalysis"
+            "DnsFirewallAlarmAction",
+            "DnsFirewallAlarmThreshold"
           ]
         },
         {
           "Label": {
-            "default": "WAF Rule Actions"
+            "default": "VPC Flow Logs"
+          },
+          "Parameters": [
+            "EnableEgressAnalysis",
+            "VpcFlowLogsAlarmAction",
+            "VpcFlowLogsAlarmThreshold"
+          ]
+        },
+        {
+          "Label": {
+            "default": "WAF"
           },
           "Parameters": [
             "CommonRuleSetAction",
+            "CommonRuleSetAlarmAction",
+            "CommonRuleSetAlarmThreshold",
             "KnownBadInputsAction",
+            "KnownBadInputsAlarmAction",
+            "KnownBadInputsAlarmThreshold",
             "SqliRuleSetAction",
+            "SqliRuleSetAlarmAction",
+            "SqliRuleSetAlarmThreshold",
             "WordPressRulesAction",
-            "RateLimitAction"
-          ]
-        },
-        {
-          "Label": {
-            "default": "WAF Tuning"
-          },
-          "Parameters": [
-            "WafClientIpHeader",
+            "WordPressRulesAlarmAction",
+            "WordPressRulesAlarmThreshold",
+            "RateLimitAction",
+            "RateLimitAlarmAction",
+            "RateLimitAlarmThreshold",
             "WafRateLimitRequests",
-            "WafLogRetentionDays",
-            "WafBlockedRequestAlarmThreshold"
+            "WafClientIpHeader"
           ]
         }
       ]
@@ -120,7 +136,7 @@
     },
     "AscalegroupMinSize": {
       "Type": "Number",
-      "Description": "The min count of EC2-Instances (for Autoscaling). Set to 0 to let ECS Managed Scaling handle capacity \u2014 instances will only start when ECS tasks are deployed.",
+      "Description": "The min count of EC2-Instances (for Autoscaling). Set to 0 to let ECS Managed Scaling handle capacity - instances will only start when ECS tasks are deployed.",
       "Default": "0",
       "MinValue": "0",
       "MaxValue": "10"
@@ -134,7 +150,7 @@
     },
     "AscalegroupDesSize": {
       "Type": "Number",
-      "Description": "The desired count of EC2-Instances (for Autoscaling). Set to 0 initially \u2014 ECS Managed Scaling will scale up automatically when tasks are deployed.",
+      "Description": "The desired count of EC2-Instances (for Autoscaling). Set to 0 initially - ECS Managed Scaling will scale up automatically when tasks are deployed.",
       "Default": "0",
       "MinValue": "0",
       "MaxValue": "15"
@@ -163,7 +179,7 @@
     },
     "DnsFirewallWhitelistDomains": {
       "Type": "CommaDelimitedList",
-      "Description": "Comma-separated list of domains to allow through the DNS Firewall (e.g. *.eu-west-3.amazonaws.com,*.ec2.internal,api.doppler.com). Note: wildcards (*) only match a single subdomain level \u2014 *.example.com matches foo.example.com but NOT foo.bar.example.com. List must not be empty and must not contain trailing commas.",
+      "Description": "Comma-separated list of domains to allow through the DNS Firewall (e.g. *.eu-west-3.amazonaws.com,*.ec2.internal,api.doppler.com). Note: wildcards (*) only match a single subdomain level - *.example.com matches foo.example.com but NOT foo.bar.example.com. List must not be empty and must not contain trailing commas.",
       "Default": "*.in-addr.arpa"
     },
     "EnableEgressAnalysis": {
@@ -173,7 +189,7 @@
         "true",
         "false"
       ],
-      "Description": "Enable ACCEPT-mode VPC Flow Logs for egress port baseline analysis. Temporary \u2014 disable after 7-14 days once sufficient data is collected for Security Group hardening (LII26-95)."
+      "Description": "Enable ACCEPT-mode VPC Flow Logs. For temporary testing only: they exist to record which outbound ports are actually in use, so that a baseline can be derived and the security groups tightened against it. Leave this off in normal operation and switch it back to false once 7-14 days of data are collected - ACCEPT logs capture essentially all traffic and are billed per GB, so they dominate logging cost while they run. Nothing consumes this log group apart from the saved VpcEgressPortsAnalysis query; there is no metric filter and no alarm on it."
     },
     "CommonRuleSetAction": {
       "Type": "String",
@@ -239,26 +255,149 @@
       "MaxValue": 2000000000,
       "Description": "Requests per 5 minutes from a single IP before the rate-based rule applies. WAF enforces a minimum of 100. Set RateLimitAction to off to disable the rule instead."
     },
-    "WafLogRetentionDays": {
-      "Type": "Number",
-      "Default": 14,
-      "Description": "Retention for the WAF log group, in days. CloudWatch accepts only a fixed set of values, hence AllowedValues - an arbitrary number such as 20 fails the stack. 14 matches the retention used for the ALB, VPC flow and DNS logs: WAF logs record the full request including client IP addresses, so they are personal data on the same DSGVO basis and anything longer needs a justification in the VVT.",
+    "DnsFirewallAlarmAction": {
+      "Type": "String",
+      "Default": "dashboard",
       "AllowedValues": [
-        1,
-        3,
-        5,
-        7,
-        14,
-        30,
-        60,
-        90
-      ]
+        "off",
+        "dashboard",
+        "alert"
+      ],
+      "Description": "Notification level for DnsFirewallAlertAlarm (surge in DNS Firewall ALERT events; follow up in DnsFirewallLogs) off = the alarm is not created at all. dashboard = the alarm exists and its state is visible in the console and on dashboards, but ActionsEnabled is false so nothing reaches the alert topic. alert = the alarm also notifies the cluster AlertTopic. Use dashboard while an alarm is still being calibrated: state history keeps accumulating, so no evidence is lost and no mail is sent."
     },
-    "WafBlockedRequestAlarmThreshold": {
+    "DnsFirewallAlarmThreshold": {
+      "Type": "Number",
+      "Default": 100,
+      "MinValue": 1,
+      "Description": "DNS Firewall ALERT events per 5 minutes before DnsFirewallAlarmAction fires. Starting point only: read the metric against real traffic while the alarm sits on dashboard, then adjust. Thresholds are per alarm because the volumes behind them are unrelated."
+    },
+    "VpcFlowLogsAlarmAction": {
+      "Type": "String",
+      "Default": "dashboard",
+      "AllowedValues": [
+        "off",
+        "dashboard",
+        "alert"
+      ],
+      "Description": "Notification level for VpcFlowLogsRejectedAlarm (surge in REJECTed VPC flows) off = the alarm is not created at all. dashboard = the alarm exists and its state is visible in the console and on dashboards, but ActionsEnabled is false so nothing reaches the alert topic. alert = the alarm also notifies the cluster AlertTopic. Use dashboard while an alarm is still being calibrated: state history keeps accumulating, so no evidence is lost and no mail is sent."
+    },
+    "VpcFlowLogsAlarmThreshold": {
+      "Type": "Number",
+      "Default": 500,
+      "MinValue": 1,
+      "Description": "Rejected VPC connections per 5 minutes before VpcFlowLogsAlarmAction fires. Starting point only: read the metric against real traffic while the alarm sits on dashboard, then adjust. Thresholds are per alarm because the volumes behind them are unrelated."
+    },
+    "RdsErrorAlarmAction": {
+      "Type": "String",
+      "Default": "dashboard",
+      "AllowedValues": [
+        "off",
+        "dashboard",
+        "alert"
+      ],
+      "Description": "Notification level for RdsErrorAlarm (any [ERROR] line in the RDS logs - threshold 0, so the noisiest of the four) off = the alarm is not created at all. dashboard = the alarm exists and its state is visible in the console and on dashboards, but ActionsEnabled is false so nothing reaches the alert topic. alert = the alarm also notifies the cluster AlertTopic. Use dashboard while an alarm is still being calibrated: state history keeps accumulating, so no evidence is lost and no mail is sent."
+    },
+    "RdsErrorAlarmThreshold": {
       "Type": "Number",
       "Default": 0,
       "MinValue": 0,
-      "Description": "Blocked requests per 5 minutes that raise an alarm on the cluster alert topic. 0 disables the alarm. Leave at 0 while every rule is still counting, since nothing is blocked then."
+      "Description": "Aurora error-log lines per 5 minutes before RdsErrorAlarmAction fires. The default 0 means every single [ERROR] line raises the alarm, which is the point of it - raising this silently swallows database errors, so change it only with a reason. Starting point only: read the metric against real traffic while the alarm sits on dashboard, then adjust. Thresholds are per alarm because the volumes behind them are unrelated."
+    },
+    "RdsSlowQueryAlarmAction": {
+      "Type": "String",
+      "Default": "dashboard",
+      "AllowedValues": [
+        "off",
+        "dashboard",
+        "alert"
+      ],
+      "Description": "Notification level for RdsSlowQueryAlarm (slow-query log lines above the threshold) off = the alarm is not created at all. dashboard = the alarm exists and its state is visible in the console and on dashboards, but ActionsEnabled is false so nothing reaches the alert topic. alert = the alarm also notifies the cluster AlertTopic. Use dashboard while an alarm is still being calibrated: state history keeps accumulating, so no evidence is lost and no mail is sent."
+    },
+    "RdsSlowQueryAlarmThreshold": {
+      "Type": "Number",
+      "Default": 5,
+      "MinValue": 1,
+      "Description": "Slow-query log lines per 5 minutes before RdsSlowQueryAlarmAction fires. Raise this temporarily when long_query_time is set to 0 for a full query trace, or the alarm is red immediately. Starting point only: read the metric against real traffic while the alarm sits on dashboard, then adjust. Thresholds are per alarm because the volumes behind them are unrelated."
+    },
+    "CommonRuleSetAlarmAction": {
+      "Type": "String",
+      "Default": "dashboard",
+      "AllowedValues": [
+        "off",
+        "dashboard",
+        "alert"
+      ],
+      "Description": "Surge alarm for AWSManagedRulesCommonRuleSet. Measured ~115 matches per 5 min across the estate, 93 % of them NoUserAgent_HEADER - by far the highest-volume rule, so a low threshold here is permanently red. off = no alarm resource. dashboard = the alarm exists with ActionsEnabled false (state and history only). alert = it also notifies the cluster AlertTopic. The alarm follows the rule's own mode: CountedRequests while CommonRuleSetAction is count, BlockedRequests once it is block - promotion changes whether matches die, not how many there are, so one threshold serves both. Defaults to dashboard: the alarm is visible and its history accumulates from day one, but nothing is mailed. Promote it to alert deliberately - for the quiet high-signal rules that is reasonable even while they only count."
+    },
+    "CommonRuleSetAlarmThreshold": {
+      "Type": "Number",
+      "Default": 300,
+      "MinValue": 1,
+      "Description": "Matches per 5 minutes before CommonRuleSetAlarmAction fires. Starting point derived from the measured count-mode volume; re-read the metric after a week and adjust. Thresholds are per rule on purpose: measured volumes span three orders of magnitude, so no single shared number can serve all five."
+    },
+    "KnownBadInputsAlarmAction": {
+      "Type": "String",
+      "Default": "dashboard",
+      "AllowedValues": [
+        "off",
+        "dashboard",
+        "alert"
+      ],
+      "Description": "Surge alarm for AWSManagedRulesKnownBadInputsRuleSet. Measured ~18 matches per 5 min. This group should be near-silent on legitimate traffic, so a sustained rise here is the most interesting of the five. off = no alarm resource. dashboard = the alarm exists with ActionsEnabled false (state and history only). alert = it also notifies the cluster AlertTopic. The alarm follows the rule's own mode: CountedRequests while KnownBadInputsAction is count, BlockedRequests once it is block - promotion changes whether matches die, not how many there are, so one threshold serves both. Defaults to dashboard: the alarm is visible and its history accumulates from day one, but nothing is mailed. Promote it to alert deliberately - for the quiet high-signal rules that is reasonable even while they only count."
+    },
+    "KnownBadInputsAlarmThreshold": {
+      "Type": "Number",
+      "Default": 50,
+      "MinValue": 1,
+      "Description": "Matches per 5 minutes before KnownBadInputsAlarmAction fires. Starting point derived from the measured count-mode volume; re-read the metric after a week and adjust. Thresholds are per rule on purpose: measured volumes span three orders of magnitude, so no single shared number can serve all five."
+    },
+    "SqliRuleSetAlarmAction": {
+      "Type": "String",
+      "Default": "dashboard",
+      "AllowedValues": [
+        "off",
+        "dashboard",
+        "alert"
+      ],
+      "Description": "Surge alarm for AWSManagedRulesSQLiRuleSet. Measured ~3 matches per 5 min - the quietest managed group, so it can carry a tight threshold. off = no alarm resource. dashboard = the alarm exists with ActionsEnabled false (state and history only). alert = it also notifies the cluster AlertTopic. The alarm follows the rule's own mode: CountedRequests while SqliRuleSetAction is count, BlockedRequests once it is block - promotion changes whether matches die, not how many there are, so one threshold serves both. Defaults to dashboard: the alarm is visible and its history accumulates from day one, but nothing is mailed. Promote it to alert deliberately - for the quiet high-signal rules that is reasonable even while they only count."
+    },
+    "SqliRuleSetAlarmThreshold": {
+      "Type": "Number",
+      "Default": 20,
+      "MinValue": 1,
+      "Description": "Matches per 5 minutes before SqliRuleSetAlarmAction fires. Starting point derived from the measured count-mode volume; re-read the metric after a week and adjust. Thresholds are per rule on purpose: measured volumes span three orders of magnitude, so no single shared number can serve all five."
+    },
+    "WordPressRulesAlarmAction": {
+      "Type": "String",
+      "Default": "dashboard",
+      "AllowedValues": [
+        "off",
+        "dashboard",
+        "alert"
+      ],
+      "Description": "Surge alarm for AWSManagedRulesWordPressRuleSet. Measured ~4 matches per 5 min. off = no alarm resource. dashboard = the alarm exists with ActionsEnabled false (state and history only). alert = it also notifies the cluster AlertTopic. The alarm follows the rule's own mode: CountedRequests while WordPressRulesAction is count, BlockedRequests once it is block - promotion changes whether matches die, not how many there are, so one threshold serves both. Defaults to dashboard: the alarm is visible and its history accumulates from day one, but nothing is mailed. Promote it to alert deliberately - for the quiet high-signal rules that is reasonable even while they only count."
+    },
+    "WordPressRulesAlarmThreshold": {
+      "Type": "Number",
+      "Default": 20,
+      "MinValue": 1,
+      "Description": "Matches per 5 minutes before WordPressRulesAlarmAction fires. Starting point derived from the measured count-mode volume; re-read the metric after a week and adjust. Thresholds are per rule on purpose: measured volumes span three orders of magnitude, so no single shared number can serve all five."
+    },
+    "RateLimitAlarmAction": {
+      "Type": "String",
+      "Default": "dashboard",
+      "AllowedValues": [
+        "off",
+        "dashboard",
+        "alert"
+      ],
+      "Description": "Surge alarm for Both rate-based rules. Measured 0 matches - nothing has ever reached WafRateLimitRequests. Two alarms exist when WafClientIpHeader is set (one per rule), one otherwise; both share this threshold. off = no alarm resource. dashboard = the alarm exists with ActionsEnabled false (state and history only). alert = it also notifies the cluster AlertTopic. The alarm follows the rule's own mode: CountedRequests while RateLimitAction is count, BlockedRequests once it is block - promotion changes whether matches die, not how many there are, so one threshold serves both. Defaults to dashboard: the alarm is visible and its history accumulates from day one, but nothing is mailed. Promote it to alert deliberately - for the quiet high-signal rules that is reasonable even while they only count."
+    },
+    "RateLimitAlarmThreshold": {
+      "Type": "Number",
+      "Default": 10,
+      "MinValue": 1,
+      "Description": "Matches per 5 minutes before RateLimitAlarmAction fires. Starting point derived from the measured count-mode volume; re-read the metric after a week and adjust. Thresholds are per rule on purpose: measured volumes span three orders of magnitude, so no single shared number can serve all five."
     }
   },
   "Rules": {
@@ -1824,151 +1963,359 @@
         "Loadbalancer"
       ]
     },
-    "SgInternalAlb": {
-      "Type": "AWS::EC2::SecurityGroup",
+    "CommonRuleSetSurgeAlarm": {
+      "Type": "AWS::CloudWatch::Alarm",
+      "Condition": "CommonRuleSetAlarmEnabled",
+      "Metadata": {
+        "Note": "Per-rule WAF surge alarm. MetricName follows the rule's own mode through CommonRuleSetActionCounts: CountedRequests while the rule only counts, BlockedRequests once it enforces - so the alarm is meaningful during the counting weeks and after promotion, with a single threshold. Dimensioned on this one Rule, so the notification names the rule that fired; that is what tells an attack apart from a rule misfiring, which a Rule=ALL alarm cannot do."
+      },
       "Properties": {
-        "GroupName": {
-          "Fn::Join": [
-            "-",
-            [
-              {
-                "Ref": "AWS::StackName"
-              },
-              "SgInternalAlb"
-            ]
+        "AlarmName": {
+          "Fn::Sub": "${AWS::StackName}-AlarmWafCommonRuleSet"
+        },
+        "AlarmDescription": "Surge in WAF matches for rule AWSManagedRulesCommonRuleSet on the ALB WebACL. Watches CountedRequests while the rule counts and BlockedRequests once it blocks.",
+        "ActionsEnabled": {
+          "Fn::If": [
+            "CommonRuleSetAlarmAlerts",
+            true,
+            false
           ]
         },
-        "GroupDescription": "Securitygroup for the internal loadbalancer - reachable only from the ECS instances",
-        "SecurityGroupIngress": [
+        "AlarmActions": [
           {
-            "IpProtocol": "tcp",
-            "FromPort": 80,
-            "ToPort": 80,
-            "SourceSecurityGroupId": {
-              "Ref": "SgVpcLoadbalancerports"
-            }
+            "Ref": "AlertTopic"
           }
         ],
-        "Tags": [
-          {
-            "Key": "Name",
-            "Value": {
-              "Fn::Join": [
-                "-",
-                [
-                  {
-                    "Ref": "AWS::StackName"
-                  },
-                  "SgInternalAlb"
-                ]
-              ]
-            }
-          }
-        ],
-        "VpcId": {
-          "Ref": "Vpc"
-        }
-      },
-      "DependsOn": [
-        "Vpc",
-        "SgVpcLoadbalancerports"
-      ]
-    },
-    "InternalLoadbalancer": {
-      "Type": "AWS::ElasticLoadBalancingV2::LoadBalancer",
-      "Metadata": {
-        "Note": "Private entry point for service-to-service traffic that has no business on the public ALB - Solr first. Lives here rather than in its own stack because it is cluster-level singleton infrastructure, the sibling of Loadbalancer, and because SgInternalAlb can only reference SgVpcLoadbalancerports from inside this stack. HTTP only: the backends behind it speak plain HTTP, so terminating TLS inside the VPC would add nothing. deletion_protection is deliberately NOT enabled - it would block a CloudFormation rollback while this is new. Turn it on once the internal path is proven."
-      },
-      "Properties": {
-        "LoadBalancerAttributes": [
-          {
-            "Key": "idle_timeout.timeout_seconds",
-            "Value": "60"
-          },
-          {
-            "Key": "routing.http2.enabled",
-            "Value": "true"
-          }
-        ],
-        "Name": {
-          "Fn::Join": [
-            "-",
-            [
-              {
-                "Ref": "AWS::StackName"
-              },
-              "InternalLb"
-            ]
+        "Namespace": "AWS/WAFV2",
+        "MetricName": {
+          "Fn::If": [
+            "CommonRuleSetActionCounts",
+            "CountedRequests",
+            "BlockedRequests"
           ]
         },
-        "Scheme": "internal",
-        "SecurityGroups": [
+        "Statistic": "Sum",
+        "Period": 300,
+        "EvaluationPeriods": 1,
+        "Threshold": {
+          "Ref": "CommonRuleSetAlarmThreshold"
+        },
+        "ComparisonOperator": "GreaterThanThreshold",
+        "Dimensions": [
           {
-            "Ref": "SgInternalAlb"
-          },
-          {
-            "Ref": "SgVpcLoadbalancerportsAccess"
-          }
-        ],
-        "Subnets": [
-          {
-            "Ref": "SubnetPrivate1"
-          },
-          {
-            "Ref": "SubnetPrivate2"
-          }
-        ],
-        "Tags": [
-          {
-            "Key": "Name",
+            "Name": "WebACL",
             "Value": {
-              "Fn::Join": [
-                "-",
-                [
-                  {
-                    "Ref": "AWS::StackName"
-                  },
-                  "InternalLb"
-                ]
-              ]
+              "Fn::Sub": "${AWS::StackName}-waf"
             }
+          },
+          {
+            "Name": "Region",
+            "Value": {
+              "Ref": "AWS::Region"
+            }
+          },
+          {
+            "Name": "Rule",
+            "Value": "AWSManagedRulesCommonRuleSet"
           }
         ],
-        "Type": "application",
-        "IpAddressType": "ipv4"
-      },
-      "DependsOn": [
-        "SgInternalAlb",
-        "SgVpcLoadbalancerportsAccess",
-        "SubnetPrivate1",
-        "SubnetPrivate2"
-      ]
+        "TreatMissingData": "notBreaching"
+      }
     },
-    "InternalHttplistener": {
-      "Type": "AWS::ElasticLoadBalancingV2::Listener",
+    "KnownBadInputsSurgeAlarm": {
+      "Type": "AWS::CloudWatch::Alarm",
+      "Condition": "KnownBadInputsAlarmEnabled",
       "Metadata": {
-        "Note": "Default action is a fixed 404, not a forward to a catch-all target group: a request that matches no service rule must not reach anything. Services attach to this listener by passing its ARN as ListenerArnOverride in ecsservice."
+        "Note": "Per-rule WAF surge alarm. MetricName follows the rule's own mode through KnownBadInputsActionCounts: CountedRequests while the rule only counts, BlockedRequests once it enforces - so the alarm is meaningful during the counting weeks and after promotion, with a single threshold. Dimensioned on this one Rule, so the notification names the rule that fired; that is what tells an attack apart from a rule misfiring, which a Rule=ALL alarm cannot do."
       },
       "Properties": {
-        "DefaultActions": [
+        "AlarmName": {
+          "Fn::Sub": "${AWS::StackName}-AlarmWafKnownBadInputs"
+        },
+        "AlarmDescription": "Surge in WAF matches for rule AWSManagedRulesKnownBadInputsRuleSet on the ALB WebACL. Watches CountedRequests while the rule counts and BlockedRequests once it blocks.",
+        "ActionsEnabled": {
+          "Fn::If": [
+            "KnownBadInputsAlarmAlerts",
+            true,
+            false
+          ]
+        },
+        "AlarmActions": [
           {
-            "Type": "fixed-response",
-            "FixedResponseConfig": {
-              "StatusCode": "404",
-              "ContentType": "text/plain",
-              "MessageBody": "No internal route matched."
-            }
+            "Ref": "AlertTopic"
           }
         ],
-        "LoadBalancerArn": {
-          "Ref": "InternalLoadbalancer"
+        "Namespace": "AWS/WAFV2",
+        "MetricName": {
+          "Fn::If": [
+            "KnownBadInputsActionCounts",
+            "CountedRequests",
+            "BlockedRequests"
+          ]
         },
-        "Port": 80,
-        "Protocol": "HTTP"
+        "Statistic": "Sum",
+        "Period": 300,
+        "EvaluationPeriods": 1,
+        "Threshold": {
+          "Ref": "KnownBadInputsAlarmThreshold"
+        },
+        "ComparisonOperator": "GreaterThanThreshold",
+        "Dimensions": [
+          {
+            "Name": "WebACL",
+            "Value": {
+              "Fn::Sub": "${AWS::StackName}-waf"
+            }
+          },
+          {
+            "Name": "Region",
+            "Value": {
+              "Ref": "AWS::Region"
+            }
+          },
+          {
+            "Name": "Rule",
+            "Value": "AWSManagedRulesKnownBadInputsRuleSet"
+          }
+        ],
+        "TreatMissingData": "notBreaching"
+      }
+    },
+    "SqliRuleSetSurgeAlarm": {
+      "Type": "AWS::CloudWatch::Alarm",
+      "Condition": "SqliRuleSetAlarmEnabled",
+      "Metadata": {
+        "Note": "Per-rule WAF surge alarm. MetricName follows the rule's own mode through SqliRuleSetActionCounts: CountedRequests while the rule only counts, BlockedRequests once it enforces - so the alarm is meaningful during the counting weeks and after promotion, with a single threshold. Dimensioned on this one Rule, so the notification names the rule that fired; that is what tells an attack apart from a rule misfiring, which a Rule=ALL alarm cannot do."
       },
-      "DependsOn": [
-        "InternalLoadbalancer"
-      ]
+      "Properties": {
+        "AlarmName": {
+          "Fn::Sub": "${AWS::StackName}-AlarmWafSQLi"
+        },
+        "AlarmDescription": "Surge in WAF matches for rule AWSManagedRulesSQLiRuleSet on the ALB WebACL. Watches CountedRequests while the rule counts and BlockedRequests once it blocks.",
+        "ActionsEnabled": {
+          "Fn::If": [
+            "SqliRuleSetAlarmAlerts",
+            true,
+            false
+          ]
+        },
+        "AlarmActions": [
+          {
+            "Ref": "AlertTopic"
+          }
+        ],
+        "Namespace": "AWS/WAFV2",
+        "MetricName": {
+          "Fn::If": [
+            "SqliRuleSetActionCounts",
+            "CountedRequests",
+            "BlockedRequests"
+          ]
+        },
+        "Statistic": "Sum",
+        "Period": 300,
+        "EvaluationPeriods": 1,
+        "Threshold": {
+          "Ref": "SqliRuleSetAlarmThreshold"
+        },
+        "ComparisonOperator": "GreaterThanThreshold",
+        "Dimensions": [
+          {
+            "Name": "WebACL",
+            "Value": {
+              "Fn::Sub": "${AWS::StackName}-waf"
+            }
+          },
+          {
+            "Name": "Region",
+            "Value": {
+              "Ref": "AWS::Region"
+            }
+          },
+          {
+            "Name": "Rule",
+            "Value": "AWSManagedRulesSQLiRuleSet"
+          }
+        ],
+        "TreatMissingData": "notBreaching"
+      }
+    },
+    "WordPressRulesSurgeAlarm": {
+      "Type": "AWS::CloudWatch::Alarm",
+      "Condition": "WordPressRulesAlarmEnabled",
+      "Metadata": {
+        "Note": "Per-rule WAF surge alarm. MetricName follows the rule's own mode through WordPressRulesActionCounts: CountedRequests while the rule only counts, BlockedRequests once it enforces - so the alarm is meaningful during the counting weeks and after promotion, with a single threshold. Dimensioned on this one Rule, so the notification names the rule that fired; that is what tells an attack apart from a rule misfiring, which a Rule=ALL alarm cannot do."
+      },
+      "Properties": {
+        "AlarmName": {
+          "Fn::Sub": "${AWS::StackName}-AlarmWafWordPress"
+        },
+        "AlarmDescription": "Surge in WAF matches for rule AWSManagedRulesWordPressRuleSet on the ALB WebACL. Watches CountedRequests while the rule counts and BlockedRequests once it blocks.",
+        "ActionsEnabled": {
+          "Fn::If": [
+            "WordPressRulesAlarmAlerts",
+            true,
+            false
+          ]
+        },
+        "AlarmActions": [
+          {
+            "Ref": "AlertTopic"
+          }
+        ],
+        "Namespace": "AWS/WAFV2",
+        "MetricName": {
+          "Fn::If": [
+            "WordPressRulesActionCounts",
+            "CountedRequests",
+            "BlockedRequests"
+          ]
+        },
+        "Statistic": "Sum",
+        "Period": 300,
+        "EvaluationPeriods": 1,
+        "Threshold": {
+          "Ref": "WordPressRulesAlarmThreshold"
+        },
+        "ComparisonOperator": "GreaterThanThreshold",
+        "Dimensions": [
+          {
+            "Name": "WebACL",
+            "Value": {
+              "Fn::Sub": "${AWS::StackName}-waf"
+            }
+          },
+          {
+            "Name": "Region",
+            "Value": {
+              "Ref": "AWS::Region"
+            }
+          },
+          {
+            "Name": "Rule",
+            "Value": "AWSManagedRulesWordPressRuleSet"
+          }
+        ],
+        "TreatMissingData": "notBreaching"
+      }
+    },
+    "RateLimitSourceIpSurgeAlarm": {
+      "Type": "AWS::CloudWatch::Alarm",
+      "Condition": "RateLimitAlarmEnabled",
+      "Metadata": {
+        "Note": "Per-rule WAF surge alarm. MetricName follows the rule's own mode through RateLimitActionCounts: CountedRequests while the rule only counts, BlockedRequests once it enforces - so the alarm is meaningful during the counting weeks and after promotion, with a single threshold. Dimensioned on this one Rule, so the notification names the rule that fired; that is what tells an attack apart from a rule misfiring, which a Rule=ALL alarm cannot do."
+      },
+      "Properties": {
+        "AlarmName": {
+          "Fn::Sub": "${AWS::StackName}-AlarmWafRateLimitSourceIp"
+        },
+        "AlarmDescription": "Surge in WAF matches for rule RateLimitSourceIp on the ALB WebACL. Watches CountedRequests while the rule counts and BlockedRequests once it blocks.",
+        "ActionsEnabled": {
+          "Fn::If": [
+            "RateLimitAlarmAlerts",
+            true,
+            false
+          ]
+        },
+        "AlarmActions": [
+          {
+            "Ref": "AlertTopic"
+          }
+        ],
+        "Namespace": "AWS/WAFV2",
+        "MetricName": {
+          "Fn::If": [
+            "RateLimitActionCounts",
+            "CountedRequests",
+            "BlockedRequests"
+          ]
+        },
+        "Statistic": "Sum",
+        "Period": 300,
+        "EvaluationPeriods": 1,
+        "Threshold": {
+          "Ref": "RateLimitAlarmThreshold"
+        },
+        "ComparisonOperator": "GreaterThanThreshold",
+        "Dimensions": [
+          {
+            "Name": "WebACL",
+            "Value": {
+              "Fn::Sub": "${AWS::StackName}-waf"
+            }
+          },
+          {
+            "Name": "Region",
+            "Value": {
+              "Ref": "AWS::Region"
+            }
+          },
+          {
+            "Name": "Rule",
+            "Value": "RateLimitSourceIp"
+          }
+        ],
+        "TreatMissingData": "notBreaching"
+      }
+    },
+    "RateLimitForwardedIpSurgeAlarm": {
+      "Type": "AWS::CloudWatch::Alarm",
+      "Condition": "RateLimitForwardedIpAlarmEnabled",
+      "Metadata": {
+        "Note": "Per-rule WAF surge alarm. MetricName follows the rule's own mode through RateLimitActionCounts: CountedRequests while the rule only counts, BlockedRequests once it enforces - so the alarm is meaningful during the counting weeks and after promotion, with a single threshold. Dimensioned on this one Rule, so the notification names the rule that fired; that is what tells an attack apart from a rule misfiring, which a Rule=ALL alarm cannot do."
+      },
+      "Properties": {
+        "AlarmName": {
+          "Fn::Sub": "${AWS::StackName}-AlarmWafRateLimitForwardedIp"
+        },
+        "AlarmDescription": "Surge in WAF matches for rule RateLimitForwardedIp on the ALB WebACL. Watches CountedRequests while the rule counts and BlockedRequests once it blocks.",
+        "ActionsEnabled": {
+          "Fn::If": [
+            "RateLimitAlarmAlerts",
+            true,
+            false
+          ]
+        },
+        "AlarmActions": [
+          {
+            "Ref": "AlertTopic"
+          }
+        ],
+        "Namespace": "AWS/WAFV2",
+        "MetricName": {
+          "Fn::If": [
+            "RateLimitActionCounts",
+            "CountedRequests",
+            "BlockedRequests"
+          ]
+        },
+        "Statistic": "Sum",
+        "Period": 300,
+        "EvaluationPeriods": 1,
+        "Threshold": {
+          "Ref": "RateLimitAlarmThreshold"
+        },
+        "ComparisonOperator": "GreaterThanThreshold",
+        "Dimensions": [
+          {
+            "Name": "WebACL",
+            "Value": {
+              "Fn::Sub": "${AWS::StackName}-waf"
+            }
+          },
+          {
+            "Name": "Region",
+            "Value": {
+              "Ref": "AWS::Region"
+            }
+          },
+          {
+            "Name": "Rule",
+            "Value": "RateLimitForwardedIp"
+          }
+        ],
+        "TreatMissingData": "notBreaching"
+      }
     },
     "BackupRole": {
       "Type": "AWS::IAM::Role",
@@ -2709,9 +3056,17 @@
     },
     "DnsFirewallAlertAlarm": {
       "Type": "AWS::CloudWatch::Alarm",
+      "Condition": "DnsFirewallAlarmEnabled",
       "Properties": {
         "AlarmName": {
           "Fn::Sub": "${AWS::StackName}-dns-firewall-alert-surge"
+        },
+        "ActionsEnabled": {
+          "Fn::If": [
+            "DnsFirewallAlarmAlerts",
+            true,
+            false
+          ]
         },
         "AlarmActions": [
           {
@@ -2726,7 +3081,9 @@
         "Statistic": "Sum",
         "Period": 300,
         "EvaluationPeriods": 1,
-        "Threshold": 100,
+        "Threshold": {
+          "Ref": "DnsFirewallAlarmThreshold"
+        },
         "ComparisonOperator": "GreaterThanThreshold",
         "TreatMissingData": "notBreaching"
       }
@@ -2752,9 +3109,17 @@
     },
     "VpcFlowLogsRejectedAlarm": {
       "Type": "AWS::CloudWatch::Alarm",
+      "Condition": "VpcFlowLogsAlarmEnabled",
       "Properties": {
         "AlarmName": {
           "Fn::Sub": "${AWS::StackName}-vpc-rejected-surge"
+        },
+        "ActionsEnabled": {
+          "Fn::If": [
+            "VpcFlowLogsAlarmAlerts",
+            true,
+            false
+          ]
         },
         "AlarmActions": [
           {
@@ -2769,7 +3134,9 @@
         "Statistic": "Sum",
         "Period": 300,
         "EvaluationPeriods": 1,
-        "Threshold": 500,
+        "Threshold": {
+          "Ref": "VpcFlowLogsAlarmThreshold"
+        },
         "ComparisonOperator": "GreaterThanThreshold",
         "TreatMissingData": "notBreaching"
       }
@@ -2805,9 +3172,17 @@
     },
     "RdsErrorAlarm": {
       "Type": "AWS::CloudWatch::Alarm",
+      "Condition": "RdsErrorAlarmEnabled",
       "Properties": {
         "AlarmName": {
           "Fn::Sub": "${AWS::StackName}-rds-error"
+        },
+        "ActionsEnabled": {
+          "Fn::If": [
+            "RdsErrorAlarmAlerts",
+            true,
+            false
+          ]
         },
         "AlarmActions": [
           {
@@ -2822,7 +3197,9 @@
         "Statistic": "Sum",
         "Period": 300,
         "EvaluationPeriods": 1,
-        "Threshold": 0,
+        "Threshold": {
+          "Ref": "RdsErrorAlarmThreshold"
+        },
         "ComparisonOperator": "GreaterThanThreshold",
         "TreatMissingData": "notBreaching"
       }
@@ -2858,16 +3235,26 @@
     },
     "RdsSlowQueryAlarm": {
       "Type": "AWS::CloudWatch::Alarm",
+      "Condition": "RdsSlowQueryAlarmEnabled",
       "Properties": {
         "AlarmName": {
           "Fn::Sub": "${AWS::StackName}-rds-slow-queries"
+        },
+        "ActionsEnabled": {
+          "Fn::If": [
+            "RdsSlowQueryAlarmAlerts",
+            true,
+            false
+          ]
         },
         "AlarmActions": [
           {
             "Ref": "AlertTopic"
           }
         ],
-        "AlarmDescription": "More than 5 slow queries (>10s) in 5 minutes. Review RdsSlowQuerySummary Logs Insights query.",
+        "AlarmDescription": {
+          "Fn::Sub": "More than ${RdsSlowQueryAlarmThreshold} slow queries (above long_query_time) in 5 minutes. Review RdsSlowQuerySummary Logs Insights query."
+        },
         "Namespace": {
           "Fn::Sub": "${AWS::StackName}/RDS"
         },
@@ -2875,7 +3262,9 @@
         "Statistic": "Sum",
         "Period": 300,
         "EvaluationPeriods": 1,
-        "Threshold": 5,
+        "Threshold": {
+          "Ref": "RdsSlowQueryAlarmThreshold"
+        },
         "ComparisonOperator": "GreaterThanThreshold",
         "TreatMissingData": "notBreaching"
       }
@@ -3216,9 +3605,7 @@
         "LogGroupName": {
           "Fn::Sub": "aws-waf-logs-${AWS::StackName}-waf"
         },
-        "RetentionInDays": {
-          "Ref": "WafLogRetentionDays"
-        }
+        "RetentionInDays": 14
       }
     },
     "WafLogDeliveryPolicy": {
@@ -3272,49 +3659,6 @@
           }
         ]
       }
-    },
-    "WafBlockedRequestAlarm": {
-      "Type": "AWS::CloudWatch::Alarm",
-      "Condition": "WafBlockedRequestAlarmEnabled",
-      "Properties": {
-        "AlarmName": {
-          "Fn::Sub": "${AWS::StackName}-AlarmWafBlockedSurge"
-        },
-        "AlarmDescription": "Surge in requests blocked by the ALB WebACL - either an attack in progress or a rule producing false positives. Compare the per-rule metrics to tell them apart.",
-        "AlarmActions": [
-          {
-            "Ref": "AlertTopic"
-          }
-        ],
-        "Namespace": "AWS/WAFV2",
-        "MetricName": "BlockedRequests",
-        "Statistic": "Sum",
-        "Period": 300,
-        "EvaluationPeriods": 1,
-        "Threshold": {
-          "Ref": "WafBlockedRequestAlarmThreshold"
-        },
-        "ComparisonOperator": "GreaterThanThreshold",
-        "Dimensions": [
-          {
-            "Name": "WebACL",
-            "Value": {
-              "Fn::Sub": "${AWS::StackName}-waf"
-            }
-          },
-          {
-            "Name": "Region",
-            "Value": {
-              "Ref": "AWS::Region"
-            }
-          },
-          {
-            "Name": "Rule",
-            "Value": "ALL"
-          }
-        ],
-        "TreatMissingData": "notBreaching"
-      }
     }
   },
   "Outputs": {
@@ -3365,29 +3709,6 @@
       "Export": {
         "Name": {
           "Fn::Sub": "${AWS::StackName}-Efs"
-        }
-      }
-    },
-    "InternalListenerArnHttp": {
-      "Value": {
-        "Ref": "InternalHttplistener"
-      },
-      "Export": {
-        "Name": {
-          "Fn::Sub": "${AWS::StackName}-InternalListenerArnHttp"
-        }
-      }
-    },
-    "InternalAlbDns": {
-      "Value": {
-        "Fn::GetAtt": [
-          "InternalLoadbalancer",
-          "DNSName"
-        ]
-      },
-      "Export": {
-        "Name": {
-          "Fn::Sub": "${AWS::StackName}-InternalAlbDns"
         }
       }
     },
@@ -3504,10 +3825,200 @@
     },
     "TemplateVersion": {
       "Description": "Version of the ecscluster-vpc-rds-asg template this stack was last updated with. Bump on every template change (see README).",
-      "Value": "1.3.0"
+      "Value": "1.5.0"
     }
   },
   "Conditions": {
+    "DnsFirewallAlarmEnabled": {
+      "Fn::Not": [
+        {
+          "Fn::Equals": [
+            {
+              "Ref": "DnsFirewallAlarmAction"
+            },
+            "off"
+          ]
+        }
+      ]
+    },
+    "DnsFirewallAlarmAlerts": {
+      "Fn::Equals": [
+        {
+          "Ref": "DnsFirewallAlarmAction"
+        },
+        "alert"
+      ]
+    },
+    "VpcFlowLogsAlarmEnabled": {
+      "Fn::Not": [
+        {
+          "Fn::Equals": [
+            {
+              "Ref": "VpcFlowLogsAlarmAction"
+            },
+            "off"
+          ]
+        }
+      ]
+    },
+    "VpcFlowLogsAlarmAlerts": {
+      "Fn::Equals": [
+        {
+          "Ref": "VpcFlowLogsAlarmAction"
+        },
+        "alert"
+      ]
+    },
+    "RdsErrorAlarmEnabled": {
+      "Fn::Not": [
+        {
+          "Fn::Equals": [
+            {
+              "Ref": "RdsErrorAlarmAction"
+            },
+            "off"
+          ]
+        }
+      ]
+    },
+    "RdsErrorAlarmAlerts": {
+      "Fn::Equals": [
+        {
+          "Ref": "RdsErrorAlarmAction"
+        },
+        "alert"
+      ]
+    },
+    "RdsSlowQueryAlarmEnabled": {
+      "Fn::Not": [
+        {
+          "Fn::Equals": [
+            {
+              "Ref": "RdsSlowQueryAlarmAction"
+            },
+            "off"
+          ]
+        }
+      ]
+    },
+    "RdsSlowQueryAlarmAlerts": {
+      "Fn::Equals": [
+        {
+          "Ref": "RdsSlowQueryAlarmAction"
+        },
+        "alert"
+      ]
+    },
+    "CommonRuleSetAlarmEnabled": {
+      "Fn::Not": [
+        {
+          "Fn::Equals": [
+            {
+              "Ref": "CommonRuleSetAlarmAction"
+            },
+            "off"
+          ]
+        }
+      ]
+    },
+    "CommonRuleSetAlarmAlerts": {
+      "Fn::Equals": [
+        {
+          "Ref": "CommonRuleSetAlarmAction"
+        },
+        "alert"
+      ]
+    },
+    "KnownBadInputsAlarmEnabled": {
+      "Fn::Not": [
+        {
+          "Fn::Equals": [
+            {
+              "Ref": "KnownBadInputsAlarmAction"
+            },
+            "off"
+          ]
+        }
+      ]
+    },
+    "KnownBadInputsAlarmAlerts": {
+      "Fn::Equals": [
+        {
+          "Ref": "KnownBadInputsAlarmAction"
+        },
+        "alert"
+      ]
+    },
+    "SqliRuleSetAlarmEnabled": {
+      "Fn::Not": [
+        {
+          "Fn::Equals": [
+            {
+              "Ref": "SqliRuleSetAlarmAction"
+            },
+            "off"
+          ]
+        }
+      ]
+    },
+    "SqliRuleSetAlarmAlerts": {
+      "Fn::Equals": [
+        {
+          "Ref": "SqliRuleSetAlarmAction"
+        },
+        "alert"
+      ]
+    },
+    "WordPressRulesAlarmEnabled": {
+      "Fn::Not": [
+        {
+          "Fn::Equals": [
+            {
+              "Ref": "WordPressRulesAlarmAction"
+            },
+            "off"
+          ]
+        }
+      ]
+    },
+    "WordPressRulesAlarmAlerts": {
+      "Fn::Equals": [
+        {
+          "Ref": "WordPressRulesAlarmAction"
+        },
+        "alert"
+      ]
+    },
+    "RateLimitAlarmEnabled": {
+      "Fn::Not": [
+        {
+          "Fn::Equals": [
+            {
+              "Ref": "RateLimitAlarmAction"
+            },
+            "off"
+          ]
+        }
+      ]
+    },
+    "RateLimitAlarmAlerts": {
+      "Fn::Equals": [
+        {
+          "Ref": "RateLimitAlarmAction"
+        },
+        "alert"
+      ]
+    },
+    "RateLimitForwardedIpAlarmEnabled": {
+      "Fn::And": [
+        {
+          "Condition": "RateLimitAlarmEnabled"
+        },
+        {
+          "Condition": "WafForwardedIpInUse"
+        }
+      ]
+    },
     "EnableCrossRegionCopy": {
       "Fn::Not": [
         {
@@ -3650,18 +4161,6 @@
           "Ref": "RateLimitAction"
         },
         "count"
-      ]
-    },
-    "WafBlockedRequestAlarmEnabled": {
-      "Fn::Not": [
-        {
-          "Fn::Equals": [
-            {
-              "Ref": "WafBlockedRequestAlarmThreshold"
-            },
-            0
-          ]
-        }
       ]
     },
     "WafForwardedIpInUse": {

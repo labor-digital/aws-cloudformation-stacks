@@ -12,7 +12,7 @@
         },
         {
           "Label" : { "default" : "Load Balancer" },
-          "Parameters" : [ "ListenerRuleHost", "ListenerRulePath", "ListenerRulePriority", "ListenerArnOverride" ]
+          "Parameters" : [ "ListenerRuleHost", "ListenerRulePath", "ListenerRulePriority" ]
         },
         {
           "Label" : { "default" : "Service" },
@@ -24,7 +24,7 @@
         },
         {
           "Label" : { "default" : "Monitoring & Alerts" },
-          "Parameters" : [ "ServiceScaleUpCpuThreshold", "ServiceScaleDownCpuThreshold", "ServiceHighCpuThreshold", "ServiceHighMemoryThreshold", "ServiceLowCpuThreshold", "ServiceLowMemoryThreshold", "ServiceHttp5xxTargetThreshold", "EnableHttp4xxAnomalyAlarm", "ServiceHttp4xxAnomalyBand" ]
+          "Parameters" : [ "ServiceScaleUpCpuThreshold", "ServiceScaleDownCpuThreshold", "ServiceHighCpuThreshold", "ServiceHighMemoryThreshold", "ServiceLowCpuThreshold", "ServiceLowMemoryThreshold", "ServiceHttp5xxTargetThreshold", "EnableHttp4xxAnomalyAlarm", "ServiceHttp4xxAnomalyBand", "EnableImageRegressionAlarm" ]
         }
       ]
     }
@@ -51,11 +51,6 @@
       "Type" : "Number",
       "MinValue" : 1
     },
-    "ListenerArnOverride" : {
-      "Description" : "Attach this service to a different listener instead of the cluster's public HTTPS listener - pass ${ClusterStackName}-InternalListenerArnHttp to make the service reachable only from inside the VPC. Empty (default) keeps the public ALB behaviour unchanged. When set, the HTTP->HTTPS redirect rule is not created, since the internal listener is HTTP only.",
-      "Type" : "String",
-      "Default" : ""
-    },
     "InitialDockerImage" : {
       "Description" : "The Docker image for the container. Always required on first stack creation. On updates, only used when SkipImageResolver is true - otherwise the image is read from the currently running ECS service.",
       "Type" : "String",
@@ -69,7 +64,7 @@
     },
     "TaskMemory" : {
       "Type" : "Number",
-      "Description" : "The Memory soft limit for one Task-Instance. If your cluster is running on t3.small ec2 instances you should consider the values 485, 970 and 1940 [485-1940]",
+      "Description" : "Memory soft limit for one task, in MiB. The allowed values are the even fractions of a t3.small's schedulable memory - full, three quarters, half, a quarter - so tasks pack onto an instance without leaving a remainder too small to place. Pick the smallest value the application tolerates: ECS places tasks by this reservation, so a larger one reduces how many fit on the cluster.",
       "Default" : 478,
       "AllowedValues" : [478, 956, 1434, 1913]
     },
@@ -123,7 +118,7 @@
       "Type" : "String"
     },
     "ProjectToken": {
-      "Description" : "This token is used to fetch secrets from doppler. Make sure to only use service tokens, which have only read access. No personal or other tokens.",
+      "Description" : "WARNING: Do not rotate this token via a standalone stack update. Because it is NoEcho, changing it cannot re-trigger the image resolver, so the deployment will fall back to the InitialDockerImage parameter and REVERT the running container image. Rotate the token together with a fresh InitialDockerImage (set to the currently-running image) or via the documented rotation procedure. The ImageRegressionGuard alarm will fire if a revert slips through. This token is used to fetch secrets from doppler. Make sure to only use service tokens, which have only read access. No personal or other tokens.",
       "AllowedPattern" : "dp\\.st\\.[a-zA-Z_]*\\.[a-zA-Z0-9]{43}",
       "NoEcho" : "true",
       "Type" : "String"
@@ -197,6 +192,15 @@
       "Default": 3,
       "MinValue": 1,
       "MaxValue": 8
+    },
+    "EnableImageRegressionAlarm": {
+      "Type": "String",
+      "Description": "Alert when a deployment rolls out a container image that is OLDER than the one it replaces - a stale CloudFormation image revert (e.g. a parameter update that did not re-trigger the image resolver) or an accidental redeploy of an old build. On every deployment the guard compares the ECR push time of the incoming image against the outgoing one and publishes to the cluster AlertTopic if it went backwards; deploying the same or a newer image is silent. Detective, not preventive: it fires as the rollout starts, so it pairs with the deployment circuit breaker. Defaults to true; set to false to disable.",
+      "Default": "true",
+      "AllowedValues": [
+        "true",
+        "false"
+      ]
     }
   },
   "Conditions": {
@@ -231,11 +235,8 @@
     "EnableHttp4xxAnomaly": {
       "Fn::Equals" : [ { "Ref" : "EnableHttp4xxAnomalyAlarm" }, "true" ]
     },
-    "HasListenerOverride" : {
-      "Fn::Not" : [ { "Fn::Equals" : [ { "Ref" : "ListenerArnOverride" }, "" ] } ]
-    },
-    "NoListenerOverride" : {
-      "Fn::Equals" : [ { "Ref" : "ListenerArnOverride" }, "" ]
+    "EnableImageRegressionGuard": {
+      "Fn::Equals" : [ { "Ref" : "EnableImageRegressionAlarm" }, "true" ]
     }
   },
   "Resources" : {
@@ -313,7 +314,7 @@
     "ImageResolverFunction" : {
       "Type" : "AWS::Lambda::Function",
       "Metadata" : {
-        "Note" : "Resolves the Docker image to use in the TaskDefinition. On Create it returns InitialDockerImage directly. On Update it calls ecs:DescribeServices to get the ARN of the task definition the service is actively running, then reads the image from that revision — ensuring CF always uses the currently deployed image rather than the stale value in InitialDockerImage. SkipImageResolver=true bypasses the ECS lookup and uses InitialDockerImage directly, for cases where a specific image must be forced."
+        "Note" : "Resolves the Docker image to use in the TaskDefinition. On Create it returns InitialDockerImage directly. On Update it calls ecs:DescribeServices to get the ARN of the task definition the service is actively running, then reads the image from that revision - ensuring CF always uses the currently deployed image rather than the stale value in InitialDockerImage. SkipImageResolver=true bypasses the ECS lookup and uses InitialDockerImage directly, for cases where a specific image must be forced."
       },
       "Properties" : {
         "FunctionName" : { "Fn::Join" : [ "-", [ { "Ref" : "AWS::StackName" }, "ImageResolver" ] ] },
@@ -329,7 +330,7 @@
     "ImageResolver" : {
       "Type" : "Custom::ImageResolver",
       "Metadata" : {
-        "Note" : "All parameters that should trigger the Lambda on change must be listed as Properties. NoEcho parameters (e.g. ProjectToken) must never be added here — CloudFormation rejects passing NoEcho values to custom resources."
+        "Note" : "All parameters that should trigger the Lambda on change must be listed as Properties. NoEcho parameters (e.g. ProjectToken) must never be added here - CloudFormation rejects passing NoEcho values to custom resources."
       },
       "Properties" : {
         "ServiceToken" : { "Fn::GetAtt" : [ "ImageResolverFunction", "Arn" ] },
@@ -352,6 +353,102 @@
         "ContainerCommand" : { "Ref" : "ContainerCommand" },
         "ProjectNameShort" : { "Ref" : "ProjectNameShort" },
         "ProjectEnv" : { "Ref" : "ProjectEnv" }
+      }
+    },
+    "ImageRegressionGuardRole" : {
+      "Type" : "AWS::IAM::Role",
+      "Condition" : "EnableImageRegressionGuard",
+      "Properties" : {
+        "AssumeRolePolicyDocument" : {
+          "Version" : "2012-10-17",
+          "Statement" : [ {
+            "Effect" : "Allow",
+            "Principal" : { "Service" : "lambda.amazonaws.com" },
+            "Action" : "sts:AssumeRole"
+          } ]
+        },
+        "ManagedPolicyArns" : [ "arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole" ],
+        "Policies" : [ {
+          "PolicyName" : { "Fn::Join" : [ "-", [ { "Ref" : "AWS::StackName" }, "ImageRegressionGuardPolicy" ] ] },
+          "PolicyDocument" : {
+            "Version" : "2012-10-17",
+            "Statement" : [
+              {
+                "Effect" : "Allow",
+                "Action" : [ "ecs:DescribeServices", "ecs:DescribeTaskDefinition", "ecr:DescribeImages" ],
+                "Resource" : "*"
+              },
+              {
+                "Effect" : "Allow",
+                "Action" : "sns:Publish",
+                "Resource" : { "Fn::ImportValue" : { "Fn::Sub" : "${ClusterStackName}-AlertTopicArn" } }
+              }
+            ]
+          }
+        } ],
+        "Path" : "/",
+        "RoleName" : { "Fn::Join" : [ "-", [ { "Ref" : "AWS::StackName" }, "ImageRegressionGuardRole" ] ] }
+      }
+    },
+    "ImageRegressionGuardLogGroup" : {
+      "Type" : "AWS::Logs::LogGroup",
+      "Condition" : "EnableImageRegressionGuard",
+      "Properties" : {
+        "LogGroupName" : { "Fn::Join" : [ "", [ "/aws/lambda/", { "Ref" : "AWS::StackName" }, "-ImageRegressionGuard" ] ] },
+        "RetentionInDays" : 14
+      }
+    },
+    "ImageRegressionGuardFunction" : {
+      "Type" : "AWS::Lambda::Function",
+      "Condition" : "EnableImageRegressionGuard",
+      "Metadata" : {
+        "Note" : "Detective control for image regressions. EventBridge invokes it on every ECS deployment start (SERVICE_DEPLOYMENT_IN_PROGRESS). It reads the currently rolling-out image (PRIMARY deployment) and the one it is replacing (ACTIVE deployment), looks up each image's ECR push time, and publishes to the cluster AlertTopic when the incoming image is OLDER than the outgoing one - catching both a CloudFormation parameter update that reverted the task image and an accidental redeploy of an old build. Deploying the same or a newer image is silent. Detective, not preventive: it fires as the rollout begins, so it complements the deployment circuit breaker rather than replacing it."
+      },
+      "Properties" : {
+        "FunctionName" : { "Fn::Join" : [ "-", [ { "Ref" : "AWS::StackName" }, "ImageRegressionGuard" ] ] },
+        "Runtime" : "python3.12",
+        "Handler" : "index.handler",
+        "Role" : { "Fn::GetAtt" : [ "ImageRegressionGuardRole", "Arn" ] },
+        "Timeout" : 30,
+        "Environment" : {
+          "Variables" : {
+            "CLUSTER" : { "Fn::ImportValue" : { "Fn::Sub" : "${ClusterStackName}-Ecscluster" } },
+            "SERVICE" : { "Fn::Join" : [ "-", [ { "Ref" : "AWS::StackName" }, "Service" ] ] },
+            "TOPIC_ARN" : { "Fn::ImportValue" : { "Fn::Sub" : "${ClusterStackName}-AlertTopicArn" } }
+          }
+        },
+        "Code" : {
+          "ZipFile" : "import os, boto3\n\ndef parse_ref(image):\n    ref = image\n    digest = None\n    tag = None\n    if '@' in ref:\n        ref, digest = ref.split('@', 1)\n    path = ref\n    if '/' in path:\n        host, rest = path.split('/', 1)\n        if '.' in host or ':' in host:\n            path = rest\n    if digest is None and ':' in path:\n        path, tag = path.rsplit(':', 1)\n    return path, tag, digest\n\ndef pushed_at(ecr, image):\n    repo, tag, digest = parse_ref(image)\n    image_id = {}\n    if digest:\n        image_id['imageDigest'] = digest\n    elif tag:\n        image_id['imageTag'] = tag\n    else:\n        return None\n    resp = ecr.describe_images(repositoryName=repo, imageIds=[image_id])\n    details = resp.get('imageDetails', [])\n    return details[0]['imagePushedAt'] if details else None\n\ndef image_of(ecs, arn):\n    td = ecs.describe_task_definition(taskDefinition=arn)\n    return td['taskDefinition']['containerDefinitions'][0]['image']\n\ndef handler(event, context):\n    cluster = os.environ['CLUSTER']\n    service = os.environ['SERVICE']\n    topic = os.environ['TOPIC_ARN']\n    ecs = boto3.client('ecs')\n    ecr = boto3.client('ecr')\n    svc = ecs.describe_services(cluster=cluster, services=[service])\n    if not svc['services']:\n        print('Service ' + service + ' not found in cluster ' + cluster)\n        return\n    deployments = svc['services'][0].get('deployments', [])\n    primary = next((d for d in deployments if d.get('status') == 'PRIMARY'), None)\n    active = next((d for d in deployments if d.get('status') == 'ACTIVE'), None)\n    if not primary or not active:\n        print('No previous deployment to compare against; skipping.')\n        return\n    new_image = image_of(ecs, primary['taskDefinition'])\n    prev_image = image_of(ecs, active['taskDefinition'])\n    if new_image == prev_image:\n        print('Same image redeployed; no regression.')\n        return\n    try:\n        new_pushed = pushed_at(ecr, new_image)\n        prev_pushed = pushed_at(ecr, prev_image)\n    except Exception as e:\n        print('Could not resolve ECR push times: ' + str(e) + '; skipping.')\n        return\n    if new_pushed is None or prev_pushed is None:\n        print('Push time unavailable for one image; skipping.')\n        return\n    if new_pushed >= prev_pushed:\n        print('Incoming image is same-age or newer; no regression.')\n        return\n    msg = 'Image regression on ECS service ' + service + ' (cluster ' + cluster + ').\\n\\n'\n    msg += 'The rolling deployment uses an image OLDER than the one it replaces.\\n\\n'\n    msg += 'Incoming image: ' + new_image + ' (pushed ' + new_pushed.isoformat() + ')\\n'\n    msg += 'Previous image: ' + prev_image + ' (pushed ' + prev_pushed.isoformat() + ')\\n\\n'\n    msg += 'Likely a stale deploy: a CloudFormation parameter update that reverted the task image, or an accidental redeploy of an old build. Investigate before the rollout completes.'\n    boto3.client('sns').publish(TopicArn=topic, Subject=('ECS image regression: ' + service)[:100], Message=msg)\n    print('Regression alarm published.')\n"
+        }
+      }
+    },
+    "ImageRegressionGuardRule" : {
+      "Type" : "AWS::Events::Rule",
+      "Condition" : "EnableImageRegressionGuard",
+      "Properties" : {
+        "Name" : { "Fn::Join" : [ "-", [ { "Ref" : "AWS::StackName" }, "ImageRegressionGuard" ] ] },
+        "Description" : "Fires on ECS deployment start for this service; the target Lambda flags a deploy whose image is older than the one it replaces.",
+        "EventPattern" : {
+          "source" : [ "aws.ecs" ],
+          "detail-type" : [ "ECS Deployment State Change" ],
+          "resources" : [ { "Fn::Sub" : [ "arn:${AWS::Partition}:ecs:${AWS::Region}:${AWS::AccountId}:service/${Cl}/${AWS::StackName}-Service", { "Cl" : { "Fn::ImportValue" : { "Fn::Sub" : "${ClusterStackName}-Ecscluster" } } } ] } ],
+          "detail" : { "eventName" : [ "SERVICE_DEPLOYMENT_IN_PROGRESS" ] }
+        },
+        "State" : "ENABLED",
+        "Targets" : [ {
+          "Id" : "ImageRegressionGuard",
+          "Arn" : { "Fn::GetAtt" : [ "ImageRegressionGuardFunction", "Arn" ] }
+        } ]
+      }
+    },
+    "ImageRegressionGuardPermission" : {
+      "Type" : "AWS::Lambda::Permission",
+      "Condition" : "EnableImageRegressionGuard",
+      "Properties" : {
+        "FunctionName" : { "Fn::GetAtt" : [ "ImageRegressionGuardFunction", "Arn" ] },
+        "Action" : "lambda:InvokeFunction",
+        "Principal" : "events.amazonaws.com",
+        "SourceArn" : { "Fn::GetAtt" : [ "ImageRegressionGuardRule", "Arn" ] }
       }
     },
     "TaskRole" : {
@@ -557,10 +654,6 @@
     },
     "LoadbalancerRuleHttp" : {
       "Type" : "AWS::ElasticLoadBalancingV2::ListenerRule",
-      "Condition" : "NoListenerOverride",
-      "Metadata" : {
-        "Note" : "Only exists for services on the public ALB. On the internal listener (HTTP:80, no HTTPS counterpart) a 301 to port 443 would send every request to a port nothing listens on."
-      },
       "Properties" : {
         "Actions" : [ {
           "RedirectConfig" : {
@@ -598,13 +691,7 @@
           "Field" : "path-pattern",
           "Values" : [ { "Ref" : "ListenerRulePath" } ]
         } ],
-        "ListenerArn" : {
-          "Fn::If" : [
-            "HasListenerOverride",
-            { "Ref" : "ListenerArnOverride" },
-            { "Fn::ImportValue" : { "Fn::Sub" : "${ClusterStackName}-ListenerArnHttps" } }
-          ]
-        },
+        "ListenerArn" : { "Fn::ImportValue" : { "Fn::Sub" : "${ClusterStackName}-ListenerArnHttps" } },
         "Priority" : { "Ref" : "ListenerRulePriority" }
       },
       "DependsOn" : [ "Target" ]
@@ -779,7 +866,7 @@
             "AlarmAutoscaleScaleDown" ]
           ]
         },
-        "AlarmDescription" : "Scale-in trigger: fires only while MORE tasks than ServiceDesiredCount are running AND CPU is below 15%. OK during normal operation; stays in alarm only while scale-in is pending — if it stays red for long, scale-in is stuck.",
+        "AlarmDescription" : "Scale-in trigger: fires only while MORE tasks than ServiceDesiredCount are running AND CPU is below 15%. OK during normal operation; stays in alarm only while scale-in is pending - if it stays red for long, scale-in is stuck.",
         "ComparisonOperator" : "GreaterThanThreshold",
         "Threshold" : 0,
         "EvaluationPeriods" : 5,
@@ -988,7 +1075,7 @@
             }
           }
         ],
-        "AlarmDescription": "Service CPU utilization exceeds threshold — possible performance issue or insufficient capacity.",
+        "AlarmDescription": "Service CPU utilization exceeds threshold - possible performance issue or insufficient capacity.",
         "MetricName": "CPUUtilization",
         "Namespace": "AWS/ECS",
         "Statistic": "Average",
@@ -1027,7 +1114,7 @@
             }
           }
         ],
-        "AlarmDescription": "Service memory utilization exceeds threshold — possible memory leak or insufficient allocation.",
+        "AlarmDescription": "Service memory utilization exceeds threshold - possible memory leak or insufficient allocation.",
         "MetricName": "MemoryUtilization",
         "Namespace": "AWS/ECS",
         "Statistic": "Average",
@@ -1066,7 +1153,7 @@
             }
           }
         ],
-        "AlarmDescription": "Service CPU utilization is chronically low — possible overprovisioning or underutilization.",
+        "AlarmDescription": "Service CPU utilization is chronically low - possible overprovisioning or underutilization.",
         "MetricName": "CPUUtilization",
         "Namespace": "AWS/ECS",
         "Statistic": "Average",
@@ -1105,7 +1192,7 @@
             }
           }
         ],
-        "AlarmDescription": "Service memory utilization is chronically low — possible overprovisioning or consolidation candidate.",
+        "AlarmDescription": "Service memory utilization is chronically low - possible overprovisioning or consolidation candidate.",
         "MetricName": "MemoryUtilization",
         "Namespace": "AWS/ECS",
         "Statistic": "Average",
@@ -1139,7 +1226,7 @@
     },
     "TemplateVersion" : {
       "Description" : "Version of the ecsservice template this stack was last updated with. Bump on every template change (see README).",
-      "Value" : "1.3.0"
+      "Value" : "1.4.0"
     }
   }
 }
