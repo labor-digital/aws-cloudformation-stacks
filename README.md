@@ -164,6 +164,10 @@ Vier **Metric Filter** zählen passende Zeilen und schreiben sie als Metrik fort
 
 Zehn Alarme, alle nach demselben Muster: **Summe über 5 Minuten, eine Auswertungsperiode, `notBreaching` bei fehlenden Daten.** Keine Dauer- oder Trendalarme.
 
+> `notBreaching` hat eine Kehrseite: schreibt ein Metric Filter nie einen Datenpunkt, steht sein Alarm dauerhaft auf `OK` — ununterscheidbar von „alles in Ordnung". Ein `OK` ist deshalb nur dann eine Aussage, wenn die zugehörige Metrik nachweislich Datenpunkte liefert. Das trifft besonders `SlowQueryCount`: `long_query_time` bleibt beim Engine-Default von 10 s, und solange keine Query so lange läuft, bleibt das Log leer und der Alarm stumm, obwohl beides korrekt konfiguriert ist. Vor dem Heben eines Alarms auf `alert` also erst prüfen, ob seine Metrik überhaupt schreibt.
+
+> `dashboard` legt **kein** CloudWatch-Dashboard an — das Template enthält keine Dashboard-Ressource. Der Modus bedeutet allein `ActionsEnabled: false`: der Alarm liegt wie jeder andere unter CloudWatch → Alarms, wechselt sichtbar den Zustand und schreibt Historie, löst aber keine Aktion aus.
+
 **Jeder hat einen `off`/`dashboard`/`alert`-Schalter, Default überall `dashboard`:**
 
 - `off` — Alarm wird nicht angelegt.
@@ -378,16 +382,23 @@ Drei Log-Gruppen, alle mit 14 Tagen Retention, alle fest verdrahtet:
 
 **Problem:** Deployt wird über die Pipeline, nicht über CloudFormation — das laufende Image ist also immer ein anderes als der Stack-Parameter `InitialDockerImage`. Ohne Gegenmaßnahme würde jedes Stack-Update (Alarmschwelle, Listener-Regel) die Task Definition neu bauen und den Service auf ein womöglich Monate altes, in ECR längst gelöschtes Image zurückwerfen (`CannotPullContainerError`).
 
-**Lösung:** Eine Custom Resource liest bei jedem Update das *tatsächlich laufende* Image aus ECS; die Task Definition referenziert `Fn::GetAtt: [ImageResolver, Value]` statt des Parameters.
+**Lösung:** Eine Custom Resource liest das *tatsächlich laufende* Image aus ECS; die Task Definition referenziert `Fn::GetAtt: [ImageResolver, Value]` statt des Parameters.
+
+> **Sie läuft nicht bei jedem Update.** CloudFormation ruft eine Custom Resource nur auf, wenn sich eine **ihrer Properties** ändert — `ServiceToken` bleibt dabei gleich, auch wenn der Lambda-Code darin ausgetauscht wird. Ein reines Template-Update berührt keine Property, also liefert `Fn::GetAtt` den **zwischengespeicherten** Wert des letzten Laufs. Im Change Set erscheint die Ressource dann als `Modify`/`Conditional`, und beim Ausführen passiert nichts. Das ist harmlos, solange der Cache noch stimmt — und genau dort liegt das Restrisiko: ändert ein Update die Task Definition, **ohne** eine Resolver-Property zu berühren, wird sie mit dem gecachten Wert neu gebaut. `ProjectToken` ist so ein Parameter, siehe unten.
 
 Ablauf der Lambda (IAM: `ecs:DescribeServices` + `ecs:DescribeTaskDefinition`):
 
 1. `Delete` → sofort `SUCCESS`.
-2. `Create` **oder** `SkipImageResolver=true` → gibt `InitialDockerImage` zurück. Beim Anlegen existiert noch kein Service.
-3. Sonst: aktive Task Definition des Service holen, davon das Image des ersten Containers zurückgeben.
-4. Jeder Fehler ist `FAILED` — das Update schlägt fehl, statt still ein falsches Image zu setzen.
+2. `Create` → gibt `InitialDockerImage` zurück; beim Anlegen existiert noch kein Service.
+3. `SkipImageResolver=true` → gibt `InitialDockerImage` zurück, ohne ECS zu befragen.
+4. **`InitialDockerImage` wurde in diesem Update geändert** → dieser Wert gewinnt. Erkannt über `OldResourceProperties`, das CloudFormation bei Updates mitschickt.
+5. Sonst → aktive Task Definition des Service holen, davon das Image des ersten Containers zurückgeben.
+6. Jeder Fehler ist `FAILED` — das Update schlägt fehl, statt still ein falsches Image zu setzen.
+
+**Jeder Zweig protokolliert seine Entscheidung** samt gewähltem Image in `/aws/lambda/<Stack>-ImageResolver`. Ohne das war nach einem Update nicht nachvollziehbar, warum ein bestimmtes Image gewählt wurde — die Rekonstruktion des August-Vorfalls brauchte deshalb ECS- und CloudTrail-Historie.
 
 - **`SkipImageResolver`** (Default `true`): `true` für die Stack-Erstellung und solange das erste Deployment nicht stabil läuft, danach `false`. **Bei bestehenden Stacks mit `false` den Wert bei jedem Update explizit mitgeben**, sonst greift der Default und ein veraltetes `InitialDockerImage` wird deployt.
+- **Ein Image gezielt setzen geht ohne den Schalter.** Trägst du bei `false` ein neues `InitialDockerImage` ein, wird es verwendet — Schritt 4 oben. Der Schutz greift nur, wenn der Parameter *unverändert* bleibt, und genau das war der Fall, der die Regression im August auslöste. Bis `1.4.0` überschrieb der Resolver auch eine bewusste Eingabe mit dem laufenden Image, sodass ein gezielter Deploy nur über `SkipImageResolver=true` möglich war.
 - **Retry nach fehlgeschlagener Erstellung:** existiert der Service nicht mehr, schlägt die Lambda hart fehl; existiert er, ist aber nie gesund geworden, wird das kaputte Image immer wieder reanimiert. Beides löst `SkipImageResolver=true` mit korrektem `InitialDockerImage`.
 - **Die Lücke — `ProjectToken`.** Jeder Parameter, der die Task Definition beeinflusst, ist Trigger-Property der Custom Resource. Außer `ProjectToken`: der ist `NoEcho`, und CloudFormation lehnt `NoEcho`-Werte an Custom Resources ab. **Ein isoliertes Token-Update baut die Task Definition neu, ohne den Resolver auszuführen** — `Fn::GetAtt` liefert den zwischengespeicherten alten Wert und das Image fällt auf `InitialDockerImage` zurück. Deshalb: **Doppler-Token nie allein rotieren**, sondern zusammen mit einem aktuellen `InitialDockerImage`.
 
@@ -402,19 +413,73 @@ Ablauf der Lambda (IAM: `ecs:DescribeServices` + `ecs:DescribeTaskDefinition`):
 
 Die präventive Lösung wäre, `DOPPLER_TOKEN` über Secrets Manager `valueFrom` zu beziehen — dann liefe das Token gar nicht mehr durch ein Stack-Update und das Problem wäre strukturell weg. Als Option vermerkt, nicht umgesetzt.
 
+#### Wann ein altes Image zurückkommt
+
+Die Frage, für die es den ImageResolver und den ImageRegressionGuard gibt. Die Antwort in einem Satz:
+
+> **Ein altes Image kommt zurück, wenn CloudFormation die Task Definition neu schreibt, ohne dass der Resolver dabei läuft.** Dann setzt `Fn::GetAtt: [ImageResolver, Value]` den zwischengespeicherten Wert seines letzten Laufs ein — und der kann beliebig alt sein.
+
+Der Resolver läuft nur, wenn sich eine **seiner Properties** ändert. Die Task Definition hängt aber an mehr als nur diesen. Wo beides auseinanderfällt, entsteht die Lücke.
+
+**Sieben Parameter beeinflussen die Task Definition. Ab `1.6.0` sind alle sieben Resolver-Properties:**
+
+| Parameter | Resolver-Property? |
+|---|---|
+| `ContainerCommand`, `ProjectEnv`, `ProjectNameShort`, `ServiceTrafficPort`, `TaskMemory`, `VolumeMountPath` | ja — Änderung startet den Resolver, das laufende Image gewinnt |
+| **`ProjectToken`** | **ab `1.6.0` ja**, bis `1.5.0` nein — siehe unten |
+
+**Die fünf Fälle:**
+
+| # | Auslöser | Warum der Resolver schweigt |
+|---|---|---|
+| 1 | **`ProjectToken` allein rotiert** — **bis `1.5.0`** | der Parameter war keine Property, die Task Definition wurde neu gebaut, der Resolver nicht aufgerufen. Ab `1.6.0` geschlossen |
+| 2 | **Template-Änderung, die den `Task`-Block tatsächlich verändert** (Environment, LogConfiguration, Volumes, NetworkMode …) | eine Template-Änderung berührt keine Property |
+| 3 | **Ein Update schlägt fehl und rollt zurück** | CloudFormation stellt seinen letzten bekannten Stand wieder her, inklusive Task Definition |
+| 4 | **Der Service wird auf die CloudFormation-Revision gezogen** | Folge von 1–3: `Service.TaskDefinition` ist `{Ref: Task}`, zeigt also auf die Revision, die CloudFormation registriert hat |
+| 5 | **`SkipImageResolver` bleibt auf `true` stehen** | er läuft, gibt aber bedingungslos `InitialDockerImage` zurück — der Parameter altert, während die Pipeline weiterdeployt |
+
+Fall 2 ist enger, als er klingt: entscheidend ist nicht, dass ein Template-Update stattfindet, sondern dass es die `Task`-Ressource wirklich anfasst. Ändert ein Update nur andere Ressourcen, löst `{Ref: Task}` unverändert auf und CloudFormation schreibt nichts neu — nachgemessen beim `1.5.0`-Rollout in Paris, bei dem alle 15 Stacks Revision *und* Image behielten.
+
+Fall 5 ist der einzige, der nicht aus einer Lücke im Mechanismus entsteht, sondern aus einem vergessenen Schalter — und damit auch der einzige, der sich durch bloßes Nachsehen ausschließen lässt.
+
+Fall 4 ist der, den man am ehesten unterschätzt, weil er unsichtbar vorbereitet wird. Die Pipeline registriert bei jedem Deploy eine neue Revision direkt in ECS; CloudFormation kennt nur seine eigene. Beide Zählungen laufen auseinander — gemessen in Paris am 2026-09-05 stand ein Service auf Revision `77`, während CloudFormation `6` für aktuell hielt, mit einem anderen Image darin. Ein reines Template-Update ändert daran nichts, weil CloudFormation gegen seinen **eigenen** letzten Stand vergleicht und `{Ref: Task}` unverändert auflöst. Sobald aber einer der Fälle 1–3 eine neue Revision erzeugt, zieht der Service mit — und übernimmt das Image, das dort drinsteht.
+
+Wie weit die beiden auseinanderliegen:
+
+```bash
+aws ecs describe-services --cluster <cluster>-Ecscluster --services <stack>-Service \
+  --query "services[0].taskDefinition" --output text
+aws cloudformation describe-stack-resource --stack-name <stack> --logical-resource-id Task \
+  --query "StackResourceDetail.PhysicalResourceId" --output text
+```
+
+**Verhindert wird davon keiner.** Der Resolver schützt nur, wenn er läuft, und das tut er in genau diesen Situationen nicht.
+
+> **Fall 1 ist ab `1.6.0` geschlossen.** Die frühere Annahme, `NoEcho`-Parameter könnten keine Custom-Resource-Properties sein, ist falsch — am 2026-09-07 an `lab-dev-ema-s` geprüft: CloudFormation nimmt sie an, übergibt den Wert **im Klartext** (nicht maskiert), und eine Rotation ruft den Resolver auf, weil alter und neuer Wert beide sichtbar sind und der Unterschied erkannt wird. Seit `1.6.0` steht `ProjectToken` deshalb in den Properties, und eine alleinige Rotation ist ungefährlich. Neue Sichtbarkeit erkauft das nicht: ein Change Set, das den `ImageResolver` anfasst, meldet `ProjectToken` in `BeforeContext` wie `AfterContext` als `****`. `NoEcho` maskiert Ausgaben, nicht die Übergabe — übrig bleibt allein das Lambda-Event, das nicht persistiert wird und nur dem zugänglich ist, der das Token ohnehin über `ecs:DescribeTaskDefinition` im Klartext lesen kann.
+>
+> **Zu beachten bei der Secrets-Migration:** wandert `DOPPLER_TOKEN` nach `Secrets`, muss diese Property mit weg. Das erzwingt sich weitgehend selbst, weil `{"Ref": "ProjectToken"}` ungültig wird, sobald die Migration den Parameter entfernt — gefährlich ist nur eine Migration, die ihn behält (offener Punkt in TASKS.md).
+
+Fall 2, 3 und 5 bleiben auch mit `1.6.0` bestehen.
+
+**Erkannt werden alle fünf** — vom ImageRegressionGuard, der am Deployment-Event hängt und nicht am Resolver. Er meldet, sobald das eingehende Image älter ist als das abgelöste. Drei Bedingungen müssen dafür erfüllt sein: der Stack läuft mindestens auf `1.5.0` (davor stimmte die ECR-Region nicht, siehe unten), beide Images liegen in ECR, und beide haben eine auflösbare Push-Zeit.
+
+**Die praktische Regel:** Wer den `Task`-Block im Template ändert oder das Doppler-Token rotiert, gibt im selben Update `InitialDockerImage` mit dem aktuell laufenden Image mit. Ab `1.5.0` gewinnt dieser Wert — das ist der verlässliche Hebel gegen Fall 1 und 2. Bis `1.4.0` wurde er bei `SkipImageResolver=false` stillschweigend verworfen, und ein gezielter Deploy war nur möglich, indem man den Schutz ganz abschaltete.
+
 #### ImageRegressionGuard
 
 `EnableImageRegressionAlarm` (Default `true`, ab `1.4.0`). Trotz des Namens **kein CloudWatch-Alarm**, sondern EventBridge-Regel + Lambda, die direkt ins Cluster-`AlertTopic` publiziert.
 
 1. Die Regel horcht auf `ECS Deployment State Change` / `SERVICE_DEPLOYMENT_IN_PROGRESS`, per `resources` auf genau diesen Service eingegrenzt — feuert also bei jedem Rollout.
 2. Die Lambda vergleicht die Deployments `PRIMARY` (eingehend) und `ACTIVE` (abgelöst); fehlt eines oder sind die Images gleich, bricht sie ab.
-3. Für beide Images `ecr:DescribeImages` → `imagePushedAt`. Ist das eingehende **älter**, geht eine Meldung mit beiden Referenzen und Push-Zeiten ins Topic.
+3. Für beide Images `ecr:DescribeImages` → `imagePushedAt`. **Region und Account kommen aus der Bildreferenz selbst** (`<acct>.dkr.ecr.<region>.amazonaws.com`), nicht aus der Region der Lambda — die Repositories liegen in `eu-central-1`, die Cluster nicht zwingend. Ist das eingehende Image **älter**, geht eine Meldung mit beiden Referenzen und Push-Zeiten ins Topic.
 
 - **Vergleich bewusst „älter als das bisher laufende", nicht „nicht das neueste in ECR"** — das Repo ist über Umgebungen geteilt, ein Staging-Push sähe sonst neuer aus als ein korrektes Produktions-Image.
 - Deckt beide Wege ab: das CloudFormation-Update, das die Task Definition zurückdreht (der `ProjectToken`-Fall), und das versehentliche Redeploy eines alten Builds.
 - **Detektiv, nicht präventiv** — feuert beim Rollout-*Start*. Ergänzt den `DeploymentCircuitBreaker`, der nur bei Health-Fehlern zurückrollt; ein altes, funktionierendes Image ist gesund.
 - **Absichtliche Rollbacks lösen ihn ebenfalls aus** — als Hinweis behandeln, nicht als Page.
-- Er schweigt still, wenn eine ECR-Abfrage fehlschlägt oder eine Push-Zeit fehlt: kein Alarm heißt nicht „geprüft und in Ordnung". Nachsehen in `/aws/lambda/<Stack>-ImageRegressionGuard`.
+- Er schweigt still, wenn eine Push-Zeit fehlt: kein Alarm heißt nicht „geprüft und in Ordnung". Das betrifft **jedes Image außerhalb ECR** — eine Referenz wie `solr:9.9` trägt keinen Registry-Host, wird als Nicht-ECR erkannt und übersprungen. Ebenso ein Tag, den die Lifecycle Policy inzwischen gelöscht hat. Nachsehen in `/aws/lambda/<Stack>-ImageRegressionGuard`.
+- **Von den Alarm-Schaltern des Clusters unberührt.** Er publiziert direkt per `sns:Publish` ans `AlertTopic`, nicht über einen CloudWatch-Alarm — `ActionsEnabled: false` gilt nur für Alarme. Steht der Cluster auf `dashboard`, ist der Guard also die einzige Meldung, die noch zugestellt wird.
+- **Beim Einführen schützt er den eigenen Rollout noch nicht.** Die EventBridge-Regel entsteht im selben Change Set, das `Service` und `Task` anfasst, und hat keine Abhängigkeit dorthin — ob sie vor dem `SERVICE_DEPLOYMENT_IN_PROGRESS` existiert, ist nicht garantiert. Ab dem nächsten Deployment greift er.
 
 ---
 

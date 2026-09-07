@@ -23,8 +23,12 @@
           "Parameters" : [ "ProjectNameShort", "ProjectEnv", "ProjectToken" ]
         },
         {
-          "Label" : { "default" : "Monitoring & Alerts" },
-          "Parameters" : [ "ServiceScaleUpCpuThreshold", "ServiceScaleDownCpuThreshold", "ServiceHighCpuThreshold", "ServiceHighMemoryThreshold", "ServiceLowCpuThreshold", "ServiceLowMemoryThreshold", "ServiceHttp5xxTargetThreshold", "EnableHttp4xxAnomalyAlarm", "ServiceHttp4xxAnomalyBand", "EnableImageRegressionAlarm" ]
+          "Label" : { "default" : "Autoscaling" },
+          "Parameters" : [ "ServiceScaleUpCpuThreshold", "ServiceScaleDownCpuThreshold" ]
+        },
+        {
+          "Label" : { "default" : "Alarms" },
+          "Parameters" : [ "ServiceHighCpuAlarmAction", "ServiceHighCpuThreshold", "ServiceHighMemoryAlarmAction", "ServiceHighMemoryThreshold", "ServiceLowCpuAlarmAction", "ServiceLowCpuThreshold", "ServiceLowMemoryAlarmAction", "ServiceLowMemoryThreshold", "ServiceHttp5xxTargetAlarmAction", "ServiceHttp5xxTargetThreshold", "ServiceHttp4xxAnomalyAlarmAction", "ServiceHttp4xxAnomalyBand", "EnableImageRegressionAlarm" ]
         }
       ]
     }
@@ -118,7 +122,7 @@
       "Type" : "String"
     },
     "ProjectToken": {
-      "Description" : "WARNING: Do not rotate this token via a standalone stack update. Because it is NoEcho, changing it cannot re-trigger the image resolver, so the deployment will fall back to the InitialDockerImage parameter and REVERT the running container image. Rotate the token together with a fresh InitialDockerImage (set to the currently-running image) or via the documented rotation procedure. The ImageRegressionGuard alarm will fire if a revert slips through. This token is used to fetch secrets from doppler. Make sure to only use service tokens, which have only read access. No personal or other tokens.",
+      "Description" : "Doppler token used to fetch secrets. Use service tokens only - they carry read access alone. Never a personal or any other token. Rotating this on its own is safe from 1.6.0 on: the parameter is a property of the image resolver, so a rotation re-triggers it and the running image is kept. Up to 1.5.0 a standalone rotation silently reverted the container image to whatever InitialDockerImage still held, which could be months old - on those versions rotate together with a fresh InitialDockerImage set to the currently-running image. The ImageRegressionGuard reports a revert either way.",
       "AllowedPattern" : "dp\\.st\\.[a-zA-Z_]*\\.[a-zA-Z0-9]{43}",
       "NoEcho" : "true",
       "Type" : "String"
@@ -144,58 +148,85 @@
     },
     "ServiceHighCpuThreshold": {
       "Type": "Number",
-      "Description": "CPU utilization threshold (percent) for high-CPU alarm. Alerts when sustained above this value. Set to 0 to disable.",
+      "Description": "CPU utilization threshold (percent) for AlarmHighCpu, which fires when the service average stays above this value for 5 minutes. Whether the alarm exists and whether it notifies is set by ServiceHighCpuAlarmAction, not by this value. Note the relationship to autoscaling: ServiceScaleUpCpuThreshold reads the same metric, so a value well below it makes this an early warning that fires before scaling engages, which is the intent on a fleet whose baseline is under one percent.",
       "Default": 20,
       "MinValue": 0,
       "MaxValue": 100
     },
     "ServiceHighMemoryThreshold": {
       "Type": "Number",
-      "Description": "Memory utilization threshold (percent) for high-memory alarm. Alerts when sustained above this value. Set to 0 to disable.",
+      "Description": "Memory utilization threshold (percent) for AlarmHighMemory, which fires when the service average stays above this value for 5 minutes. Whether the alarm exists and whether it notifies is set by ServiceHighMemoryAlarmAction, not by this value.",
       "Default": 80,
       "MinValue": 0,
       "MaxValue": 100
     },
     "ServiceLowCpuThreshold": {
       "Type": "Number",
-      "Description": "CPU utilization threshold (percent) for low-CPU alarm. Alerts when sustained below this value. Set to 0 to disable (default).",
+      "Description": "CPU utilization threshold (percent) for AlarmLowCpu, which fires when the service average stays BELOW this value - a way to notice a service that has stopped receiving traffic. Whether the alarm exists is set by ServiceLowCpuAlarmAction, which defaults to off. Leaving this at 0 while switching the alarm on creates an alarm that can never fire, since CPU is never below zero: pick a real value first.",
       "Default": 0,
       "MinValue": 0,
       "MaxValue": 50
     },
     "ServiceLowMemoryThreshold": {
       "Type": "Number",
-      "Description": "Memory utilization threshold (percent) for low-memory alarm. Alerts when sustained below this value. Set to 0 to disable (default).",
+      "Description": "Memory utilization threshold (percent) for AlarmLowMemory, which fires when the service average stays BELOW this value. Whether the alarm exists is set by ServiceLowMemoryAlarmAction, which defaults to off. As with ServiceLowCpuThreshold, a value of 0 makes the alarm unable to fire rather than disabled.",
       "Default": 0,
       "MinValue": 0,
       "MaxValue": 70
     },
     "ServiceHttp5xxTargetThreshold": {
       "Type": "Number",
-      "Description": "Number of HTTP 5xx responses returned by the container per 5 minutes that triggers an alarm. These are errors the application itself produced (PHP fatal, TYPO3 exception, failed DB connection) and are visible in the log group. Set to 0 to disable.",
+      "Description": "Number of HTTP 5xx responses returned by the container per 5 minutes that triggers an alarm. These are errors the application itself produced (PHP fatal, TYPO3 exception, failed DB connection) and are visible in the log group. Whether the alarm exists and whether it notifies is set by ServiceHttp5xxTargetAlarmAction, not by this value - so 0 here means 'alarm on any 5xx', which is a legitimate setting and no longer a way to switch the alarm off.",
       "Default": 5,
       "MinValue": 0,
       "MaxValue": 10000
     },
-    "EnableHttp4xxAnomalyAlarm": {
+    "ServiceHighCpuAlarmAction": {
       "Type": "String",
-      "Description": "Alarm on unusual volumes of HTTP 4xx responses from the container (scans, brute force, or a deployment that broke asset paths), using a CloudWatch anomaly detection band instead of a fixed threshold. Defaults to false: the band needs about two weeks of traffic to be meaningful and is noisy on low-traffic services, so enable it per service once a baseline exists.",
-      "Default": "false",
-      "AllowedValues": [
-        "true",
-        "false"
-      ]
+      "Description": "Notification level for AlarmHighCpu (average service CPU above ServiceHighCpuThreshold for 5 minutes). off = the alarm is not created at all. dashboard = the alarm exists and its state is visible in the console and on dashboards, but ActionsEnabled is false so nothing reaches the alert topic. alert = the alarm also notifies the cluster AlertTopic. Defaults to dashboard: measured across 15 Paris services, this alarm has never fired, so it is worth having and not worth mailing until that changes.",
+      "Default": "dashboard",
+      "AllowedValues": [ "off", "dashboard", "alert" ]
+    },
+    "ServiceHighMemoryAlarmAction": {
+      "Type": "String",
+      "Description": "Notification level for AlarmHighMemory (average service memory above ServiceHighMemoryThreshold for 5 minutes). off = the alarm is not created at all. dashboard = the alarm exists and its state is visible in the console and on dashboards, but ActionsEnabled is false so nothing reaches the alert topic. alert = the alarm also notifies the cluster AlertTopic. Defaults to dashboard: it fires occasionally (three times across 15 Paris services), so calibrate per service before promoting it.",
+      "Default": "dashboard",
+      "AllowedValues": [ "off", "dashboard", "alert" ]
+    },
+    "ServiceLowCpuAlarmAction": {
+      "Type": "String",
+      "Description": "Notification level for AlarmLowCpu (average service CPU BELOW ServiceLowCpuThreshold), a way to notice a service that has stopped receiving traffic. off = the alarm is not created at all. dashboard = the alarm exists with ActionsEnabled false (state and history only). alert = it also notifies the cluster AlertTopic. Defaults to off, and deliberately so: ServiceLowCpuThreshold defaults to 0, and an alarm asking whether CPU is below zero can never fire. Set a real threshold first, otherwise the alarm only looks like coverage.",
+      "Default": "off",
+      "AllowedValues": [ "off", "dashboard", "alert" ]
+    },
+    "ServiceLowMemoryAlarmAction": {
+      "Type": "String",
+      "Description": "Notification level for AlarmLowMemory (average service memory BELOW ServiceLowMemoryThreshold). off = the alarm is not created at all. dashboard = the alarm exists with ActionsEnabled false (state and history only). alert = it also notifies the cluster AlertTopic. Defaults to off for the same reason as ServiceLowCpuAlarmAction: with the threshold at its default of 0 the alarm cannot fire, so creating it would be misleading rather than useful.",
+      "Default": "off",
+      "AllowedValues": [ "off", "dashboard", "alert" ]
+    },
+    "ServiceHttp5xxTargetAlarmAction": {
+      "Type": "String",
+      "Description": "Notification level for AlarmHttp5xxTarget (HTTP 5xx responses from this service's target group above ServiceHttp5xxTargetThreshold within 5 minutes). off = the alarm is not created at all. dashboard = the alarm exists with ActionsEnabled false (state and history only). alert = it also notifies the cluster AlertTopic. This is the only service alarm that has found anything in practice, so promoting it to alert is usually the first thing worth doing once its threshold fits the service.",
+      "Default": "dashboard",
+      "AllowedValues": [ "off", "dashboard", "alert" ]
+    },
+    "ServiceHttp4xxAnomalyAlarmAction": {
+      "Type": "String",
+      "Description": "Notification level for AlarmHttp4xxTarget, which flags unusual volumes of HTTP 4xx responses (scans, brute force, or a deployment that broke asset paths) using a CloudWatch anomaly detection band instead of a fixed threshold. off = the alarm is not created at all. dashboard = the alarm exists with ActionsEnabled false (state and history only). alert = it also notifies the cluster AlertTopic. Defaults to dashboard rather than off, but not as a training period: HTTPCode_Target_4XX_Count is published continuously and retained for 15 months, so a new detector trains on that history at once and the band is meaningful from the start on a service that has traffic. The reason for dashboard is that the resulting alarm rate is unknown, and on low-traffic services such a band stays loud. Let it run visibly for a while, then promote it to alert once you have seen how often it actually trips. Anomaly alarms cost about three times a standard alarm.",
+      "Default": "dashboard",
+      "AllowedValues": [ "off", "dashboard", "alert" ]
     },
     "ServiceHttp4xxAnomalyBand": {
       "Type": "Number",
-      "Description": "Width of the anomaly detection band for HTTP 4xx, in standard deviations. Higher is more conservative (fewer alarms). Only used when EnableHttp4xxAnomalyAlarm is true.",
+      "Description": "Width of the anomaly detection band for HTTP 4xx, in standard deviations. Higher is more conservative (fewer alarms). Only used when ServiceHttp4xxAnomalyAlarmAction is not off.",
       "Default": 3,
       "MinValue": 1,
       "MaxValue": 8
     },
     "EnableImageRegressionAlarm": {
       "Type": "String",
-      "Description": "Alert when a deployment rolls out a container image that is OLDER than the one it replaces - a stale CloudFormation image revert (e.g. a token-only parameter update that did not re-trigger the image resolver) or an accidental redeploy of an old build. On every deployment the guard compares the ECR push time of the incoming image against the outgoing one and publishes to the cluster AlertTopic if it went backwards; deploying the same or a newer image is silent. Region and account are taken from the image reference, so repositories in another region than the cluster are handled. Images outside ECR (e.g. a Docker Hub tag) carry no push time and are skipped - such services get no regression check at all. Detective, not preventive: it fires as the rollout starts, so it pairs with the deployment circuit breaker. Defaults to true; set to false to disable.",
+      "Description": "Alert when a deployment rolls out a container image that is OLDER than the one it replaces - a stale CloudFormation image revert (a template change that rewrites the task definition without waking the resolver, or a failed update rolling back) or an accidental redeploy of an old build. The token-rotation case that used to be the textbook example is gone from 1.6.0 on, since ProjectToken became a resolver property. On every deployment the guard compares the ECR push time of the incoming image against the outgoing one and publishes to the cluster AlertTopic if it went backwards; deploying the same or a newer image is silent. Region and account are taken from the image reference, so repositories in another region than the cluster are handled. Images outside ECR (e.g. a Docker Hub tag) carry no push time and are skipped - such services get no regression check at all. Detective, not preventive: it fires as the rollout starts, so it pairs with the deployment circuit breaker. Defaults to true; set to false to disable.",
       "Default": "true",
       "AllowedValues": [
         "true",
@@ -210,30 +241,40 @@
       ]
     },
     "EnableHighCpuAlarm": {
-      "Fn::Not": [
-        { "Fn::Equals": [ { "Ref": "ServiceHighCpuThreshold" }, 0 ] }
-      ]
+      "Fn::Not": [ { "Fn::Equals": [ { "Ref": "ServiceHighCpuAlarmAction" }, "off" ] } ]
+    },
+    "HighCpuAlarmNotifies": {
+      "Fn::Equals": [ { "Ref": "ServiceHighCpuAlarmAction" }, "alert" ]
     },
     "EnableHighMemoryAlarm": {
-      "Fn::Not": [
-        { "Fn::Equals": [ { "Ref": "ServiceHighMemoryThreshold" }, 0 ] }
-      ]
+      "Fn::Not": [ { "Fn::Equals": [ { "Ref": "ServiceHighMemoryAlarmAction" }, "off" ] } ]
+    },
+    "HighMemoryAlarmNotifies": {
+      "Fn::Equals": [ { "Ref": "ServiceHighMemoryAlarmAction" }, "alert" ]
     },
     "EnableLowCpuAlarm": {
-      "Fn::Not": [
-        { "Fn::Equals": [ { "Ref": "ServiceLowCpuThreshold" }, 0 ] }
-      ]
+      "Fn::Not": [ { "Fn::Equals": [ { "Ref": "ServiceLowCpuAlarmAction" }, "off" ] } ]
+    },
+    "LowCpuAlarmNotifies": {
+      "Fn::Equals": [ { "Ref": "ServiceLowCpuAlarmAction" }, "alert" ]
     },
     "EnableLowMemoryAlarm": {
-      "Fn::Not": [
-        { "Fn::Equals": [ { "Ref": "ServiceLowMemoryThreshold" }, 0 ] }
-      ]
+      "Fn::Not": [ { "Fn::Equals": [ { "Ref": "ServiceLowMemoryAlarmAction" }, "off" ] } ]
+    },
+    "LowMemoryAlarmNotifies": {
+      "Fn::Equals": [ { "Ref": "ServiceLowMemoryAlarmAction" }, "alert" ]
     },
     "EnableHttp5xxTargetAlarm": {
-      "Fn::Not" : [ { "Fn::Equals" : [ { "Ref" : "ServiceHttp5xxTargetThreshold" }, 0 ] } ]
+      "Fn::Not": [ { "Fn::Equals": [ { "Ref": "ServiceHttp5xxTargetAlarmAction" }, "off" ] } ]
+    },
+    "Http5xxTargetAlarmNotifies": {
+      "Fn::Equals": [ { "Ref": "ServiceHttp5xxTargetAlarmAction" }, "alert" ]
     },
     "EnableHttp4xxAnomaly": {
-      "Fn::Equals" : [ { "Ref" : "EnableHttp4xxAnomalyAlarm" }, "true" ]
+      "Fn::Not": [ { "Fn::Equals": [ { "Ref": "ServiceHttp4xxAnomalyAlarmAction" }, "off" ] } ]
+    },
+    "Http4xxAnomalyAlarmNotifies": {
+      "Fn::Equals": [ { "Ref": "ServiceHttp4xxAnomalyAlarmAction" }, "alert" ]
     },
     "EnableImageRegressionGuard": {
       "Fn::Equals" : [ { "Ref" : "EnableImageRegressionAlarm" }, "true" ]
@@ -331,10 +372,11 @@
     "ImageResolver" : {
       "Type" : "Custom::ImageResolver",
       "Metadata" : {
-        "Note" : "All parameters that should trigger the Lambda on change must be listed as Properties. NoEcho parameters (e.g. ProjectToken) must never be added here - CloudFormation rejects passing NoEcho values to custom resources."
+        "Note" : "All parameters that should trigger the Lambda on change must be listed as Properties - ProjectToken included, even though it is NoEcho. Tested 2026-09-07 on lab-dev-ema-s: CloudFormation accepts NoEcho parameters here, passes the value to the Lambda in plaintext, and a rotation does invoke the resource because old and new values are both visible. It buys no new visibility - a change set touching this resource reports the value as **** in both BeforeContext and AfterContext, so only the Lambda event sees it, and that is reachable only by someone who can already read the token from the task definition. Added in 1.6.0 to close the 'token rotated alone' regression case. REMOVE IT AGAIN when DOPPLER_TOKEN moves to Secrets: the template enforces that by itself as long as the migration also drops the ProjectToken parameter, since the Ref would stop resolving. See TASKS.md and noecho-probe.txt."
       },
       "Properties" : {
         "ServiceToken" : { "Fn::GetAtt" : [ "ImageResolverFunction", "Arn" ] },
+        "ProjectToken" : { "Ref" : "ProjectToken" },
         "EcsCluster" : { "Fn::ImportValue" : { "Fn::Sub" : "${ClusterStackName}-Ecscluster" } },
         "EcsService" : { "Fn::Join" : [ "-", [ { "Ref" : "AWS::StackName" }, "Service" ] ] },
         "InitialDockerImage" : { "Ref" : "InitialDockerImage" },
@@ -936,6 +978,7 @@
         "AlarmName": {
           "Fn::Sub": "${AWS::StackName}-AlarmHttp5xxTarget"
         },
+        "ActionsEnabled": { "Fn::If": [ "Http5xxTargetAlarmNotifies", true, false ] },
         "AlarmDescription": "Container returned HTTP 5xx responses - the service is running but erroring. Correlate with this service's log group.",
         "AlarmActions": [
           {
@@ -1005,12 +1048,13 @@
       "Condition": "EnableHttp4xxAnomaly",
       "DependsOn": [ "BaselineHttp4xxTarget" ],
       "Metadata": {
-        "Note": "Deviation from this service's own 4xx baseline - a scan wave, a bot hammering login, or a deployment that broke every asset path. Cannot distinguish which 4xx code or which URL, so it is a tripwire, not a diagnosis: follow up in the ALB access logs. Only the upper band is alarmed; a drop in 4xx is not interesting. Needs roughly two weeks of traffic before the band means anything, which is why the parameter defaults to false. Note that scanners hitting the load balancer without a matching listener rule land in the cluster-level HTTPCode_ELB_4XX_Count instead and are not covered here."
+        "Note": "Deviation from this service's own 4xx baseline - a scan wave, a bot hammering login, or a deployment that broke every asset path. Cannot distinguish which 4xx code or which URL, so it is a tripwire, not a diagnosis: follow up in the ALB access logs. Only the upper band is alarmed; a drop in 4xx is not interesting. No warm-up period: HTTPCode_Target_4XX_Count is published continuously and retained for 15 months, so a new detector trains on that history immediately. ServiceHttp4xxAnomalyAlarmAction still defaults to dashboard, because the alarm RATE is what is unknown - on a low-traffic service the band stays loud. Visible from day one, promoted to alert once its real trip frequency is known. Note that scanners hitting the load balancer without a matching listener rule land in the cluster-level HTTPCode_ELB_4XX_Count instead and are not covered here."
       },
       "Properties": {
         "AlarmName": {
           "Fn::Sub": "${AWS::StackName}-AlarmHttp4xxTargetAnomaly"
         },
+        "ActionsEnabled": { "Fn::If": [ "Http4xxAnomalyAlarmNotifies", true, false ] },
         "AlarmDescription": "Unusual volume of HTTP 4xx responses from the container, measured against a CloudWatch anomaly detection band. Investigate in the ALB access logs.",
         "AlarmActions": [
           {
@@ -1070,6 +1114,7 @@
         "AlarmName": {
           "Fn::Sub": "${AWS::StackName}-AlarmHighCpu"
         },
+        "ActionsEnabled": { "Fn::If": [ "HighCpuAlarmNotifies", true, false ] },
         "AlarmActions": [
           {
             "Fn::ImportValue": {
@@ -1109,6 +1154,7 @@
         "AlarmName": {
           "Fn::Sub": "${AWS::StackName}-AlarmHighMemory"
         },
+        "ActionsEnabled": { "Fn::If": [ "HighMemoryAlarmNotifies", true, false ] },
         "AlarmActions": [
           {
             "Fn::ImportValue": {
@@ -1148,6 +1194,7 @@
         "AlarmName": {
           "Fn::Sub": "${AWS::StackName}-AlarmLowCpu"
         },
+        "ActionsEnabled": { "Fn::If": [ "LowCpuAlarmNotifies", true, false ] },
         "AlarmActions": [
           {
             "Fn::ImportValue": {
@@ -1187,6 +1234,7 @@
         "AlarmName": {
           "Fn::Sub": "${AWS::StackName}-AlarmLowMemory"
         },
+        "ActionsEnabled": { "Fn::If": [ "LowMemoryAlarmNotifies", true, false ] },
         "AlarmActions": [
           {
             "Fn::ImportValue": {
@@ -1228,7 +1276,7 @@
     },
     "TemplateVersion" : {
       "Description" : "Version of the ecsservice template this stack was last updated with. Bump on every template change (see README).",
-      "Value" : "1.5.0"
+      "Value" : "1.6.0"
     }
   }
 }

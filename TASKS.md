@@ -7,25 +7,44 @@ incident reconstructions — is in `git log -p TASKS.md`, the retired CHANGELOG 
 
 ## Cluster state
 
-> Paris read live **2026-09-05**. Frankfurt has not been re-read since 2026-08-22 and is left blank
+> Paris read live **2026-09-06**; cluster on `1.5.0` since 2026-09-05, all 15 service stacks on `1.5.0` since 2026-09-06. Frankfurt has not been re-read since 2026-08-22 and is left blank
 > rather than repeated from stale notes. This is the only place in the repo that describes deployed stacks.
 
 | | Paris `labc-eu-w3` (staging) | Frankfurt `labc-eu-c1` (prod) |
 |---|---|---|
-| Cluster template version | `1.4.0` | ? |
-| `ecsservice` versions | `1.3.0`, 15/15 — one behind the template | ? |
+| Cluster template version | `1.5.0` (2026-09-05) | ? |
+| `ecsservice` versions | `1.5.0`, 15/15 (2026-09-06) | ? |
 | `WafClientIpHeader` | **empty** | ? |
 | WAF rule actions | all five on `count` | ? |
 | WAF log delivery | ✅ ingesting, last 2026-09-04 21:50 UTC | verified 2026-08-22 |
 | WAF volume | `CommonRuleSet` 549 counted / 24 h ≈ 2 per 5 min | ? |
 | `EnableEgressAnalysis` | **still `true`** — ACCEPT log group exists and bills per GB | ? |
 | DNS Firewall | 14 whitelist entries, catch-all still `ALERT` | ? |
+| Cluster alarms | 9 exist, **all `ActionsEnabled: false`** — nothing notifies | ? |
+| `ImageRegressionGuard` | on all 15 services and **live** — the ECR region bug is fixed | not deployed |
 | Log retention drift | none, all groups at 14 | raised by hand |
-| Other drift | `Ascalegroup`, `DnsQueryLoggingConfig`, `Rdscl`, `Rdsinstance1` | same four |
+| Other drift | `DnsQueryLoggingConfig`, `Rdscl`, `Rdsinstance1` — `Ascalegroup` was a moving value, aligned at update time | same four |
 
-**Two parameters Paris still passes no longer exist in `1.5.0`:** `WafBlockedRequestAlarmThreshold` (`0`)
-and `WafLogRetentionDays` (`14`). Drop both from the parameter list on the next deploy, or CloudFormation
-rejects the update with *"Parameters … do not exist in the template"*.
+**After the `1.5.0` deploy the cluster is silent.** All four pre-existing alarms were switched from
+notifying to `dashboard` by the template default, and the five new WAF alarms were created silent. Nothing
+reaches `AlertEmail` from the cluster stack any more. Promote individual alarms to `alert` once their
+threshold has been read against real traffic — and decide this deliberately for Frankfurt, where a silent
+cluster over weeks is a different proposition than in staging.
+
+**The `ecsservice` rollout was non-disruptive.** All 15 stacks were updated with
+`SkipImageResolver=false`; the resolver read each service's running image and returned it unchanged, so
+CloudFormation registered **no new task definition revision** and no service redeployed — every running
+task predates the rollout and kept its revision. Verified three ways afterwards: task-definition image
+against a pre-rollout snapshot, the image the running containers actually use, and the revision plus
+`startedAt` of each task. The `MinimumHealthyPercent: 50` gap that single-task services would otherwise
+see never occurred. The `ImageRegressionGuard` did not fire for its own introduction — its
+EventBridge rule is created by the same change set that touches the service, with no ordering guarantee.
+From the next deployment onward it is effective.
+
+**Note for Frankfurt:** only five of the six WAF surge alarms are created while `WafClientIpHeader` is
+empty — `RateLimitForwardedIpSurgeAlarm` is conditional on it. The two obsolete parameters
+(`WafBlockedRequestAlarmThreshold`, `WafLogRetentionDays`) drop out by themselves; the console simply
+stops offering them.
 
 ```bash
 aws cloudformation describe-stacks --region <r> --stack-name <cluster> \
@@ -36,15 +55,35 @@ aws cloudformation describe-stacks --region <r> \
 aws cloudformation detect-stack-drift --region <r> --stack-name <cluster>
 ```
 
-Cluster `1.5.0` and `ecsservice` `1.4.0` are written but not deployed anywhere.
+`ecsservice` `1.6.0` is written but not deployed anywhere; Paris runs `1.5.0` on all 15.
 
 ---
 
 ## `ecscluster-vpc-rds-asg`
 
-Drift confirmed in **both** regions (Paris 2026-09-05): `Ascalegroup /DesiredCapacity`,
-`DnsQueryLoggingConfig /DestinationArn`, `EngineVersion` on `Rdscl` and `Rdsinstance1`. Only the
-retention drift is Frankfurt-only.
+- [ ] **Promote alarms from `dashboard` to `alert` — evidence read 2026-09-06, Paris.** Not one decision
+  but four, because the nine alarms fall into distinct cases:
+  - **`dns-firewall-alert-surge` and `rds-error` are ready.** Both have real data and have never fired.
+    DNS Firewall logs 22–348 ALERT queries per *day*, i.e. well under one per 5-minute window against a
+    threshold of 100 — two orders of magnitude of headroom. `ErrorCount` publishes (sparsely, 5 of 14
+    days) and is flat `0` against threshold `0`, so any `[ERROR]` line would notify.
+  - **`vpc-rejected-surge` must not be promoted as configured.** 12 `to ALARM` transitions in three
+    weeks, spread evenly and continuing after the `1.5.0` change (last 2026-09-06 05:41) — roughly one
+    mail every two days. Average is ~140 rejects per 5-minute window against a threshold of 500. Raise
+    the threshold off the measured distribution first (`Q52` in `paris-state.txt`).
+  - **The five WAF alarms have one day of history** (created 2026-09-05). Their `0`s carry no weight yet.
+  - **`rds-slow-queries` cannot fire at all.** See the item below.
+- [ ] **`rds-slow-queries` is inert — decide whether that is acceptable.** The slow-query log group
+  exists but holds **0 bytes**, so `SlowQueryCount` has never published a single datapoint, and with
+  `TreatMissingData: notBreaching` the alarm sits permanently on `OK`. The cause is *not* a missing
+  switch: the template does set `slow_query_log: "1"` on the cluster parameter group. The remaining
+  candidate is `long_query_time`, which the template leaves at the Aurora default of 10 s — so the log
+  is empty because nothing ran that long. The alarm is therefore technically functional and practically
+  mute, and its threshold (5 such queries per 5 min) is unreachable. Lowering `long_query_time` to 1–2 s
+  would give the log content to calibrate against. **Deliberately deferred 2026-09-06** — noted so the
+  `OK` state is not mistaken for evidence of a healthy database.
+- [ ] **Investigate the REJECT spike on 2026-09-05.** 61,234 rejected flows that day against ~40,000 on
+  each of the 13 days around it. Noticed while reading the alarm history, not chased.
 
 - [ ] **Resolve the `EngineVersion` contradiction.** The template pins `8.0.mysql_aurora.3.08.2` *and*
   sets `AutoMinorVersionUpgrade: true`, so RDS moves ahead of the template. No downgrade can happen,
@@ -60,7 +99,10 @@ retention drift is Frankfurt-only.
   was removed on 2026-08-28 precisely so retention is not tunable per stack.
 - [ ] **Add a `DnsFirewallCatchAllAction` parameter** (`ALERT`/`BLOCK`, default `ALERT`). The action is
   hardcoded today, so flipping it via the CLI is drift that the next stack update silently reverts.
-  Prerequisite for Phase 4.
+  Prerequisite for Phase 4. **`BlockResponse` has to come with it** — the property is absent from the
+  rule group today because it is only meaningful for `BLOCK`, and Route 53 requires it once the action
+  is `BLOCK`. Set `NXDOMAIN` so applications get a clean "domain not found" instead of a timeout;
+  `NODATA` and `OVERRIDE` are the alternatives.
 - [ ] **Enforce the origin-verify header on the listener rules** (`http-header` condition).
   `cloudfront-alb-distribution` already *sends* it; only enforcement is missing. Closes the Cloudflare
   **and** CloudFront bypass in one change, and is the remaining designed fix for the Solr exposure now
@@ -74,6 +116,29 @@ retention drift is Frankfurt-only.
   - ⚠️ **All three instance SGs must be restricted or this is a no-op** — `SgVpcMysqlAccess`,
     `SgVpcLoadbalancerports` and `SgVpcEfsAccess` all sit on the launch template, none defines
     `SecurityGroupEgress`, and SG rules are additive. Restrict all three, or add one dedicated egress SG.
+  - **`123/UDP` is not needed — verified on the hosts, not just inferred.** `chronyc -n sources` on all
+    seven Paris instances (2026-09-05) shows `169.254.169.123` as the **selected** source (`^*`, poll 16 s)
+    on every one. The four AWS public NTP servers are configured fallbacks (`^-`, poll 256-1024 s) and
+    are what produced the ~27,000 flows in the log. Link-local traffic is answered by the hypervisor and
+    is **not subject to security groups**, so dropping `123/UDP` removes the fallbacks and leaves the
+    working clock untouched. Optional cleanup: remove the public servers from the chrony config as well,
+    which stops the polling entirely — costs the redundancy, gains a quieter egress profile.
+  - **`4460/TCP` (NTS-KE) comes only from the standalone box**, never from cluster instances — stays out.
+  - **`80/TCP` was used by no cluster instance in 28 days**, only by the standalone Ubuntu box (apt over
+    HTTP to Canonical, AWS and Cloudflare). The OCSP/CRL argument is theoretical here: keep the rule as
+    cheap insurance, or drop it and accept that a sporadic OCSP fetch over plain HTTP would fail.
+  - **`53/UDP` to `8.8.8.8` confirmed from three cluster hosts** — and exactly those three are the ones
+    sending OTLP to the external collector, so the attribution to the OTel agent holds. (A fourth source
+    in the 4318 data turned out to be the NAT gateway ENI, i.e. the same traffic counted again after
+    translation; ALB ENIs show up there for the same reason. No additional emitter.) The fix is a real
+    blocker for the VPC-CIDR-only rule, not a theoretical one.
+  - **But "one image, deployed three times" is wrong** (checked 2026-09-05): all 15 Paris services run
+    **distinct** ECR repositories, none appears twice. With ~2 tasks per instance the three hosts carry up
+    to six different services, so the emitter is not identified yet. Fastest routes: ask the collector at
+    `149.248.216.54` which `service.name`s report to it, or find which Doppler projects set an
+    `OTEL_EXPORTER_OTLP_*` key — the endpoint is not in the task definition, so it has to come from there.
+    Only then is it clear whether the fix is one base image or several.
+  - The SMTP relay has a **fixed** address, so `587/TCP` gets that host, not `0.0.0.0/0`.
   - Blocked on: fixing the OTel agent's hardcoded `8.8.8.8` resolver first (one image, deployed three
     times), and confirming the `80/TCP` destinations really are OCSP/CRL.
 - [ ] **Restrict `SgPublicHttpHttps` to the proxy ranges.** It is open to `0.0.0.0/0` today, so the
@@ -161,13 +226,94 @@ The catch-all is hardcoded `ALERT`, so today the firewall only logs. Three phase
 2. **Phase 3 — security groups.** The egress-rule replacement above. It needs a baseline first: set
    `EnableEgressAnalysis=true` for 7–14 days to get ACCEPT-mode flow logs, then back to `false` — they
    bill per GB and dominate logging cost while they run. Blocked on identifying the last unknown flow
-   (`3724/TCP → 145.239.131.113`, OVH) and on the OTel resolver fix.
+   (`3724/TCP → 145.239.131.113`, OVH — **did not occur in Paris at all in the 28 days to 2026-09-05**,
+   so probably gone; confirm against Frankfurt, then close) and on the OTel resolver fix.
 3. **Phase 4 — flip to `BLOCK`.** Requires the `DnsFirewallCatchAllAction` parameter above. Re-run
    `DnsFireWallLogsSummary`, confirm no legitimate domain still ALERTs, then set `BLOCK`. Test the
    applications, e-mail, time sync **and image pulls**; watch 48 h. Rollback is `ALERT`.
 
 ## `ecsservice`
 
+- [x] **`1.5.0` rolled to Paris** (2026-09-06, all 15 stacks, template-only, all parameters kept).
+  Nothing moved: identical task-definition revision *and* image on all 15 afterwards, and no task
+  restarted — the oldest `startedAt` still predates the rollout. That is the resolver behaving as
+  designed, since CloudFormation invokes a custom resource only when one of its properties changes and
+  a template swap changes none of them.
+
+  What `1.5.0` fixes, and how it was accepted:
+  `1.4.0`'s guard was inert in Paris — its Lambda built the ECR client without a region, so it looked in
+  the cluster's region (`eu-west-3`) while the repositories live in `eu-central-1`, and every check past
+  the "same image" branch died on `RepositoryNotFoundException` and was skipped silently. Found
+  2026-09-05 by forcing a real regression on `lab-dev-ema-s`; a forced redeployment alone could not have
+  shown it, because that path returns before ECR is touched. `1.5.0` derives region and account from the
+  image reference, raises both Lambdas to `MemorySize: 256` (the guard used 96 of 128 MB on the
+  *early-return* path), lets a deliberately changed `InitialDockerImage` win over the running image
+  (detected via `OldResourceProperties`, so a targeted deploy no longer needs the `SkipImageResolver=true`
+  detour), and logs in every branch which image it picked and why.
+  **Accepted 2026-09-05/06 on `lab-dev-ema-s`** in six updates: the template-only update left the
+  resolver untouched; an `ECSHealthCheckGracePeriod` change hit the ECS branch and kept the running image;
+  a changed `InitialDockerImage` won twice, once without effect and once registering a new revision; the
+  guard ran cross-region cleanly, published on a deliberately provoked regression and reached
+  `AlertEmail`, and stayed silent on the way forward; a final grace-period change proved the ECS branch
+  still works after the operator branch had been exercised.
+  Two mechanics worth remembering: the guard hangs off an EventBridge rule on
+  `SERVICE_DEPLOYMENT_IN_PROGRESS`, so it stays out of any update that does not change the image, and it
+  publishes to SNS directly rather than through a CloudWatch alarm, so `ActionsEnabled: false` does not
+  mute it.
+
+- [ ] **Frankfurt gets `1.5.0` directly, never `1.4.0`.** The ECR region bug does not bite there since
+  cluster and registry share a region, but under `1.4.0` passing `InitialDockerImage` alongside
+  `SkipImageResolver=false` is **inert**: the parameter wakes the resolver (it *is* a trigger property)
+  and the resolver then discards the value that triggered it, reading ECS instead. Paris' `1.4.0` rollout
+  ended up correct only because the value passed happened to equal what the resolver reads anyway.
+
+- [ ] **Verify the non-ECR skip in Frankfurt.** `1.5.0` makes the guard skip images outside ECR instead
+  of failing on them. Paris could not prove it: the only such stack is `gwa-gut-sol-s` (`solr:9.9`), and
+  it runs at `desiredCount=0`, so no deployment event ever reaches the guard.
+
+- [x] **`ProjectToken` is a resolver property as of `1.6.0`** (built 2026-09-07, not yet rolled out).
+  Tested 2026-09-07 on `lab-dev-ema-s` with a throwaway template variant: the long-standing claim that
+  CloudFormation refuses `NoEcho` values as custom resource properties is **wrong**. It accepts them,
+  hands the value to the Lambda **in plaintext** (`present-53chars`, not `masked`), and a rotation of
+  `ProjectToken` alone **does** invoke the resolver — old and new values are both visible, so the diff is
+  detected. One property line would close regression case 1 outright.
+  The test also produced the case live: the cached resolver value was a day old
+  (`…9c76916a`) while the pipeline had moved the service to `…468f466f`. Because this update woke the
+  resolver, CloudFormation picked up the current image. A `ProjectToken`-only rotation under the shipped
+  template would have written the stale one back.
+  **Exposure question settled 2026-09-07:** a change set that touches the `ImageResolver` reports
+  `ProjectToken` as `****` in both `BeforeContext` and `AfterContext` (`describe-change-set
+  --include-property-values`). CloudFormation masks the value in *outputs* while passing it in the clear
+  to the custom resource, which matches the documentation. So the property adds **no surface with a new
+  audience** — only the Lambda event, which is not persisted and is reachable only by someone who
+  already has `ecs:DescribeTaskDefinition` and can read the token there in plaintext.
+  **The remaining trap is ordering:** adding the property and later moving the token to `Secrets` would
+  leave a plaintext path the migration was meant to remove. It largely self-closes — if the migration
+  replaces the `ProjectToken` parameter, `{"Ref": "ProjectToken"}` becomes an invalid reference and the
+  template fails validation. Only a migration that *keeps* the parameter is dangerous; rule that variant
+  out in the migration ticket below. The corrected reasoning sits in the `ImageResolver` `Metadata.Note`
+  and in the README; the full test log is in `noecho-probe.txt`.
+  `1.6.0` adds the one property line, bumps `TemplateVersion`, and rewrites the `ProjectToken`
+  description — it carried a warning that a standalone rotation reverts the image, which is no longer
+  true from `1.6.0` on and stays documented for `1.5.0` and earlier.
+
+  **Checked and consciously not closed** (2026-09-07): with `1.6.0` all seven task-affecting parameters
+  are resolver properties, and the only `Fn::If` in the task block hangs off `ContainerCommand`, which is
+  one. Two non-parameter inputs remain. `TaskRole.Arn` is deterministic (`${AWS::StackName}-TaskRole`)
+  and cannot change without a new stack. `Fn::ImportValue: ${ClusterStackName}-Efs` feeds
+  `FilesystemId` directly, so replacing the cluster's EFS would rewrite the task definition in all 15
+  service stacks at once while no resolver property changes — case 1, fifteen times over. Passing the
+  import as an extra resolver property would close it; judged not worth it. Related: **removing the EFS
+  volume from the template is itself a case 2** — it changes the task block without touching a property,
+  so that change has to carry a fresh `InitialDockerImage`.
+
+- [ ] **Roll `1.6.0` to Paris**, 15 stacks. Same shape as the `1.5.0` rollout: template-only, all
+  parameters kept. This one *will* wake the resolver on every stack, because the property set changes —
+  so unlike `1.5.0` expect a new task-definition revision and a rolling deployment wherever the cached
+  value has fallen behind the running image. That is the point, not a side effect: it also clears the
+  accumulated drift. `lab-dev-ema-s` still carries the throwaway `noecho-test.template` with
+  `ECSHealthCheckGracePeriod: 210`; rolling `1.6.0` there with the parameter back at `180` replaces both
+  in one step, after which `ecsservice/noecho-test.template` can be deleted.
 - [ ] **Move `DOPPLER_TOKEN` from `Environment` to `Secrets`** (SSM Parameter Store or Secrets Manager).
   **One change, three problems:** the token stops being a plaintext value readable via
   `ecs:DescribeTaskDefinition`; rotation becomes an SSM update instead of a stack update; and
@@ -177,9 +323,10 @@ The catch-all is hardcoded `ALERT`, so today the firewall only logs. Three phase
 - [ ] **Harden the ImageResolver** — on Update after a failed create the service no longer exists,
   `describe_services` finds nothing and the update hard-fails. ~4 lines of fallback to
   `InitialDockerImage`.
-- [ ] **Log the resolved image.** The Lambda prints only on error, so a successful resolve leaves no
-  record of what it chose — which is why the stale-image incident needed an ECS/CloudTrail
-  reconstruction.
+- [ ] **Images outside ECR stay uncovered by the guard.** Fixed in `1.5.0` to skip them cleanly instead
+  of raising, but skipped is skipped: Solr's `solr:9.9` gets no regression check. It additionally runs on
+  a **mutable tag**, so a moved upstream tag changes the image on the next task start with nothing to
+  notice it. Either pin by digest, mirror into ECR, or accept it knowingly.
 - [ ] **Set a real default for the 4xx anomaly band width.** Graph `HTTPCode_Target_4XX_Count` at
   `Sum`/5 min over two weeks and count breaches over two consecutive periods. No warmup needed, the
   metric is retained 15 months.
@@ -234,7 +381,9 @@ The catch-all is hardcoded `ALERT`, so today the firewall only logs. Three phase
 
 ## Open questions outside the templates
 
-- [ ] **Confirm and close the ALB-direct bypass for Solr — the real remaining risk, untested.** If the
+- [ ] **Confirm and close the ALB-direct bypass for Solr — the real remaining risk, untested.**
+  **Has to be done in Frankfurt:** `gwa-gut-sol-s` runs at `desiredCount=0` in Paris (checked
+  2026-09-05) — deliberately off, so the probe cannot be answered there. If the
   ALB answers a `Host: suche.gwa.de` request, Cloudflare's WAF, rate limiting and DDoS shielding are
   sidestepped, leaving BasicAuth in front of a Java service with an RCE history.
   `curl -k -o /dev/null -w '%{http_code}' -H 'Host: suche.gwa.de' https://<alb-dns>/solr/` — `401` from
@@ -248,7 +397,10 @@ The catch-all is hardcoded `ALERT`, so today the firewall only logs. Three phase
 - [ ] **Document Solr's `security.json`** — auth works but is expressed nowhere in this repo, so the
   next image bump could silently remove the only thing in front of the index.
 - [ ] **Know what is running before a CVE lands** — nothing maps services to image versions, so "are we
-  affected?" starts with `describe-task-definition` across every stack.
+  affected?" starts with `describe-task-definition` across every stack. The manual recipe now exists in
+  `paris-state.txt` (stack → image → ECR push date, three loops); what is missing is having it run
+  regularly and somewhere readable. Measured in Paris 2026-09-05: image ages spread from one week to
+  four months, all still present in ECR.
 - [ ] **Read `S3FS-Policy` and `AzureAD_SSOUserRole_Policy`** — a blanket `s3:*` on `*` makes every
   bucket setting irrelevant. Also check AWS-managed grants, which `--scope Local` misses.
 - [ ] **Apply BPA to the two `cf-templates-*` buckets** and check what is inside the two
@@ -272,7 +424,11 @@ The catch-all is hardcoded `ALERT`, so today the firewall only logs. Three phase
 - **WAF as a separate stack** — merged into the cluster template; split stacks are for things that are
   optional per cluster and iterated often.
 - **Cloudflare-range allowlists as the *only* control** — the ranges are shared by every tenant.
-- **EFS root-mount exposure: nothing further for now.** The fstab root mount was removed 2026-08-19.
+- **EFS root-mount exposure: nothing further for now.** The fstab root mount was removed 2026-08-19
+  (cluster `1.2.0`); **Paris verified clean on all hosts 2026-09-05** after the last pre-change instance
+  was drained and replaced. Frankfurt has not been checked — run the same `AWS-RunShellScript` sweep
+  (`grep -c efs /etc/fstab`) across every instance there before assuming it, one host in Paris had
+  survived six weeks of scaling.
   What remains needs a container breakout, and neither the SG nor a partial IAM policy can gate it
   (`bridge` mode means the agent mounts over the *host* ENI). Enforcement, if ever wanted, is
   per-service EFS access points + `Iam: ENABLED`.
