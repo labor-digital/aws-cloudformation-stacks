@@ -46,6 +46,17 @@ port does not disturb a running container, it breaks the next task placement.
   on, because legitimate traffic stops producing rejections.
 - [ ] **3. Add the LibreChat endpoints to `DnsFirewallWhitelistDomains`** from `librechat.yaml` and the MCP
   server list. No log can show an endpoint nobody used during the observation window.
+- [ ] **WAF: `WordPressRulesAction=block` und `WordPressRulesAlarmAction=alert`.** Unabhängig von den vier
+  Schritten oben, reines Parameter-Update. Messung 2026-09-15 über 14 Tage Pariser WAF-Logs: 54 Treffer
+  gegen 17.742 bei `CommonRuleSet`, und **ausnahmslos Exploit-Verkehr** — ein `wlwmanifest.xml`-Sweep über
+  durchprobierte Unterverzeichnisse, `/xmlrpc.php`, `/crossdomain.xml`. Der einzige Treffer auf einem
+  echten WordPress-Endpunkt, `/wp-admin/admin-post.php`, entpuppte sich als vier Plugin-Exploits in einer
+  Scan-Sitzung: BackupBuddy-LFI auf `/etc/passwd` (CVE-2022-31474), `do_reset_wordpress=1` (WP Reset),
+  `yp_remote_get` (CVE-2019-11223) und ein Webshell-Parameter. Kein legitimer Aufruf darunter.
+  Der WP-Reset-Versuch wurde **gezählt, nicht geblockt** — das ist das Argument.
+  Alarmschwelle 20 gegen gemessene 54 in zwei Wochen lässt Luft; `alert` dazu, damit ein Fehlalarm nach
+  dem Umschalten auffällt.
+
 - [ ] **4. `DnsFirewallCatchAllAction=BLOCK`,** once the ALERT rate has been at zero for a day. The
   blocked-query alarm comes into existence with it and notifies on the first refusal.
 
@@ -93,8 +104,16 @@ import or `wp-cron` job legitimately runs longer.
 Who holds admin, whether editors need it, and whether `/wp-admin` should be reachable from the internet.
 
 ### 4. Whether to pursue WAF promotion further
-`CommonRuleSet` needs `RuleActionOverrides` before it can block. Weakest-justified item of the security
-work — the Apache timeout and the origin lockdown matter more.
+
+Only two groups are still open, and for opposite reasons.
+
+`CommonRuleSet` fires on legitimate traffic and needs `RuleActionOverrides` first — 17,742 counted matches
+in 14 days against 54 for WordPress, a factor of 330. `RateLimit` cannot be promoted at all while
+`WafClientIpHeader` is empty: CloudFormation refuses the combination, because without the header a block
+would lock out the proxy for every site behind it. That one is really the Cloudflare question (decision 1),
+not a WAF question.
+
+Weakest-justified item of the security work — the Apache timeout and the origin lockdown matter more.
 
 ### 5. Customer communication about the incident
 What GWA is told, and by whom.
@@ -103,8 +122,38 @@ What GWA is told, and by whom.
 An unexplained listener rule. Decide whether it is needed.
 
 ### 7. Aurora instance class
-`db.t4g.medium` costs ~8 USD/month less than the current class **and** supports Performance Insights, which
-the current one does not. Migration is a modify-with-reboot on the writer.
+
+Prices measured 2026-09-08, eu-central-1, Aurora MySQL on-demand, single instance. `max_connections` from
+the template's own formula `log2(mem/805306368)*60`.
+
+| Class | RAM | PI | USD/month | vs today | `max_connections` |
+|---|---|---|---|---|---|
+| `db.t3.medium` — running | 4 GiB | **no** | 70.08 | — | ~145 |
+| `db.t4g.medium` | 4 GiB | yes | **62.05** | **−8.03** | ~145 |
+| `db.t4g.large` | 8 GiB | yes | *unread* | | ~205 |
+| `db.r6g.large` | 16 GiB | yes | 228.49 | +158.41 | ~265 |
+
+**The easy half.** `db.t4g.medium` is the same size on Graviton, costs **8.03 USD/month less** (−11.5 %,
+~96 USD/year) **and** supports Performance Insights, which `db.t3.medium` does not — cheaper and more
+capable. Verified against the account with `describe-orderable-db-instance-options`, not from
+documentation: Aurora excludes t2 and t3 from PI, not t4g. The ARM caveat does not apply, because no code
+of ours runs on a database instance. (It very much would apply to the cluster's EC2 instances.)
+
+**The real trade-off** is the connection budget: only the r-class removes CPU credits and lifts
+`max_connections` to ~265, at **+158.41 USD/month**. Weigh that against what happened — an estate-wide
+`1040` event on 2026-09-04, and one service holding two thirds of the budget for 34 minutes on 2026-09-08 —
+and against AWS positioning t-classes on Aurora as "development and test" while ~20 production services
+run on one.
+
+⚠️ **The cost is not the hard part, the window is.** `RdsInstanceType` has
+`AllowedValues: ["db.t3.medium"]`, so any move is a template change first. And **with a single writer and
+no reader, a class change is a restart of the only instance, not a failover** — all ~20 services lose the
+database at once. The way around it: add a reader already on the target class, wait for sync, **fail over**
+(~30 s), change the old writer, drop the extra reader. Bundle everything that wants a restart into the same
+window. Paris first, and let it run a few days before Frankfurt.
+
+**Unread and needed first:** prices for `db.t3.large` and `db.t4g.large`, and the **effective**
+`max_connections` off the running instance — every figure above is arithmetic, not measurement.
 
 ### 8. `10.1.3.7` — the LibreChat box in the Paris VPC
 Not an ECS instance; runs the internal LibreChat, used productively. The DNS Firewall associates per VPC so
@@ -119,6 +168,23 @@ the SNI (~290 USD/month per AZ) or a forward proxy. Declining is legitimate; it 
 decision rather than assumed away.
 
 ---
+
+## Egress — was die Default-Adressen sind
+
+`EgressExtraRules` liefert `587:95.217.210.26/32,4318:149.248.216.54/32` aus. Beide sind in Paris über 28
+Tage ACCEPT-Flow-Logs gemessen, und beide brauchen eine eigene Regel nur, weil sie nicht auf `443` liegen.
+
+- **`95.217.210.26:587` — das SMTP-Relay.** Ein Ziel, erreicht von drei Cluster-Instanzen. Hetzner-Adresse.
+  Nicht geprüft: welchen *Namen* die Anwendungen auflösen und ob die Adresse stabil genug für ein `/32`
+  ist — sonst müsste es der Netzblock sein. Alles andere auf 25/465/587 im selben Ergebnis lief in die
+  Gegenrichtung: Scans auf die öffentliche NAT-IP, die nach einem offenen Relay suchen.
+- **`149.248.216.54:4318` — OTLP über HTTP,** der Collector `fly-otel-collector-prod.fly.dev`. Gehört zum
+  **Webpage-Builder**, nicht zu einem separaten Agenten: dieselben Hosts lösen `oidc.fly.io`,
+  `api.machines.dev`, `api.depot.dev` und Kundenprojekte unter `*.fly.dev` auf. Die schwächste der vier
+  Regeln — ein `/32` auf einen fremden SaaS-Host, dessen Adresse nicht zugesichert ist; zieht sie um,
+  bricht die Telemetrie **still**. Den Endpunkt auf `443` zu legen würde die Regel ganz entfallen lassen.
+- **Loses Ende:** es gab auch VPC-internen 4318-Verkehr (`10.1.4.186 → 10.1.1.76`, `10.1.3.59 →
+  10.1.2.21`, `10.1.4.228 → 10.1.2.51`). Nicht verfolgt.
 
 ## `ecscluster-vpc-rds-asg`
 
@@ -143,8 +209,12 @@ decision rather than assumed away.
 - [ ] **Protect login endpoints.** A wrong-password POST is well-formed, so signature groups miss it and
   2,000/IP/5 min still allows 300 attempts a minute. A failed-login metric filter per service log group
   counts what no rate limit measures.
-- [ ] **Launch-time AMI resolution + scheduled instance refresh.** `{{resolve:ssm:…}}` bakes a literal AMI
-  into the launch template, so a scheduled refresh relaunches the same image; it must become
+- [ ] **Launch-time AMI resolution + scheduled instance refresh.** Nothing replaces a running instance, so
+  hosts drift indefinitely. `dnf-automatic` runs with `upgrade_type = security` and `apply_updates = yes`,
+  but `reboot` is unset and therefore `never` — kernel and glibc patches are **installed and never become
+  active**, and the ASG has no `UpdatePolicy`, no refresh, and a new AMI reaches only newly launched
+  instances. The blocker for a scheduled refresh: `{{resolve:ssm:…}}` is a *CloudFormation* reference and
+  bakes a literal AMI into the launch template, so a refresh would relaunch the same image; it must become
   `{"Fn::Sub": "resolve:ssm:${AmiSsmParameter}"}`.
 - [ ] **Gateway VPC Endpoint for S3.** Small saving; the point is that egress rules can then match the S3
   managed prefix list instead of `443 → 0.0.0.0/0`.

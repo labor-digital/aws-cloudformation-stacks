@@ -348,6 +348,16 @@ Objekte mehr.
 
 - **DHCP-Options** setzen hartcodiert `DomainName: ec2.internal` — das ist die `us-east-1`-Schreibweise,
   außerhalb heißt die Zone `<region>.compute.internal`. Relevant für die DNS-Firewall-Whitelist.
+- **Patches auf den Instanzen: `dnf-automatic`,** vom Launch Template per UserData installiert und mit
+  `upgrade_type = security`, `apply_updates = yes` scharf geschaltet. Sicherheitsupdates werden also
+  automatisch **installiert**.
+  ⚠️ **Aber nie aktiviert.** `reboot` bleibt ungesetzt, also beim Default `never` — Kernel- und
+  glibc-Updates liegen installiert vor und greifen erst nach einem Neustart. Und nichts startet neu: die
+  ASG hat keine `UpdatePolicy`, es gibt keinen Instance Refresh, und ein neues AMI im Launch Template
+  erreicht nur neu gestartete Instanzen. Eine Instanz sammelt damit unbegrenzt Patches an, die nicht
+  wirken. Der einzige Weg ist heute manuell: drainen, ohne Verringerung der Wunschkapazität terminieren,
+  die ASG stellt aus der aktuellen Launch-Template-Version nach. Offener Punkt in [TASKS.md](TASKS.md).
+
 - **Aurora MySQL:** TLS erzwungen (`require_secure_transport = ON`), Storage verschlüsselt, nicht
   öffentlich erreichbar. **`BackupRetentionPeriod` hartcodiert auf 1 Tag** — automatische Snapshots decken
   nur 24 h ab, alles darüber kommt aus AWS Backup. `slow_query_log = 1`, Schwelle über `RdsLongQueryTime`;
