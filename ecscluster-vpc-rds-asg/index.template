@@ -4176,14 +4176,15 @@
             "Ref": "AlertTopic"
           }
         ],
-        "AlarmDescription": "Unusual spike in rejected VPC connections - potential port scan or misconfigured service. Review VpcFlowLogsRejectedTraffic Logs Insights query.",
+        "AlarmDescription": "Unusual spike in rejected VPC connections - potential port scan or misconfigured service. Review VpcFlowLogsRejectedTraffic Logs Insights query. Requires the threshold to be exceeded for 15 minutes straight (3 periods of 300s, DatapointsToAlarm 3): what distinguishes a real event from internet background scanning is not the height of the spike but how long it lasts. Measured in Frankfurt over three weeks in 2026-09: 34 firings on 15 days at EvaluationPeriods 1, nearly all lasting a single datapoint, against a baseline of 125-165 rejects per period. The two episodes worth knowing about ran 70 and 90 minutes.",
         "Namespace": {
           "Fn::Sub": "${AWS::StackName}/VpcFlowLogs"
         },
         "MetricName": "RejectedConnections",
         "Statistic": "Sum",
         "Period": 300,
-        "EvaluationPeriods": 1,
+        "EvaluationPeriods": 3,
+        "DatapointsToAlarm": 3,
         "Threshold": {
           "Ref": "VpcFlowLogsAlarmThreshold"
         },
@@ -4986,7 +4987,7 @@
     },
     "TemplateVersion": {
       "Description": "Version of the ecscluster-vpc-rds-asg template this stack was last updated with. Bump on every template change (see README).",
-      "Value": "1.7.2"
+      "Value": "1.7.3"
     }
   },
   "Conditions": {
