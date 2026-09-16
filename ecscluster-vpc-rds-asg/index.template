@@ -257,10 +257,10 @@
     },
     "EgressExtraRules": {
       "Type": "String",
-      "Default": "587:95.217.210.26/32,4318:149.248.216.54/32",
+      "Default": "0:0.0.0.0/0",
       "AllowedPattern": "^([0-9]{1,5}:[0-9]{1,3}(\\.[0-9]{1,3}){3}/[0-9]{1,2})(,[0-9]{1,5}:[0-9]{1,3}(\\.[0-9]{1,3}){3}/[0-9]{1,2}){0,3}$",
       "ConstraintDescription": "1-4 port:cidr pairs separated by commas, e.g. 587:203.0.113.10/32 - or 0:0.0.0.0/0 for none",
-      "Description": "Additional outbound TCP rules under EgressPolicy=restricted, as port:cidr pairs separated by commas, e.g. 587:203.0.113.10/32,4318:198.51.100.7/32. Up to four; write 0:0.0.0.0/0 for none, and use 0.0.0.0/0 as the cidr to allow a port to any destination. The shipped default names two measured destinations: 587 is the SMTP relay, 4318 is the OTLP collector of the page builder - both need a rule only because they do not run on 443. Each region must set its own; see TASKS.md."
+      "Description": "Additional outbound TCP rules under EgressPolicy=restricted, as port:cidr pairs separated by commas, e.g. 587:203.0.113.10/32,4318:198.51.100.7/32. Up to four; write 0:0.0.0.0/0 for none, and use 0.0.0.0/0 as the cidr to allow a port to any destination. The default is 0:0.0.0.0/0, i.e. no extra rules - real addresses are deliberately not shipped in this template because the repository is public. Pass this parameter explicitly on every deployment, in every region, exactly like the *AlarmAction parameters; do not rely on the previous value. Two destinations are known to need a rule because they do not run on 443: the SMTP relay on 587 and the page builder's OTLP collector on 4318. The addresses live in the local runbook, not here."
     },
     "CommonRuleSetAction": {
       "Type": "String",
@@ -1810,6 +1810,13 @@
                   ]
                 },
                 "Description": "DNS over TCP for large responses. Not switchable."
+              },
+              {
+                "IpProtocol": "udp",
+                "FromPort": 123,
+                "ToPort": 123,
+                "CidrIp": "0.0.0.0/0",
+                "Description": "NTP. Not switchable and deliberately unpinned - time.aws.com resolves to a rotating set of public addresses. Measured in Paris over 14 days: 44,553 flows from 25 instances to 15 destinations, so every instance needs it. Without it the clock drifts and TLS handshakes and signature checks start failing hours later, with nothing pointing back at the egress change. The tighter alternative is the link-local Amazon Time Sync Service at 169.254.169.123, which no security group rule can reach or block - that is a chrony change on the instance, not a template one."
               }
             ],
             [
@@ -4979,7 +4986,7 @@
     },
     "TemplateVersion": {
       "Description": "Version of the ecscluster-vpc-rds-asg template this stack was last updated with. Bump on every template change (see README).",
-      "Value": "1.7.0"
+      "Value": "1.7.2"
     }
   },
   "Conditions": {

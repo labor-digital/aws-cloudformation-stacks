@@ -5,7 +5,6 @@ in the parameter's own `Description` or `Metadata.Note`, where it is read at the
 and the evidence belongs in the commit message.
 
 - Template rationale: [README.md](README.md)
-- Query blocks behind the measurements: [queries.md](queries.md)
 - Anything older: `git log -p TASKS.md`. The 2026-09-08 incident reconstruction and the rollout logs were
   removed on 2026-09-15 once their findings had landed in the templates; they are in that history.
 
@@ -18,45 +17,98 @@ and the evidence belongs in the commit message.
 
 | | Paris `labc-eu-w3` (staging) | Frankfurt `labc-eu-c1` (prod) |
 |---|---|---|
-| Cluster template | `1.7.0` | `1.5.0` |
+| Cluster template | `1.7.2` | `1.5.0` |
 | `ecsservice` | `1.6.0`, 15/15 | `1.0.1` ×1, `1.2.0` ×1, no `TemplateVersion` ×17 |
-| WAF rule actions | `KnownBadInputs` + `SQLi` **block**, rest `count` | all five `count` |
-| DNS Firewall | catch-all `ALERT`, 48 domains, redirection `TRUST` | catch-all `ALERT`, 14 domains |
+| WAF rule actions | `KnownBadInputs` + `SQLi` + `WordPress` **block**, rest `count` | all five `count` |
+| DNS Firewall | catch-all `ALERT`, 54 domains, redirection `TRUST` | catch-all `ALERT`, 14 domains |
 | Egress | `SgEgress` exists, `EgressPolicy=open` | not present |
 | Cluster alarms | 11; WAF-KnownBadInputs, WAF-SQLi, dns-firewall, vpc-rejected, rds-slow-queries notify | 9; dns-firewall, rds-error, rds-slow-queries notify |
 | Service alarms | HighCpu/HighMemory/5xx `alert`, 4xx band `dashboard`, Low* `off` | pre-`1.3.0`, no switches |
 | `ImageRegressionGuard` | on all 15, live | on none of the 19 |
 | `WafClientIpHeader` | empty | empty |
-| `EnableEgressAnalysis` | **still `true`** — bills per GB, baseline period long over | `false`, never enabled |
+| `EnableEgressAnalysis` | **still `true`** — bills per GB, baseline period long over | `true`, running since ~2026-09 |
 | Known drift | `DnsQueryLoggingConfig`, `Rdscl`, `Rdsinstance1` | same four, plus log retention raised by hand |
 
 ---
 
 ## Next: arm Paris
 
+- [x] **`1.7.2` deployed 2026-09-16.** Only empties the `EgressExtraRules` default; the value now lives in
+  the local runbook and in the stack, not in the public template. The console pre-fills it from the stack,
+  so on an *existing* stack it cannot be forgotten — the risk is a newly created stack, Frankfurt's first
+  `1.7.x` deploy, and any `deploy` that omits it from `--parameter-overrides`.
+  The change set listed five changes, four of them CloudFormation being conservative: `Launchtemplate`
+  (`ParameterReference`, never recreates), and `Ascalegroup` → `CapacityProvider` → the association
+  cascading from `Fn::GetAtt Launchtemplate.LatestVersionNumber`. Nothing was replaced or reset.
+
 Four parameter updates, in this order, with time between them. Each is reversible by setting the parameter
 back. **Test each with a forced deployment, not by loading a site** — a blocked resolution or a missing
 port does not disturb a running container, it breaks the next task placement.
 
-- [ ] **1. Attach `SgEgress` to the running instances.** It arrives via the launch template and the ASG has
-  no `UpdatePolicy`, so a template update does not roll the fleet. Instances on an older launch template
-  version never receive it, while neutralising the three old groups hits their ENIs at once — flipping
-  before every instance carries it removes **all** outbound access from those instances.
-- [ ] **2. `EgressPolicy=restricted`,** then read the REJECT flow log. It is a signal only from this point
-  on, because legitimate traffic stops producing rejections.
-- [ ] **3. Add the LibreChat endpoints to `DnsFirewallWhitelistDomains`** from `librechat.yaml` and the MCP
-  server list. No log can show an endpoint nobody used during the observation window.
-- [ ] **WAF: `WordPressRulesAction=block` und `WordPressRulesAlarmAction=alert`.** Unabhängig von den vier
-  Schritten oben, reines Parameter-Update. Messung 2026-09-15 über 14 Tage Pariser WAF-Logs: 54 Treffer
-  gegen 17.742 bei `CommonRuleSet`, und **ausnahmslos Exploit-Verkehr** — ein `wlwmanifest.xml`-Sweep über
-  durchprobierte Unterverzeichnisse, `/xmlrpc.php`, `/crossdomain.xml`. Der einzige Treffer auf einem
-  echten WordPress-Endpunkt, `/wp-admin/admin-post.php`, entpuppte sich als vier Plugin-Exploits in einer
-  Scan-Sitzung: BackupBuddy-LFI auf `/etc/passwd` (CVE-2022-31474), `do_reset_wordpress=1` (WP Reset),
-  `yp_remote_get` (CVE-2019-11223) und ein Webshell-Parameter. Kein legitimer Aufruf darunter.
-  Der WP-Reset-Versuch wurde **gezählt, nicht geblockt** — das ist das Argument.
-  Alarmschwelle 20 gegen gemessene 54 in zwei Wochen lässt Luft; `alert` dazu, damit ein Fehlalarm nach
-  dem Umschalten auffällt.
+> Measured 2026-09-15 over 14 days of Paris logs, both sides: the DNS query log for what the catch-all
+> would refuse, and the ACCEPT flow log for what `SgEgress` would drop. Both are only readable while
+> `EnableEgressAnalysis` is on.
 
+- [x] **0. NTP rule in `SgEgress`** — `1.7.1` deployed 2026-09-16. Inert until step 2: the rule sits in the
+  `EgressRestricted` branch, so with `EgressPolicy=open` it changes nothing yet. The egress measurement found
+  **44,553 flows on 123/UDP from 25 instances to 15 destinations**: `10.1.3.7` to Canonical, the other 24
+  to ten AWS addresses in eu-west-2, i.e. `time.aws.com`. Under `restricted` that stopped dead, and it
+  could not be repaired through the parameter either — all four `EgressExtraRules` slots are hardwired to
+  `IpProtocol: tcp`, so `123:0.0.0.0/0` would have produced a TCP rule and nothing else. Now a fixed
+  `123/UDP → 0.0.0.0/0` rule next to the two 53 ones. The failure mode it avoids is the nasty kind: clock
+  drift first, then TLS handshakes and signature checks failing hours later with nothing pointing back at
+  the parameter that was flipped.
+- [x] **1. `SgEgress` on every instance** — done 2026-09-15 23:35–23:44, confirmed 2026-09-16: nine ASG
+  instances, all on launch template v6, all carrying `SgEgress`; nothing left draining. The fleet table found **5 of 9**
+  instances still on launch template v5 without `SgEgress`; going to `restricted` then would have stripped
+  all outbound access from exactly those five, since the three old groups get neutralised and they had no
+  replacement rule. Fixed by terminating the five by hand, one at a time — the ASG points at v6 (fixed
+  number, not `$Default`, which is still 1), so every replacement carries the group. A full instance
+  refresh would have replaced the four healthy ones too; and had one been used, `MinHealthyPercentage: 80`
+  is the right value, not 90 — AWS rounds the healthy count up, so 90 % of 9 is 9 and nothing may
+  terminate. Draining is covered: the terminations went through `MidTerminatingLifecycleAction`, so a
+  lifecycle hook holds each instance while tasks move.
+  The mechanism behind it, worth keeping: `SgEgress` arrives via the launch template and the ASG has no
+  `UpdatePolicy`, so a template update never rolls the fleet by itself — while neutralising the three old
+  groups hits every ENI carrying them at once. Rule changes *inside* `SgEgress` do apply immediately to
+  every ENI that already has it, so there is no window where an instance is restricted but lacks the NTP
+  rule; only group membership lags.
+  `10.1.3.7` is the one exception and needs nothing: `lab-dev-llm-s-EC2` (LibreChat), no ASG, no launch
+  template, only its own security group, none of the three cluster ones. The fleet table confirmed no other
+  standalone instance carries them either.
+- [ ] **2. `EgressPolicy=restricted`,** then read the REJECT flow log. It is a signal only from this point
+  on, because legitimate traffic stops producing rejections. Two measured flows will disappear, both to be
+  confirmed as intended beforehand: **`3306/TCP`** to an external MySQL in eu-central-1 — `dwk-zer-app-s`
+  gets that host from Doppler at container start and it belongs to a cluster we no longer run, so **fix the
+  Doppler value first**; afterwards a failure would come from the security group and be indistinguishable
+  from the old one. And **`53/UDP → 8.8.8.8`** — 4 flows, last on 02.09., from an ASG instance — which is
+  the point of the exercise, not a casualty. The measured `80/TCP` and `4460/TCP` came exclusively from
+  `10.1.3.7`, which carries none of the affected groups, so neither is in scope.
+- [x] **3. Whitelist completed** — 54 entries live since 2026-09-16. The diff of the 48 previous
+  entries against the 50 alerted names left exactly **8 uncovered, and they are precisely the 8 still
+  alerting after the 1.7.0 deploy** — two independent methods, same answer. The other 42 with 1,050 queries
+  did not stop, they got covered. New: `docker.io`, `prettylinks.com`, `*.bfl.ai`, `*.brave.com`,
+  `langchain4j.dev`, `*.huggingface.co` → 54 entries.
+  ⚠️ **`docker.io` was the dangerous one.** `*.docker.io` was on the list but a wildcard does not cover the
+  apex, and three instances had queried the apex. Under `BLOCK` that breaks the next image pull — invisibly,
+  because running containers never notice. `slack.com`, `statamic.com`, `wordpress.org` and `complianz.io`
+  were already double-listed, so the pattern was understood; `docker.io` was the gap.
+  Left off deliberately: `164.5.75.34.bc.googleusercontent.com`, a forward lookup of a reverse name from a
+  client that verifies rDNS.
+  ⚠️ **The two hardening steps cut across different sets.** The DNS Firewall is associated at **VPC level**,
+  so it covers LibreChat too; `SgEgress` reaches only instances from the launch template, so it does not.
+  `api.eu.bfl.ai`, `delivery.eu2.bfl.ai` and `api.search.brave.com` all came from one source — that box.
+  Going to `BLOCK` without those three entries would have broken LibreChat while leaving the cluster
+  untouched. Still open: the LibreChat endpoints from `librechat.yaml` and the MCP server
+  list — no log can show an endpoint nobody used during the observation window.
+- [x] **WAF WordPress scharf, 2026-09-16.** `WordPressRulesAction` stand bereits auf `block`; umgestellt
+  wurde `WordPressRulesAlarmAction` von `dashboard` auf `alert` — im Change Set sichtbar als
+  `ActionsEnabled` am `AlarmWafWordPress`, verifiziert mit dem AlertTopic als Ziel. Grundlage: Messung über
+  14 Tage Pariser WAF-Logs, 54 Treffer gegen 17.742 bei `CommonRuleSet`, ausnahmslos Exploit-Verkehr —
+  `wlwmanifest.xml`-Sweep, `/xmlrpc.php`, `/crossdomain.xml`, und auf dem einzigen echten
+  WordPress-Endpunkt vier Plugin-Exploits in einer Scan-Sitzung (BackupBuddy-LFI CVE-2022-31474,
+  `do_reset_wordpress=1`, `yp_remote_get` CVE-2019-11223, ein Webshell-Parameter). Der WP-Reset-Versuch war
+  gezählt, nicht geblockt. Alarmschwelle 20 gegen 54 in zwei Wochen lässt Luft.
 - [ ] **4. `DnsFirewallCatchAllAction=BLOCK`,** once the ALERT rate has been at zero for a day. The
   blocked-query alarm comes into existence with it and notifies on the first refusal.
 
@@ -64,22 +116,37 @@ port does not disturb a running container, it breaks the next task placement.
 
 Carries everything built since `1.5.0` — alarm switches, `ProjectToken` as a resolver property, the
 `ImageRegressionGuard`, `ElbHttp5xxAlarm`, `RdsConnectionsAlarm`, `RdsLongQueryTime`, the DNS Firewall
-parameters, `SgEgress`. Pre-flight blocks are in [queries.md](queries.md).
+parameters, `SgEgress`.
 
-- [ ] **Measure egress first.** `EnableEgressAnalysis=true` for 7–14 days, then off again — it bills per GB.
-  The port set is unmeasured there, so `EgressExtraRules` cannot be filled responsibly yet, and its default
-  carries Paris addresses that would pin Frankfurt's mail to the wrong relay.
-- [ ] **Cluster to `1.7.0`,** then the 19 services. **Pass every `*AlarmAction` explicitly** — parameters
-  new in a version have no previous value, so `deploy` takes the template default and silences alarms that
-  were notifying.
+- [ ] **Read the egress measurement — it has been running for a while, so this is possible now.** That
+  removes what was the long pole: `EgressExtraRules` can be filled from data rather than guessed. Query in
+  `frankfurt-preflight.md` §7b. Turn `EnableEgressAnalysis` off again afterwards, it bills per GB. Since
+  `1.7.2` the parameter defaults to `0:0.0.0.0/0`, so nothing wrong gets pinned in the meantime — but
+  equally, nothing right appears by itself.
+- [ ] **Cluster to `1.7.2`,** then the 19 services. **Pass every `*AlarmAction` explicitly, and
+  `EgressExtraRules` with it** — parameters new in a version have no previous value, so the template default
+  applies: for the alarm actions that silences alarms that were notifying, and for the egress rules it
+  leaves SMTP and OTLP without a rule the moment `restricted` is switched on. Paris needs the same
+  treatment from now on; the value is no longer in the template, so "use existing value" is the only thing
+  still carrying it there.
 - [ ] **Read each service's `EnableHttp4xxAnomalyAlarm` first.** `false` maps to
   `ServiceHttp4xxAnomalyAlarmAction=dashboard`, not `off` — the parameter is gone in `1.6.0` and the
   three-way switch is what it always wanted to be.
-- [ ] **Check the images still exist in ECR** before touching anything. A tag reaped by the lifecycle policy
-  is invisible while the task runs and fails the next start with `CannotPullContainerError`.
+- [ ] **Check the images before touching anything.** Not just that they exist: compare each running task's
+  resolved `imageDigest` against the digest its tag points to *today*. A deployment holds the digest it
+  resolved when it was created, so a tag that has since moved leaves it pointing at an image that is
+  invisible while the task runs and fails the next start with `CannotPullContainerError`.
+- [ ] **Align `AscalegroupDesSize` with the live `DesiredCapacity` before the cluster update.** The ASG's
+  desired size is a template parameter while ECS managed scaling moves the real one, so the two drift apart
+  and a stack update can reset it — with no `UpdatePolicy` and `ManagedTerminationProtection: DISABLED`,
+  that terminates an instance and moves its tasks. In Paris on 2026-09-16 the gap was 7 against 8.
 - [ ] **Replace the three instances still carrying the EFS root mount:** `i-0edc996a3a34c27e0`,
   `i-03781a7452fa2e145`, `i-049dd7042c56d561e` — the three on `ami-00a84437cf2b97861`. Drain, terminate
   without decrementing desired capacity. **After** the service rollout, not during.
+- [ ] **Do not arm Frankfurt until Paris has been armed and survived it.** The template can go in now —
+  `EgressPolicy`, `DnsFirewallCatchAllAction` and every `*Action` default to open/audit, so `1.7.2` is inert
+  on arrival. Steps 2 and 4 of the Paris list are still untried anywhere; production is the wrong place to
+  find out what they break.
 - [ ] **`1.5.0` goes directly, never `1.4.0`.** And verify the non-ECR skip there: `gwa-gut-sol-p` runs
   `solr:9.9`, `lab-ana-mat-p` runs `matomo:5.8`, and the guard must skip them rather than fail.
 
@@ -169,16 +236,21 @@ decision rather than assumed away.
 
 ---
 
-## Egress — was die Default-Adressen sind
+## Egress — welche Zusatzregeln es gibt und warum
 
-`EgressExtraRules` liefert `587:95.217.210.26/32,4318:149.248.216.54/32` aus. Beide sind in Paris über 28
-Tage ACCEPT-Flow-Logs gemessen, und beide brauchen eine eigene Regel nur, weil sie nicht auf `443` liegen.
+`EgressExtraRules` hat seit `1.7.2` den Default `0:0.0.0.0/0`, also **keine** Zusatzregeln. Die echten
+Adressen stehen bewusst nicht mehr im Template und nicht hier: das Repository ist öffentlich. Sie liegen im
+lokalen Runbook, und der Parameter wird **bei jedem Deployment in jeder Region explizit mitgegeben** —
+genau wie die `*AlarmAction`-Parameter, nie über „vorhandenen Wert verwenden".
 
-- **`95.217.210.26:587` — das SMTP-Relay.** Ein Ziel, erreicht von drei Cluster-Instanzen. Hetzner-Adresse.
+Zwei Ziele brauchen eine Regel, beide in Paris über 28 Tage ACCEPT-Flow-Logs gemessen, und beide nur
+deshalb, weil sie nicht auf `443` liegen:
+
+- **Port 587 — das SMTP-Relay.** Ein Ziel, erreicht von drei Cluster-Instanzen. Hetzner-Adresse.
   Nicht geprüft: welchen *Namen* die Anwendungen auflösen und ob die Adresse stabil genug für ein `/32`
   ist — sonst müsste es der Netzblock sein. Alles andere auf 25/465/587 im selben Ergebnis lief in die
   Gegenrichtung: Scans auf die öffentliche NAT-IP, die nach einem offenen Relay suchen.
-- **`149.248.216.54:4318` — OTLP über HTTP,** der Collector `fly-otel-collector-prod.fly.dev`. Gehört zum
+- **Port 4318 — OTLP über HTTP,** der Collector `fly-otel-collector-prod.fly.dev`. Gehört zum
   **Webpage-Builder**, nicht zu einem separaten Agenten: dieselben Hosts lösen `oidc.fly.io`,
   `api.machines.dev`, `api.depot.dev` und Kundenprojekte unter `*.fly.dev` auf. Die schwächste der vier
   Regeln — ein `/32` auf einen fremden SaaS-Host, dessen Adresse nicht zugesichert ist; zieht sie um,
@@ -187,6 +259,19 @@ Tage ACCEPT-Flow-Logs gemessen, und beide brauchen eine eigene Regel nur, weil s
   10.1.2.21`, `10.1.4.228 → 10.1.2.51`). Nicht verfolgt.
 
 ## `ecscluster-vpc-rds-asg`
+
+- [ ] **`DesiredCapacity` hängt am Parameter, während Managed Scaling die Größe verschiebt.** Die ASG hat
+  `"DesiredCapacity": {"Ref": "AscalegroupDesSize"}`, und der Capacity Provider hat `ManagedScaling`
+  auf `TargetCapacity: 80`. Nach jedem Skalierungsvorgang laufen Parameter und Realität auseinander —
+  am 2026-09-16 stand der Stack auf `7`, die ASG auf `8`. Jedes Stack-Update bringt dann die Frage mit,
+  ob CloudFormation den Wert zurücksetzt und dabei eine Instanz terminiert. Im Change Set taucht
+  `DesiredCapacity` nicht auf, solange der Parameter unverändert bleibt, aber verlassen würde ich mich
+  darauf nicht. Vorerst behelfsmäßig gelöst, indem der Parameter vor dem Update auf den Istwert gesetzt
+  wird — das ist Handarbeit vor jedem Deploy und keine Lösung.
+  Der saubere Weg wäre, `DesiredCapacity` gar nicht im Template zu führen, sobald Managed Scaling aktiv
+  ist. Die ASG hat keine `UpdatePolicy`, `ManagedTerminationProtection` ist `DISABLED`; ein ungewollter
+  Scale-in trifft also direkt laufende Tasks. Analog zu `ServiceDesiredCount` in `ecsservice`, wo dieselbe
+  Kopplung schon als Falle dokumentiert ist.
 
 - [ ] **Promote alarms from `dashboard` to `alert`** — per alarm, off measured volume, not as one decision.
 - [ ] **`rds-slow-queries` was inert until `RdsLongQueryTime=2`.** Re-read whether it now has datapoints,

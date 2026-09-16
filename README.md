@@ -5,7 +5,7 @@ Die CloudFormation-Templates, mit denen LABOR Infrastruktur und Anwendungen bere
 Parameter sind hier **nicht** dokumentiert — jeder trägt im Template eine `Description` und ist über
 `AWS::CloudFormation::Interface` gruppiert, die Konsole zeigt beides beim Deployment. Diese Datei
 beschreibt **Zweck, Deployment und Betriebswissen**, unabhängig davon, was gerade deployt ist. Offene
-Punkte und der Stand der Cluster: [TASKS.md](TASKS.md). Abfragen: [queries.md](queries.md).
+Punkte und der Stand der Cluster: [TASKS.md](TASKS.md).
 
 ---
 
@@ -209,7 +209,19 @@ festverdrahtet (DSGVO)** — jede Analyse ist damit auf zwei Wochen begrenzt.
 
 **Fünf gespeicherte Queries** (Konsole → Logs Insights → *Queries*), jede mit Log-Gruppe und Zeitfenster:
 `VpcEgressPortsAnalysis` (7 d), `DnsFireWallLogsSummary` (14 d), `VpcFlowLogsRejectedTraffic` (1 h),
-`RdsErrorLogSummary` (24 h), `RdsSlowQuerySummary` (24 h). Weitere Blöcke in [queries.md](queries.md).
+`RdsErrorLogSummary` (24 h), `RdsSlowQuerySummary` (24 h).
+
+**Fallstricke beim Abfragen von Hand** — jeder davon hat schon eine Sitzung gekostet:
+
+- **`AWS_REGION` schlägt `AWS_DEFAULT_REGION`.** Beide setzen, sonst liest die Abfrage still die falsche
+  Region und liefert ein leeres, aber völlig plausibles Ergebnis.
+- **`--output text` auf einer Liste von JSON-Strings** hängt sie **tab**-getrennt in *eine* Zeile.
+  `json.loads` bricht dann mit `Extra data: line 1 column …`. Besser `--output json` plus `jq`.
+- **Mehrzeiliges `python3 -c` scheitert in CloudShell** an der beim Einfügen mitgezogenen Einrückung
+  (`IndentationError`). Auch deshalb `jq`.
+- **`start-query` nimmt höchstens 50 Log-Gruppen**, `--log-group-names` erwartet sie space-getrennt.
+- **Eine leere Variable aus `describe-stack-resources`** kommt von einem falschen Logical-ID, nicht von
+  fehlenden Rechten — ein unbekannter Filter liefert still eine leere Liste.
 
 **Vom Logeintrag zum Alarm:** Metric Filter schreiben `AlertedQueries`, `BlockedQueries`,
 `RejectedConnections`, `ErrorCount` und `SlowQueryCount` fort. Die WAF-Alarme lesen dagegen direkt aus
@@ -415,10 +427,23 @@ Allow-all-Regel, identisch zum vorherigen impliziten Zustand.
 |---|---|---|
 | `443/TCP` | `0.0.0.0/0` | fest, nicht abschaltbar |
 | `53/UDP` + `53/TCP` | **VPC-CIDR** | fest, nicht abschaltbar |
+| `123/UDP` | `0.0.0.0/0` | fest, ab `1.7.1` |
 | bis zu vier weitere TCP-Regeln | je eigene CIDR | `EgressExtraRules` |
 
 - **`EgressExtraRules` nimmt `port:cidr`-Paare.** Port und Ziel stehen im selben Eintrag, weil zwei
   parallele Listen bei Verschiebung still den falschen Port zum falschen Ziel öffnen.
+- ⚠️ **Der Default ist `0:0.0.0.0/0`, also keine Zusatzregeln.** Echte Adressen stehen absichtlich nicht im
+  Template — das Repository ist öffentlich. Der Parameter gehört bei **jedem** Deployment in **jeder**
+  Region explizit mitgegeben, wie die `*AlarmAction`-Parameter. Verlässt man sich auf „vorhandenen Wert
+  verwenden", hält nur noch der Stack selbst den Wert, und bei einem neu angelegten Stack fehlt er.
+- ⚠️ **Die vier Slots sind auf `tcp` verdrahtet.** Ein UDP-Dienst lässt sich darüber nicht öffnen —
+  `123:0.0.0.0/0` im Parameter erzeugt eine TCP-Regel und wirkt nicht. Deshalb ist NTP eine feste Regel.
+- **NTP ist bewusst nicht auf eine Adresse festgenagelt**, weil `time.aws.com` auf einen wechselnden Satz
+  öffentlicher Adressen auflöst. Pariser Messung über 14 Tage: 44.553 Flows von 25 Instanzen an 15 Ziele —
+  jede Instanz braucht es. Ohne die Regel driftet die Uhr, und Stunden später scheitern TLS-Handshakes und
+  Signaturprüfungen, ohne erkennbaren Bezug zur umgelegten Egress-Policy. Die engere Variante wäre der
+  link-lokale Amazon Time Sync Service auf `169.254.169.123`, den keine Security Group erreicht oder
+  blockiert — das ist eine chrony-Änderung auf der Instanz, keine im Template.
 - **Warum Zieladressen zählen:** die DNS-Firewall sieht nie eine Verbindung, sie beantwortet nur eine
   Auflösung. Die CIDR in der SG-Regel ist das **einzige** im Template, das begrenzt, wohin Verkehr darf.
 - **`53` ist die Klammer zur DNS-Firewall** — sie zwingt jede Auflösung über den VPC-Resolver. **`443`
