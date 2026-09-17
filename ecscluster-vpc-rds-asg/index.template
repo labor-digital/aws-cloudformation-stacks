@@ -178,10 +178,10 @@
     },
     "AscalegroupDesSize": {
       "Type": "Number",
-      "Description": "The desired count of EC2-Instances (for Autoscaling). Set to 0 initially - ECS Managed Scaling will scale up automatically when tasks are deployed.",
+      "Description": "The desired count of EC2-Instances (for Autoscaling). Set to 0 initially - ECS Managed Scaling will scale up automatically when tasks are deployed. Capped at 30 to match AscalegroupMaxSize: ECS managed scaling moves the real DesiredCapacity, and a cap below the ASG's MaxSize makes it impossible to realign the parameter with the live value before a stack update - which then resets the size and terminates instances.",
       "Default": "0",
       "MinValue": "0",
-      "MaxValue": "15"
+      "MaxValue": "30"
     },
     "EC2InstanceType": {
       "Description": "Instance type which you want to use for the EC2 machines in the cluster.",
@@ -4987,7 +4987,7 @@
     },
     "TemplateVersion": {
       "Description": "Version of the ecscluster-vpc-rds-asg template this stack was last updated with. Bump on every template change (see README).",
-      "Value": "1.7.3"
+      "Value": "1.7.4"
     }
   },
   "Conditions": {
