@@ -105,6 +105,9 @@
             "RateLimitAction",
             "RateLimitAlarmAction",
             "RateLimitAlarmThreshold",
+            "SecretPathsAction",
+            "SecretPathsAlarmAction",
+            "SecretPathsAlarmThreshold",
             "WafRateLimitRequests",
             "WafClientIpHeader"
           ]
@@ -312,6 +315,16 @@
       ],
       "Description": "Rate-based rule using RateLimitRequests as the per-IP limit. off = the rule is not created at all; count = matches are counted and nothing is blocked; block = the rule enforces. Promote one rule at a time: deploy everything as count, read its CountedRequests metric for about a week, and switch it to block only once it counts near zero against normal traffic. A group that counts steadily needs a scope-down statement or rule exclusions before it can ever be enforced."
     },
+    "SecretPathsAction": {
+      "Type": "String",
+      "Default": "count",
+      "AllowedValues": [
+        "off",
+        "count",
+        "block"
+      ],
+      "Description": "Own rule against credential scanning: dotfile paths (/.env, /.git/config, /.ssh/...), sensitive extensions (.pem, .tfstate, .sql, .bak), files named after secrets, and the Apache status endpoints. Measured 2026-09-18 against two real scans on this load balancer: the AWS managed rule groups recognise 17 percent of a scan arriving through the hostname and 34 percent of one aimed at the load balancer IP; ExploitablePaths_URIPATH from KnownBadInputs alone catches 5.3 percent, so promoting the managed groups does not cover this. off = the rule is not created. count = it matches and records without blocking. block = it rejects. Defaults to count, because a pattern set is measured against real traffic before it enforces. THE PATTERNS THEMSELVES ARE DELIBERATELY NOT A PARAMETER - no AllowedPattern can tell a too-broad regex from a correct one, and a '.*' would pass validation and then reject every request to every service under block. To change them, edit RegularExpressionList in WafSecretPathPatterns and bump the template version."
+    },
     "WafClientIpHeader": {
       "Type": "String",
       "Default": "",
@@ -508,6 +521,23 @@
       "Default": 10,
       "MinValue": 1,
       "Description": "Matches per 5 minutes before RateLimitAlarmAction fires. Starting point derived from the measured count-mode volume; re-read the metric after a week and adjust. Thresholds are per rule on purpose: measured volumes span three orders of magnitude, so no single shared number can serve all five."
+    },
+    "SecretPathsAlarmAction": {
+      "Type": "String",
+      "Default": "dashboard",
+      "AllowedValues": [
+        "off",
+        "dashboard",
+        "alert"
+      ],
+      "Description": "Notification level for AlarmWafSecretPaths (surge in matches for the SecretPaths rule). off = the alarm is not created. dashboard = it exists with ActionsEnabled false, state and history only. alert = it also notifies the cluster AlertTopic. Defaults to dashboard until the counting period shows how often the rule matches on this estate."
+    },
+    "SecretPathsAlarmThreshold": {
+      "Type": "Number",
+      "Default": 50,
+      "MinValue": 1,
+      "MaxValue": 1000000,
+      "Description": "Matches of the SecretPaths rule in five minutes before AlarmWafSecretPaths fires. 50 mirrors KnownBadInputsAlarmThreshold. For scale: a single scan measured on 2026-09-18 sent 3,286 requests from one address in five minutes, so a real scan clears this by two orders of magnitude while ordinary traffic should not match at all."
     }
   },
   "Rules": {
@@ -3289,6 +3319,65 @@
         "TreatMissingData": "notBreaching"
       }
     },
+    "SecretPathsSurgeAlarm": {
+      "Type": "AWS::CloudWatch::Alarm",
+      "Condition": "SecretPathsAlarmEnabled",
+      "Metadata": {
+        "Note": "Per-rule WAF surge alarm, same shape as the managed-group alarms: MetricName follows the rule's own mode through SecretPathsActionCounts, so one threshold works during the counting weeks and after promotion. Dimensioned on this one Rule, so the notification names SecretPaths rather than the WebACL as a whole."
+      },
+      "Properties": {
+        "AlarmName": {
+          "Fn::Sub": "${AWS::StackName}-AlarmWafSecretPaths"
+        },
+        "AlarmDescription": "Surge in WAF matches for the SecretPaths rule on the ALB WebACL - requests for credential files such as /.env, /.git/config or /private.pem. Watches CountedRequests while the rule counts and BlockedRequests once it blocks.",
+        "ActionsEnabled": {
+          "Fn::If": [
+            "SecretPathsAlarmAlerts",
+            true,
+            false
+          ]
+        },
+        "AlarmActions": [
+          {
+            "Ref": "AlertTopic"
+          }
+        ],
+        "Namespace": "AWS/WAFV2",
+        "MetricName": {
+          "Fn::If": [
+            "SecretPathsActionCounts",
+            "CountedRequests",
+            "BlockedRequests"
+          ]
+        },
+        "Statistic": "Sum",
+        "Period": 300,
+        "EvaluationPeriods": 1,
+        "Threshold": {
+          "Ref": "SecretPathsAlarmThreshold"
+        },
+        "ComparisonOperator": "GreaterThanThreshold",
+        "Dimensions": [
+          {
+            "Name": "WebACL",
+            "Value": {
+              "Fn::Sub": "${AWS::StackName}-waf"
+            }
+          },
+          {
+            "Name": "Region",
+            "Value": {
+              "Ref": "AWS::Region"
+            }
+          },
+          {
+            "Name": "Rule",
+            "Value": "SecretPaths"
+          }
+        ],
+        "TreatMissingData": "notBreaching"
+      }
+    },
     "BackupRole": {
       "Type": "AWS::IAM::Role",
       "Properties": {
@@ -4452,6 +4541,30 @@
         "Note": "The alarm widget lists alarms by constructed ARN rather than by Ref, because most are conditional on their *AlarmAction parameter and a conditional Ref cannot be woven into a JSON string without making this body unreadable. Consequence: an alarm set to off does not exist and shows as unavailable rather than disappearing. Note what 'dashboard' as an alarm action does NOT mean - it does not place the alarm here, it sets ActionsEnabled false. This widget is what makes the name approximately true."
       }
     },
+    "WafSecretPathPatterns": {
+      "Type": "AWS::WAFv2::RegexPatternSet",
+      "Condition": "SecretPathsActionEnabled",
+      "Metadata": {
+        "Note": "Hardcoded on purpose. These patterns are the only content in the WebACL we author ourselves - every other rule is a managed group where only the action is switchable - and a mistake here reaches every request to every service behind the load balancer. The first expression matches any path segment beginning with a dot, which is why the rule pairs it with a NotStatement for /.well-known/ (ACME challenges, security.txt); the WAF regex dialect has no lookaheads, so that exception cannot live inside the pattern itself. Generic names such as config.json and config.yaml are deliberately absent: single-page applications fetch those from themselves at runtime, and blocking them would break real sites. Matching runs on UriPath after URL_DECODE and LOWERCASE, so percent-encoding and case cannot be used to step around it. Quota: ten expressions per set, ten sets per account and region. The measurement behind the choice of patterns is in TASKS.md."
+      },
+      "Properties": {
+        "Name": {
+          "Fn::Sub": "${AWS::StackName}-secret-paths"
+        },
+        "Scope": "REGIONAL",
+        "Description": {
+          "Fn::Sub": "Paths that only credential scanners ask for - ${AWS::StackName}"
+        },
+        "RegularExpressionList": [
+          "(^|/)\\.[a-z0-9_-]+",
+          "\\.(pem|key|p12|pfx|jks|keystore|tf|tfstate|tfvars|sql|bak|old|orig|swp|dist|save)($|[.~])",
+          "(^|/)(secret|credential|creds|token|passwd|apikey|api_key)[a-z0-9._-]*\\.[a-z0-9]+$",
+          "(^|/)(wp-config|appsettings|database|amplifyconfiguration|awsconfiguration|amplify-meta|serverless|pulumi|configmap)[a-z0-9._-]*\\.(php|ya?ml|json|py|ini|toml)$",
+          "(^|/)config/[a-z0-9._/-]*\\.(php|ya?ml|py|ini|toml|env)$",
+          "(^|/)(server-status|server-info|_netrc|id_rsa|id_dsa|id_ecdsa|id_ed25519)"
+        ]
+      }
+    },
     "WafWebAcl": {
       "Type": "AWS::WAFv2::WebACL",
       "Metadata": {
@@ -4603,6 +4716,86 @@
                   "SampledRequestsEnabled": true,
                   "CloudWatchMetricsEnabled": true,
                   "MetricName": "AWSManagedRulesWordPressRuleSet"
+                }
+              },
+              {
+                "Ref": "AWS::NoValue"
+              }
+            ]
+          },
+          {
+            "Fn::If": [
+              "SecretPathsActionEnabled",
+              {
+                "Name": "SecretPaths",
+                "Priority": 60,
+                "Action": {
+                  "Fn::If": [
+                    "SecretPathsActionCounts",
+                    {
+                      "Count": {}
+                    },
+                    {
+                      "Block": {}
+                    }
+                  ]
+                },
+                "Statement": {
+                  "AndStatement": {
+                    "Statements": [
+                      {
+                        "RegexPatternSetReferenceStatement": {
+                          "Arn": {
+                            "Fn::GetAtt": [
+                              "WafSecretPathPatterns",
+                              "Arn"
+                            ]
+                          },
+                          "FieldToMatch": {
+                            "UriPath": {}
+                          },
+                          "TextTransformations": [
+                            {
+                              "Priority": 0,
+                              "Type": "URL_DECODE"
+                            },
+                            {
+                              "Priority": 1,
+                              "Type": "LOWERCASE"
+                            }
+                          ]
+                        }
+                      },
+                      {
+                        "NotStatement": {
+                          "Statement": {
+                            "ByteMatchStatement": {
+                              "SearchString": "/.well-known/",
+                              "FieldToMatch": {
+                                "UriPath": {}
+                              },
+                              "PositionalConstraint": "STARTS_WITH",
+                              "TextTransformations": [
+                                {
+                                  "Priority": 0,
+                                  "Type": "URL_DECODE"
+                                },
+                                {
+                                  "Priority": 1,
+                                  "Type": "LOWERCASE"
+                                }
+                              ]
+                            }
+                          }
+                        }
+                      }
+                    ]
+                  }
+                },
+                "VisibilityConfig": {
+                  "SampledRequestsEnabled": true,
+                  "CloudWatchMetricsEnabled": true,
+                  "MetricName": "SecretPaths"
                 }
               },
               {
@@ -4987,7 +5180,7 @@
     },
     "TemplateVersion": {
       "Description": "Version of the ecscluster-vpc-rds-asg template this stack was last updated with. Bump on every template change (see README).",
-      "Value": "1.7.4"
+      "Value": "1.7.5"
     }
   },
   "Conditions": {
@@ -5242,6 +5435,26 @@
       "Fn::Equals": [
         {
           "Ref": "RateLimitAlarmAction"
+        },
+        "alert"
+      ]
+    },
+    "SecretPathsAlarmEnabled": {
+      "Fn::Not": [
+        {
+          "Fn::Equals": [
+            {
+              "Ref": "SecretPathsAlarmAction"
+            },
+            "off"
+          ]
+        }
+      ]
+    },
+    "SecretPathsAlarmAlerts": {
+      "Fn::Equals": [
+        {
+          "Ref": "SecretPathsAlarmAction"
         },
         "alert"
       ]
@@ -5592,6 +5805,26 @@
       "Fn::Equals": [
         {
           "Ref": "RateLimitAction"
+        },
+        "count"
+      ]
+    },
+    "SecretPathsActionEnabled": {
+      "Fn::Not": [
+        {
+          "Fn::Equals": [
+            {
+              "Ref": "SecretPathsAction"
+            },
+            "off"
+          ]
+        }
+      ]
+    },
+    "SecretPathsActionCounts": {
+      "Fn::Equals": [
+        {
+          "Ref": "SecretPathsAction"
         },
         "count"
       ]
