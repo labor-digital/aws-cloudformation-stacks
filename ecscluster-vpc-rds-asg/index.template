@@ -2746,6 +2746,9 @@
     },
     "Loadbalancer": {
       "Type": "AWS::ElasticLoadBalancingV2::LoadBalancer",
+      "Metadata": {
+        "Note": "IpAddressType is ipv4 deliberately, and switching it is not the one-line change it looks like: the VPC carries no IPv6 CIDR and neither subnet has Ipv6CidrBlock or AssignIpv6AddressOnCreation, so dualstack would need IPv6 in the VPC and in both subnets first. This property is the only IPv6-related setting in the whole repository. Consequence worth knowing when reading alerts: an external monitor that reports an IPv6 problem for one of these sites is NOT measuring this load balancer, because it has no IPv6 address - it is measuring whatever sits in front, in practice the CDN."
+      },
       "Properties": {
         "LoadBalancerAttributes": [
           {
@@ -2853,75 +2856,16 @@
         "Subnet2"
       ]
     },
-    "Deftarget": {
-      "Type": "AWS::ElasticLoadBalancingV2::TargetGroup",
-      "Properties": {
-        "HealthCheckIntervalSeconds": 30,
-        "HealthCheckPath": "/",
-        "HealthCheckPort": "traffic-port",
-        "HealthCheckProtocol": "HTTPS",
-        "HealthCheckTimeoutSeconds": 5,
-        "HealthyThresholdCount": 5,
-        "Matcher": {
-          "HttpCode": "200"
-        },
-        "Name": {
-          "Fn::Join": [
-            "-",
-            [
-              {
-                "Ref": "AWS::StackName"
-              },
-              "Deftarget"
-            ]
-          ]
-        },
-        "Port": 443,
-        "Protocol": "HTTPS",
-        "Tags": [
-          {
-            "Key": "Name",
-            "Value": {
-              "Fn::Join": [
-                "-",
-                [
-                  {
-                    "Ref": "AWS::StackName"
-                  },
-                  "Deftarget"
-                ]
-              ]
-            }
-          }
-        ],
-        "TargetGroupAttributes": [
-          {
-            "Key": "deregistration_delay.timeout_seconds",
-            "Value": "300"
-          },
-          {
-            "Key": "stickiness.enabled",
-            "Value": "false"
-          }
-        ],
-        "TargetType": "instance",
-        "UnhealthyThresholdCount": 2,
-        "VpcId": {
-          "Ref": "Vpc"
-        }
-      },
-      "DependsOn": [
-        "Vpc"
-      ]
-    },
     "Httpdefaultlistener": {
       "Type": "AWS::ElasticLoadBalancingV2::Listener",
       "Properties": {
         "DefaultActions": [
           {
-            "Type": "forward",
-            "TargetGroupArn": {
-              "Ref": "Deftarget"
+            "Type": "fixed-response",
+            "FixedResponseConfig": {
+              "StatusCode": "404",
+              "ContentType": "text/plain",
+              "MessageBody": "Not found"
             }
           }
         ],
@@ -2932,9 +2876,11 @@
         "Protocol": "HTTP"
       },
       "DependsOn": [
-        "Deftarget",
         "Loadbalancer"
-      ]
+      ],
+      "Metadata": {
+        "Note": "The default action answers directly instead of forwarding into an empty target group. Forwarding to Deftarget, which nothing ever registered into, produced a load-balancer-generated 503 for every request that matched no host rule - and each of those counted in HTTPCode_ELB_5XX_Count. Measured 2026-09-14 to 2026-09-18 on the Frankfurt ALB: about 10,700 such 5xx per day, 97 to 99 percent of them from the default action, driven by credential scanners addressing the load balancer IP directly. The elb-5xx alarm was therefore measuring scanner volume, not service health. A fixed 404 counts in HTTPCode_ELB_4XX_Count, so the alarm sees only the roughly 240 genuine events per day that come from a service with no healthy target. It is also the more honest answer: 503 claims overload, 404 says there is nothing here under that name."
+      }
     },
     "Httpsdefaultlistener": {
       "Type": "AWS::ElasticLoadBalancingV2::Listener",
@@ -2948,9 +2894,11 @@
         ],
         "DefaultActions": [
           {
-            "Type": "forward",
-            "TargetGroupArn": {
-              "Ref": "Deftarget"
+            "Type": "fixed-response",
+            "FixedResponseConfig": {
+              "StatusCode": "404",
+              "ContentType": "text/plain",
+              "MessageBody": "Not found"
             }
           }
         ],
@@ -2961,9 +2909,11 @@
         "Protocol": "HTTPS"
       },
       "DependsOn": [
-        "Deftarget",
         "Loadbalancer"
-      ]
+      ],
+      "Metadata": {
+        "Note": "The default action answers directly instead of forwarding into an empty target group. Forwarding to Deftarget, which nothing ever registered into, produced a load-balancer-generated 503 for every request that matched no host rule - and each of those counted in HTTPCode_ELB_5XX_Count. Measured 2026-09-14 to 2026-09-18 on the Frankfurt ALB: about 10,700 such 5xx per day, 97 to 99 percent of them from the default action, driven by credential scanners addressing the load balancer IP directly. The elb-5xx alarm was therefore measuring scanner volume, not service health. A fixed 404 counts in HTTPCode_ELB_4XX_Count, so the alarm sees only the roughly 240 genuine events per day that come from a service with no healthy target. It is also the more honest answer: 503 claims overload, 404 says there is nothing here under that name."
+      }
     },
     "CommonRuleSetSurgeAlarm": {
       "Type": "AWS::CloudWatch::Alarm",
@@ -5180,7 +5130,7 @@
     },
     "TemplateVersion": {
       "Description": "Version of the ecscluster-vpc-rds-asg template this stack was last updated with. Bump on every template change (see README).",
-      "Value": "1.7.5"
+      "Value": "1.7.6"
     }
   },
   "Conditions": {
