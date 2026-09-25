@@ -256,7 +256,7 @@ bewusst heben, sobald ihre Schwelle gegen echten Traffic gelesen wurde — zuers
 |---|---|---|---|
 | `dns-firewall-alert-surge` | DNS-Anfragen mit Aktion `ALERT` | `100` | Sprung = unerwarteter externer Zugriff |
 | `dns-firewall-blocked` | abgewiesene Anfragen | `0` | existiert nur unter `BLOCK`, Default `alert` |
-| `vpc-rejected-surge` | abgelehnte VPC-Verbindungen | `500` | Portscan oder kaputte Konfiguration |
+| `vpc-rejected-surge` | abgelehnte VPC-Verbindungen | `500` | Portscan oder kaputte Konfiguration — **15 Min. am Stück**, s.u. |
 | `rds-error` | `[ERROR]`-Zeilen im Aurora-Log | `0` | feuert bei **jedem** Eintrag — die lauteste Quelle |
 | `rds-slow-queries` | Slow-Query-Zeilen | `5` | „langsam" steuert `RdsLongQueryTime` |
 | `elb-5xx` | 5xx **vom Load Balancer** (502/503/504) | `10` | was der Besucher sieht — für Target-5xx unsichtbar |
@@ -265,6 +265,7 @@ bewusst heben, sobald ihre Schwelle gegen echten Traffic gelesen wurde — zuers
 | `AlarmWafKnownBadInputs` | WAF-Treffer | `50` | sollte fast still sein — interessantestes Signal |
 | `AlarmWafSQLi` / `AlarmWafWordPress` | WAF-Treffer | `20` | die leisesten Managed-Gruppen |
 | `AlarmWafRateLimitSourceIp` / `-ForwardedIp` | WAF-Treffer | `10` | teilen Schalter und Schwelle |
+| `AlarmWafSecretPaths` | WAF-Treffer | `50` | ab `1.7.5`; ein gemessener Scan brachte 3.286 Treffer in fünf Minuten |
 
 - **`RdsErrorAlarmThreshold` ist der einzige, der `0` erlaubt** — und `0` ist dort der Zweck. Alle anderen
   beginnen bei `1`.
@@ -416,7 +417,12 @@ Zwei Regeln: Whitelist `ALLOW` (Prio 100), Catch-all `*` (Prio 200). Der Catch-a
   `ALERT` hätte im Moment des Umschaltens aufgehört zu zählen und Alarm wie Query still auf null fallen
   lassen. Seit `1.7.0` gibt es `AlertedQueries` und `BlockedQueries`. Der Alarmname trägt weiterhin
   `alert-surge`; Umbenennen ersetzt den Alarm und verwirft seine Zustandshistorie.
-- **Ein Neuheitsdetektor fehlt.** Metric Filter zählen Treffer, sie verfolgen keine Domain-Kardinalität.
+- ⚠️ **`vpc-rejected-surge` ist der einzige Alarm mit einer Dauer-Bedingung** — `EvaluationPeriods: 3`,
+  `DatapointsToAlarm: 3`, also 15 Minuten durchgehend. An einer öffentlich erreichbaren Adresse läuft
+  Dauerscanning; **nicht die Höhe eines Ausschlags unterscheidet ein Ereignis vom Rauschen, sondern die
+  Dauer.** Gemessen: mit `EvaluationPeriods: 1` feuerte er 34-mal an 15 Tagen, fast immer für einen
+  Messpunkt. Die übrigen Alarme behalten `1` — `dns-firewall-blocked` und `rds-error` haben Schwelle `0`
+  und sollen beim **ersten** Vorkommnis melden.
 
 ## Egress der EC2-Instanzen
 
@@ -483,6 +489,12 @@ Allow-all-Regel, identisch zum vorherigen impliziten Zustand.
   Egress-Baseline. Temporär: nach 7–14 Tagen zurück auf `false`, ACCEPT-Logs rechnen pro GB ab. Er wird nur
   von `VpcEgressPortsAnalysis` gelesen, nicht alarmiert.
 
+## Default-Aktion des Load Balancers
+
+Beide Listener antworten seit `1.7.6` **selbst**, mit einem festen `404`. Vorher leiteten sie in die
+Target Group `Deftarget` weiter, in die sich nie etwas registrierte — jede Anfrage ohne passende
+Host-Regel ergab dort ein **vom Load Balancer erzeugtes 503**.
+
 ## WAF
 
 Ein `REGIONAL` WebACL am ALB (`DefaultAction: Allow`), schützt alle Services dahinter. Nicht zu verwechseln
@@ -494,12 +506,22 @@ mit dem WebACL in `cloudfront-alb-distribution`.
 | 30 | `AWSManagedRulesKnownBadInputsRuleSet` | `KnownBadInputsAction` | Payloads breit ausgenutzter CVEs |
 | 40 | `AWSManagedRulesSQLiRuleSet` | `SqliRuleSetAction` | SQL-Injection |
 | 50 | `AWSManagedRulesWordPressRuleSet` | `WordPressRulesAction` | WordPress-Signaturen |
+| 60 | `SecretPaths` | `SecretPathsAction` | **eigene Regel, ab `1.7.5`:** Pfade, nach denen nur Scanner fragen — Dotfiles, Schlüssel- und State-Endungen, Dateinamen mit `secret`/`credential`/`token`, `server-status` |
 | 90 / 91 | `RateLimitForwardedIp` / `RateLimitSourceIp` | `RateLimitAction` | Rate-Limit auf Client-IP-Header bzw. Source IP; 90 existiert nur mit `WafClientIpHeader` |
 
-- **Fünf Schalter für sechs Regeln** (beide Rate-Regeln teilen einen), Default überall `count` — **beim
+- **Sechs Schalter für sieben Regeln** (beide Rate-Regeln teilen einen), Default überall `count` — **beim
   ersten Deploy wird nichts blockiert.** Promotion pro Regel: eine Woche `CountedRequests` lesen, dann
   `block`.
 - Der Client-IP-Header ist nur vertrauenswürdig, solange der ALB nicht direkt erreichbar ist.
+
+### Warum `SecretPaths` nötig ist
+
+Die Managed Groups erkennen das Absuchen nach Zugangsdaten kaum: gemessen an zwei echten Scans **17 %**
+(über den Hostnamen) und **34 %** (auf die ALB-IP). Durchgelassen wurden `/.git/config`, `/_netrc`,
+`/private.pem`, `/terraform/terraform.tfstate` — die Musterlisten der Gruppen sind älter als das, wonach
+heute gesucht wird. **Die Muster sind bewusst kein Parameter**, ein `.*` ließe sich durch keine
+`AllowedPattern` abfangen; Begründung und `/.well-known/`-Ausnahme in `Metadata.Note` von
+`WafSecretPathPatterns`.
 
 ## ImageResolver
 
@@ -594,6 +616,17 @@ Fall 2, 3 und 5 bleiben. **Erkannt werden alle fünf** vom ImageRegressionGuard.
 
 **Die praktische Regel:** Wer den `Task`-Block ändert oder das Doppler-Token rotiert, gibt im selben Update
 `InitialDockerImage` mit dem laufenden Image mit. Ab `1.5.0` gewinnt dieser Wert.
+
+## Bildauflösung: Tag statt Digest
+
+`ecsservice` setzt seit `1.7.0` **`VersionConsistency: disabled`**. Mit der AWS-Voreinstellung löst ECS
+den Tag **einmal je Deployment** zu einem Digest auf und zieht danach darüber — bei commit-gebundenen
+Tags schützt das vor nichts und hält einen Digest fest, den ECR löschen darf. Belegt 2026-09-21: eine
+Ersatz-Task scheiterte mit `CannotPullContainerError`, und die Meldung nannte `repo@sha256:…`, nicht den
+Tag. Der lokale Cache verdeckt das, bis eine Task auf einer Instanz **ohne** Cache startet.
+
+> ⚠️ Mit `disabled` übernimmt eine neustartende Task still den neuen Inhalt, wenn **derselbe** Tag erneut
+> gepusht wird. **Niemals einen Service auf `:latest` zeigen lassen.** Details in `Metadata.Note` von `Task`.
 
 ## ImageRegressionGuard
 

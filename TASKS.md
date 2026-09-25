@@ -12,21 +12,21 @@ and the evidence belongs in the commit message.
 
 ## Cluster state
 
-> Paris read live **2026-09-11**, Frankfurt **2026-09-07**. The only place in the repo describing deployed
+> Beide live gelesen **2026-09-26**. The only place in the repo describing deployed
 > stacks — it goes stale silently, so re-read before trusting it.
 
 | | Paris `labc-eu-w3` (staging) | Frankfurt `labc-eu-c1` (prod) |
 |---|---|---|
-| Cluster template | `1.7.2` | `1.5.0` |
-| `ecsservice` | `1.6.0`, 15/15 | `1.0.1` ×1, `1.2.0` ×1, no `TemplateVersion` ×17 |
-| WAF rule actions | `KnownBadInputs` + `SQLi` + `WordPress` **block**, rest `count` | all five `count` |
-| DNS Firewall | catch-all `ALERT`, 54 domains, redirection `TRUST` | catch-all `ALERT`, 14 domains |
-| Egress | `SgEgress` exists, `EgressPolicy=open` | not present |
-| Cluster alarms | 11; WAF-KnownBadInputs, WAF-SQLi, dns-firewall, vpc-rejected, rds-slow-queries notify | 9; dns-firewall, rds-error, rds-slow-queries notify |
-| Service alarms | HighCpu/HighMemory/5xx `alert`, 4xx band `dashboard`, Low* `off` | pre-`1.3.0`, no switches |
-| `ImageRegressionGuard` | on all 15, live | on none of the 19 |
+| Cluster template | **`1.7.6`** | `1.7.5`; `1.7.6` + `ecsservice 1.7.0` stehen gebaut bereit |
+| `ecsservice` | `1.6.0`, 15/15 | `1.6.0`, 19/19 |
+| WAF rule actions | `KnownBadInputs` `SQLi` `WordPress` **`SecretPaths`** block, rest `count` | alle sechs `count` |
+| DNS Firewall | catch-all `ALERT`, 54 domains, redirection `TRUST` | catch-all `ALERT`, 14 domains, redirection `TRUST` |
+| Egress | `SgEgress` exists, `EgressPolicy=open` | dito, seit 2026-09-17 auf allen Instanzen |
+| Cluster alarms | 11; WAF-KnownBadInputs, WAF-SQLi, dns-firewall, vpc-rejected, rds-slow-queries notify | 11; dns-firewall, rds-error, rds-slow-queries notify |
+| Service alarms | HighCpu/HighMemory/5xx `alert`, 4xx band `dashboard`, Low* `off` | identisch zu Paris |
+| `ImageRegressionGuard` | on all 15, live | on all 19, live |
 | `WafClientIpHeader` | empty | empty |
-| `EnableEgressAnalysis` | **still `true`** — bills per GB, baseline period long over | `true`, running since ~2026-09 |
+| `EnableEgressAnalysis` | `true` — bewusst an, nach `restricted` zur Kontrolle nötig | `true`, dito |
 | Known drift | `DnsQueryLoggingConfig`, `Rdscl`, `Rdsinstance1` | same four, plus log retention raised by hand |
 
 ---
@@ -276,24 +276,30 @@ deshalb, weil sie nicht auf `443` liegen:
 - [ ] **Promote alarms from `dashboard` to `alert`** — per alarm, off measured volume, not as one decision.
 - [ ] **`rds-slow-queries` was inert until `RdsLongQueryTime=2`.** Re-read whether it now has datapoints,
   and whether the threshold of 5 still fits.
-- [ ] **Investigate the REJECT spike on 2026-09-05** — 61,234 rejected flows against a ~40,000 baseline.
+- [x] **REJECT-Spitze am 2026-09-05 existiert nicht** — Messartefakt, über 31 Tage gegengeprüft.
 - [ ] **Resolve the `EngineVersion` contradiction.** The template pins a version *and* sets
   `AutoMinorVersionUpgrade: true`, so RDS drifts ahead and the next update touching any RDS property fails.
 - [ ] **`AscalegroupDesSize` fights managed scaling.** `MaxValue: 15` while the ASG may run to 30, and
   Frankfurt sits at 14 — one scale-out between change-set creation and execution drops two instances' tasks
-  without draining, because `ManagedTerminationProtection` is `DISABLED`.
+  without draining, because `ManagedTerminationProtection` is `DISABLED`. Grenze in `1.7.4` auf 30
+  gehoben; der Drift bleibt, vor jedem Update Parameter gegen Istwert prüfen.
 - [ ] **Decide the log retention conflict** — Frankfurt only; two groups raised by hand against the
   hardcoded 14 days.
 - [ ] **Enforce the origin-verify header on the listener rules.** `cloudfront-alb-distribution` already
   sends it; only enforcement is missing.
-- [ ] **Listener default action to `fixed-response` 403.** Today both forward to the empty `Deftarget`,
-  which yields 503 — harmless by accident.
+- [x] **Listener-Default auf `fixed-response` 404, `Deftarget` entfernt** — `1.7.6`, Paris 2026-09-26.
+  Nicht harmlos: 97–99 % aller ELB-5xx kamen von dort, ~10.700/Tag. Frankfurt offen, dort getrennt von
+  `SecretPathsAction=block` deployen.
+- [x] **Eigene WAF-Regel `SecretPaths`** — `1.7.5`, beide Regionen 19.09.; Paris seit 26.09. `block`.
+  Managed Groups erkennen Secret-Scans nur zu 17–34 %. Vier Messläufe, >12.000 Anfragen, **0** Fehltreffer,
+  Belege in `secretpaths-messung.md` (lokal). Frankfurt in 2–3 Tagen.
 - [ ] **`CommonRuleSet` exclusions before it can block:** `SizeRestrictions_BODY` (every backend upload),
   `GenericRFI_BODY` (pasted URLs), `CrossSiteScripting_BODY` (rich-text editors), `NoUserAgent_HEADER`
   (API clients, cron).
 - [ ] **Protect login endpoints.** A wrong-password POST is well-formed, so signature groups miss it and
   2,000/IP/5 min still allows 300 attempts a minute. A failed-login metric filter per service log group
-  counts what no rate limit measures.
+  counts what no rate limit measures. Belegt bei GWA: 50–140 Versuche/h über Tage, verteilt, dazu
+  `xmlrpc.php` als Verstärker. Cloudflare-Regeln 22.09. gesetzt (Challenge + Block), Wirkung: null.
 - [ ] **Launch-time AMI resolution + scheduled instance refresh.** Nothing replaces a running instance, so
   hosts drift indefinitely. `dnf-automatic` runs with `upgrade_type = security` and `apply_updates = yes`,
   but `reboot` is unset and therefore `never` — kernel and glibc patches are **installed and never become
@@ -301,6 +307,8 @@ deshalb, weil sie nicht auf `443` liegen:
   instances. The blocker for a scheduled refresh: `{{resolve:ssm:…}}` is a *CloudFormation* reference and
   bakes a literal AMI into the launch template, so a refresh would relaunch the same image; it must become
   `{"Fn::Sub": "resolve:ssm:${AmiSsmParameter}"}`.
+  ⚠️ Ein Refresh aktualisiert **keine** Container-Images — Tasks bleiben im bestehenden Deployment mit
+  festem Digest; es braucht `update-service --force-new-deployment` dazu.
 - [ ] **Gateway VPC Endpoint for S3.** Small saving; the point is that egress rules can then match the S3
   managed prefix list instead of `443 → 0.0.0.0/0`.
 - [ ] **Narrow `443` with interface VPC endpoints** — ECR, SSM, logs, ECS, Secrets Manager. ~100–130
@@ -330,6 +338,17 @@ deshalb, weil sie nicht auf `443` liegen:
   `2 × 45 s` to take traffic. Built once as `1.7.0` and reverted the same day when it turned out not to be
   the cause of the alarms that prompted it. Rebuild as `ServiceMinimumHealthyPercent` (default 100) plus
   `ServiceSlowStartSeconds` (default 0, target-group attribute).
+- [x] **`ecsservice` `1.7.0` gebaut: `VersionConsistency: disabled`.** Nicht deployed. ECS band den Digest
+  je Deployment fest und zog darüber statt über den Tag — Ursache der Curatime/Atlas-Ausfälle, bewiesen
+  21.09. (`repro-verwaister-digest.txt`). Fror nebenbei `solr:9.9` und `matomo:5.8` ein.
+- [ ] **`ServiceHighMemoryAlarm` prüft `Average` und meldet einen einzelnen überlaufenden Task nicht.**
+  Bei drei Tasks müsste der kranke 171 % erreichen; dazu `TreatMissingData: notBreaching`. Zweiter Alarm
+  auf `Maximum`, Schwelle **120** — gemessen bleiben 17 der 19 Services unter 111.
+- [ ] **`tro-cur-web-p`: `TaskMemory` 478 → 956.** Läuft dauerhaft bei 108–117 %, also ~550 MB. Vier solcher
+  Tasks überbuchen eine Instanz — dieselbe Konstellation wie beim OOM vom 17.09.
+- [ ] **`gwa-gut-web-p`: `ServiceDesiredCount` 1 → 2.** Zwei Ausfälle in 15 Stunden, beide Male fiel der
+  einzige Task durch die Health Checks. Auslöser je harmlos: ~25 REST-Aufrufe in 30 s bzw. 500/min auf
+  `/wp-json/complianz/v1/cookie_data` (445 Byte, 0,4 s, von Cloudflare nicht cachebar).
 - [ ] **CPU alarms fire on JVM startup.** `gwa-gut-sol-s` idles at 0.4 % and peaks at 29 % average for one
   minute while Solr loads — against a threshold of 20 %, every restart of that service pages. Per-stack fix
   is `ServiceHighCpuThreshold=50`; the general fix is `EvaluationPeriods: 2`, which is hardcoded at 1.
@@ -376,10 +395,17 @@ deshalb, weil sie nicht auf `443` liegen:
 
 ## Outside the templates
 
+- [ ] **Pipeline darf einen vorhandenen Image-Tag nicht mit anderem Inhalt überschreiben.** Ursache der
+  Curatime/Atlas-Ausfälle: `build-docker-and-push-ecr.sh` Z. 50–52 pusht ohne Prüfung und verschiebt
+  `latest` mit; zwei Builds sind nie digestgleich. Vier Pipelines in `app`, zwei im Email Generator.
+- [ ] **`tro-tro-web-p` erzeugt 98 % aller anwendungsseitigen 5xx** — Crawler auf kaputten
+  `/de/localede/…`-Pfaden, 30 s Timeout je Aufruf, 4/min. Anwendungsseite.
 - [ ] **Confirm and close the ALB-direct bypass for Solr** — the real remaining risk from the incident,
   still untested.
 - [ ] **Record which sites are Cloudflare-proxied and which are direct.** Nothing distinguishes them, which
-  blocks both the origin lockdown and `WafClientIpHeader`.
+  blocks both the origin lockdown and `WafClientIpHeader`. `www.gwa.de` ist proxied (2026-09-21).
+  ⚠️ Dort sieht unsere WAF nur Cloudflares IP **und** TLS-Fingerabdruck — keine Unterscheidung möglich,
+  die Abwehr muss bei Cloudflare liegen.
 - [ ] **Audit `wp_options` for plaintext third-party credentials** — the Solr query user lives there.
 - [ ] **Verify Cloudflare SSL mode is Full (strict).** Solr speaks plain HTTP.
 - [ ] **Document Solr's `security.json`** — auth works but is expressed nowhere in this repo.

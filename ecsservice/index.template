@@ -573,6 +573,7 @@
       }
     },
     "Task" : {
+      "Metadata" : { "Note" : "VersionConsistency is disabled on purpose. Enabled - the AWS default - ECS resolves the image tag to a digest once, when a deployment is created, and every task that deployment starts then pulls by that digest rather than by the tag. That guarantee is worth nothing here and costs an outage: the tag is bitbucket_<commit-sha>, bound to one commit and never meant to move, so there is nothing for the pinning to protect against - what it does instead is hold a digest that ECR may delete. Proven 2026-09-21 on a staging service: after the tag was moved and the old digest removed, a replacement task failed with CannotPullContainerError and the message named repo@sha256:..., not the tag; a pull over the tag would have succeeded. The local Docker cache hides this until a task has to start on an instance without it, which is why the two real outages appeared days after the push and were triggered by an instance being replaced. Second effect, independent of that: third-party images on moving tags (solr:9.9, matomo:5.8) were frozen at whatever the last deployment resolved, and no instance refresh could update them, because a refresh reschedules tasks inside the EXISTING deployment. THE TRADE-OFF: with this disabled, re-pushing the SAME tag makes a restarting task pick up the new content silently. Pushing a new commit does not, because that is a different tag. Never point a service at a moving tag such as :latest while this is disabled." },
       "Type" : "AWS::ECS::TaskDefinition",
       "Properties" : {
         "Volumes" : [ {
@@ -623,6 +624,7 @@
           } ],
           "Essential" : true,
           "Image" : { "Fn::GetAtt" : [ "ImageResolver", "Value" ] },
+          "VersionConsistency" : "disabled",
           "MemoryReservation" : { "Ref" : "TaskMemory" },
           "MountPoints" : [ {
             "ReadOnly" : "false",
@@ -1276,7 +1278,7 @@
     },
     "TemplateVersion" : {
       "Description" : "Version of the ecsservice template this stack was last updated with. Bump on every template change (see README).",
-      "Value" : "1.6.0"
+      "Value" : "1.7.0"
     }
   }
 }
