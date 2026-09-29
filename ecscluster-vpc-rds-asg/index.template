@@ -538,6 +538,15 @@
       "MinValue": 1,
       "MaxValue": 1000000,
       "Description": "Matches of the SecretPaths rule in five minutes before AlarmWafSecretPaths fires. 50 mirrors KnownBadInputsAlarmThreshold. For scale: a single scan measured on 2026-09-18 sent 3,286 requests from one address in five minutes, so a real scan clears this by two orders of magnitude while ordinary traffic should not match at all."
+    },
+    "DnsFirewallAllowMxQueries": {
+      "Type": "String",
+      "Default": "off",
+      "AllowedValues": [
+        "off",
+        "allow"
+      ],
+      "Description": "Lets MX lookups through the catch-all rule. Mail validation in a contact form resolves the MX record of whatever domain a visitor types, and that set is unbounded - no whitelist can hold every mail provider on earth, so under DnsFirewallCatchAllAction=BLOCK a correct address gets rejected. Measured in Frankfurt over 14 days: gmx.de, gmail.com, t-online.de, web.de, yahoo.com, icloud.com, aol.com - and gmail.coml, a visitor's typo, which is what proves a form is doing the lookup. off = MX is treated like any other query. allow = MX resolves regardless of the whitelist. KEEP THIS OFF WHILE THE CATCH-ALL IS ALERT: the rule sits at priority 150 and terminates evaluation, so the catch-all at 200 never fires and MX lookups stop appearing in DnsFirewallWhitelistCandidates - the very measurement used to complete the whitelist. Turn it to allow in the same change as BLOCK, not before. DNS exfiltration over MX records is possible in theory; a broken contact form on every customer site is certain."
     }
   },
   "Rules": {
@@ -3675,7 +3684,11 @@
             "VpcFlowLogRole",
             "Arn"
           ]
-        }
+        },
+        "LogFormat": "${version} ${account-id} ${interface-id} ${srcaddr} ${dstaddr} ${srcport} ${dstport} ${protocol} ${packets} ${bytes} ${start} ${end} ${action} ${log-status} ${pkt-srcaddr} ${pkt-dstaddr} ${flow-direction}"
+      },
+      "Metadata": {
+        "Note": "Custom LogFormat, not the 14-field default. pkt-srcaddr and pkt-dstaddr name the original endpoints before NAT translation - without them every outbound record behind the NAT gateway shows only the gateway's own address, and no instance can be held responsible for anything it sends. flow-direction separates ingress from egress in one field, which the default format leaves to guesswork over source ports. LogFormat is create-only: changing it replaces the flow log and leaves a short gap in delivery."
       }
     },
     "VpcAcceptFlowLogGroup": {
@@ -3757,7 +3770,11 @@
             "VpcAcceptFlowLogRole",
             "Arn"
           ]
-        }
+        },
+        "LogFormat": "${version} ${account-id} ${interface-id} ${srcaddr} ${dstaddr} ${srcport} ${dstport} ${protocol} ${packets} ${bytes} ${start} ${end} ${action} ${log-status} ${pkt-srcaddr} ${pkt-dstaddr} ${flow-direction}"
+      },
+      "Metadata": {
+        "Note": "Custom LogFormat, not the 14-field default. pkt-srcaddr and pkt-dstaddr name the original endpoints before NAT translation - without them every outbound record behind the NAT gateway shows only the gateway's own address, and no instance can be held responsible for anything it sends. flow-direction separates ingress from egress in one field, which the default format leaves to guesswork over source ports. LogFormat is create-only: changing it replaces the flow log and leaves a short gap in delivery."
       }
     },
     "VpcEgressPortsQuery": {
@@ -3864,6 +3881,25 @@
             }
           },
           {
+            "Fn::If": [
+              "DnsFirewallAllowsMxQueries",
+              {
+                "Priority": 150,
+                "FirewallDomainListId": {
+                  "Ref": "DnsFirewallCatchAllDomainList"
+                },
+                "Qtype": "MX",
+                "Action": "ALLOW",
+                "FirewallDomainRedirectionAction": {
+                  "Ref": "DnsFirewallRedirectionAction"
+                }
+              },
+              {
+                "Ref": "AWS::NoValue"
+              }
+            ]
+          },
+          {
             "Priority": 200,
             "FirewallDomainListId": {
               "Ref": "DnsFirewallCatchAllDomainList"
@@ -3898,7 +3934,7 @@
         ]
       },
       "Metadata": {
-        "Note": "Rule 100 allows the whitelist, rule 200 catches everything else. The redirection setting on rule 100 is the part that is easy to miss: with the AWS default the whole CNAME chain is inspected, so a whitelisted name whose chain leaves the list still triggers rule 200 - logged under the original query name, which points the investigation at the wrong place. Under a BLOCK catch-all that is not noise but an outage: every allowed domain served through a CDN stops resolving."
+        "Note": "Three rules by priority: 100 allows the whitelist, 150 optionally allows MX for any domain (DnsFirewallAllowMxQueries), 200 is the catch-all. Order matters and the first match wins - an ALLOW at 150 terminates evaluation, so anything it covers never reaches the catch-all and is therefore never logged as ALERT either."
       }
     },
     "DnsFirewallRuleGroupAssociation": {
@@ -4183,7 +4219,7 @@
         "LogGroupName": {
           "Ref": "VpcFlowLogGroup"
         },
-        "FilterPattern": "[version, account_id, interface_id, srcaddr, dstaddr, srcport, dstport, protocol, packets, bytes, start, end, action=REJECT, log_status]",
+        "FilterPattern": "[version, account_id, interface_id, srcaddr, dstaddr, srcport, dstport, protocol, packets, bytes, start, end, action=REJECT, log_status, pkt_srcaddr, pkt_dstaddr, flow_direction]",
         "MetricTransformations": [
           {
             "MetricNamespace": {
@@ -4237,7 +4273,7 @@
       "Properties": {
         "Name": "VpcFlowLogsRejectedTraffic",
         "QueryString": {
-          "Fn::Sub": "SOURCE logGroups(logGroupName: \"${VpcFlowLogGroup}\") START=-3600s END=0s\n| fields @timestamp, @message\n| parse @message \"* * * * * * * * * * * * * *\" as version, account, eni, srcaddr, dstaddr, srcport, dstport, protocol, packets, bytes, startTime, endTime, action, status\n| filter action = \"REJECT\"\n| stats count(*) as rejects by srcaddr, dstport\n| sort rejects desc\n| limit 50"
+          "Fn::Sub": "SOURCE logGroups(logGroupName: \"${VpcFlowLogGroup}\") START=-3600s END=0s\n| fields @timestamp, @message\n| parse @message \"* * * * * * * * * * * * * * * * *\" as version, account, eni, srcaddr, dstaddr, srcport, dstport, protocol, packets, bytes, startTime, endTime, action, status, pkt_srcaddr, pkt_dstaddr, direction\n| filter action = \"REJECT\"\n| stats count(*) as rejects by pkt_srcaddr, dstaddr, dstport\n| sort rejects desc\n| limit 50"
         }
       }
     },
@@ -5130,7 +5166,7 @@
     },
     "TemplateVersion": {
       "Description": "Version of the ecscluster-vpc-rds-asg template this stack was last updated with. Bump on every template change (see README).",
-      "Value": "1.7.6"
+      "Value": "1.7.8"
     }
   },
   "Conditions": {
@@ -5799,6 +5835,14 @@
         {
           "Condition": "WafForwardedIpInUse"
         }
+      ]
+    },
+    "DnsFirewallAllowsMxQueries": {
+      "Fn::Equals": [
+        {
+          "Ref": "DnsFirewallAllowMxQueries"
+        },
+        "allow"
       ]
     }
   }
