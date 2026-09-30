@@ -22,6 +22,30 @@
         "SIX_HOURS"
       ],
       "Description": "How often GuardDuty publishes findings. FIFTEEN_MINUTES = real-time alerts; SIX_HOURS = lower cost, suitable for batch incident response."
+    },
+    "GuardDutyResponseAction": {
+      "Type": "String",
+      "Default": "notify",
+      "AllowedValues": [
+        "off",
+        "notify",
+        "quarantine"
+      ],
+      "Description": "What happens to a GuardDuty finding. off = nothing is created and findings reach the console and nowhere else, which is where they went until 2026-09-30. notify = every finding at or above NotifyMinSeverity is mailed to the cluster AlertTopic, and one against an EC2 instance at or above QuarantineMinSeverity says which instance WOULD have been isolated - run it here first, because the only way to learn what GuardDuty reports in this account is to watch it. quarantine = those instances have their security groups replaced by the Quarantine group. THAT CUTS EVERYTHING: outbound internet, EFS, RDS, and SSM with them, so the box can no longer be inspected remotely and forensics means an EBS snapshot. The EFS mount hangs rather than failing. Nothing is restored afterwards - ECS keeps the tasks as RUNNING because nothing tells it otherwise, and the ASG leaves the instance in service because HealthCheckType is EC2, so capacity is lost silently until someone acts on the mail. Deliberate: persistence lives on EFS and in the shared database, so replacing a task recreates the compromise instead of clearing it."
+    },
+    "NotifyMinSeverity": {
+      "Type": "Number",
+      "Default": 4,
+      "MinValue": 1,
+      "MaxValue": 10,
+      "Description": "Lowest severity that is mailed. GuardDuty grades 1-3.9 low, 4-6.9 medium, 7-8.9 high, 9-10 critical."
+    },
+    "QuarantineMinSeverity": {
+      "Type": "Number",
+      "Default": 7,
+      "MinValue": 1,
+      "MaxValue": 10,
+      "Description": "Lowest severity that isolates an EC2 instance, once GuardDutyResponseAction is quarantine. Must be at or above NotifyMinSeverity to be reachable."
     }
   },
   "Resources": {
@@ -82,7 +106,13 @@
             "Fn::Sub": "${ClusterStackName}-Vpc"
           }
         },
-        "SecurityGroupEgress": [],
+        "SecurityGroupEgress": [
+          {
+            "IpProtocol": "-1",
+            "CidrIp": "127.0.0.1/32",
+            "Description": "Reaches nothing. Must not be an empty list - CloudFormation then keeps the AWS default allow-all, which is how this group spent its whole existence permitting everything (found 2026-09-29). Same trick as SgVpcLoadbalancerports in the cluster template."
+          }
+        ],
         "Tags": [
           {
             "Key": "Name",
@@ -95,6 +125,9 @@
             "Value": "GuardDuty incident response / instance isolation"
           }
         ]
+      },
+      "Metadata": {
+        "Note": "Zero reachability by construction. Attaching this group to an instance also cuts the ECS agent: security groups are stateful, but removing the rule that allowed a tracked connection interrupts it, so the agent's websocket to the control plane dies with it. What follows is quieter than it should be - ECS keeps the tasks as RUNNING because nothing tells it otherwise, and the ASG leaves the instance in service because HealthCheckType is EC2 and hypervisor-level status checks do not care about egress. Capacity is lost silently. Whatever attaches this group must therefore also detach the instance from the ASG with ShouldDecrementDesiredCapacity=false so a replacement launches, and deregister the container instance with force so its tasks are rescheduled. Managed draining does not help: it hangs off a termination lifecycle hook, and a quarantine terminates nothing."
       }
     },
     "GuardDutyIncidentResponseRole": {
@@ -137,6 +170,34 @@
                     "guardduty:GetFindingsStatistics"
                   ],
                   "Resource": "*"
+                },
+                {
+                  "Effect": "Allow",
+                  "Action": [
+                    "ec2:ModifyNetworkInterfaceAttribute",
+                    "ec2:CreateTags"
+                  ],
+                  "Resource": "*"
+                },
+                {
+                  "Effect": "Allow",
+                  "Action": [
+                    "sns:Publish"
+                  ],
+                  "Resource": {
+                    "Fn::ImportValue": {
+                      "Fn::Sub": "${ClusterStackName}-AlertTopicArn"
+                    }
+                  }
+                },
+                {
+                  "Effect": "Allow",
+                  "Action": [
+                    "logs:CreateLogGroup",
+                    "logs:CreateLogStream",
+                    "logs:PutLogEvents"
+                  ],
+                  "Resource": "*"
                 }
               ]
             }
@@ -146,12 +207,155 @@
           "Fn::Sub": "${ClusterName}-GuardDutyIncidentResponseRole"
         }
       }
+    },
+    "GuardDutyResponseFunction": {
+      "Type": "AWS::Lambda::Function",
+      "Condition": "ResponseEnabled",
+      "Properties": {
+        "FunctionName": {
+          "Fn::Sub": "${ClusterName}-guardduty-response"
+        },
+        "Runtime": "python3.12",
+        "Handler": "index.handler",
+        "Timeout": 30,
+        "Role": {
+          "Fn::GetAtt": [
+            "GuardDutyIncidentResponseRole",
+            "Arn"
+          ]
+        },
+        "Environment": {
+          "Variables": {
+            "QUARANTINE_SG": {
+              "Ref": "QuarantineSg"
+            },
+            "ALERT_TOPIC": {
+              "Fn::ImportValue": {
+                "Fn::Sub": "${ClusterStackName}-AlertTopicArn"
+              }
+            },
+            "ARMED": {
+              "Fn::If": [
+                "ResponseArmed",
+                "true",
+                "false"
+              ]
+            },
+            "QUARANTINE_MIN_SEVERITY": {
+              "Ref": "QuarantineMinSeverity"
+            }
+          }
+        },
+        "Code": {
+          "ZipFile": "import json, os, boto3, datetime\n\nec2 = boto3.client(\"ec2\")\nsns = boto3.client(\"sns\")\nQSG    = os.environ[\"QUARANTINE_SG\"]\nTOPIC  = os.environ[\"ALERT_TOPIC\"]\nARMED  = os.environ[\"ARMED\"] == \"true\"\nQ_MIN  = float(os.environ[\"QUARANTINE_MIN_SEVERITY\"])\nSAMPLE_ID = \"i-99999999\"\n\ndef handler(event, context):\n    d = event.get(\"detail\", {})\n    sev = float(d.get(\"severity\", 0))\n    res = d.get(\"resource\", {})\n    inst = res.get(\"instanceDetails\", {})\n    iid = inst.get(\"instanceId\")\n    is_instance = res.get(\"resourceType\") == \"Instance\"\n\n    groups = []\n    if is_instance and iid:\n        nis = inst.get(\"networkInterfaces\") or [{}]\n        groups = [g.get(\"groupId\") for g in (nis[0].get(\"securityGroups\") or [])]\n\n    if not is_instance:\n        action = f\"betrifft keine EC2-Instanz ({res.get('resourceType') or 'unbekannt'}), nur Meldung\"\n    elif iid == SAMPLE_ID:\n        action = \"GuardDuty-Beispiel-Finding mit Platzhalter-ID, keine echte Instanz - nur Meldung\"\n    elif not iid:\n        action = \"EC2-Finding ohne Instanz-ID, nur Meldung\"\n    elif sev < Q_MIN:\n        action = f\"unterhalb der Quarantaeneschwelle {Q_MIN}, nur Meldung\"\n    elif not ARMED:\n        action = f\"NOTIFY-Modus: {iid} WUERDE isoliert werden\"\n    else:\n        ec2.modify_instance_attribute(InstanceId=iid, Groups=[QSG])\n        ec2.create_tags(Resources=[iid], Tags=[\n            {\"Key\": \"Quarantined\", \"Value\": str(d.get(\"id\", \"unknown\"))[:255]},\n            {\"Key\": \"QuarantinedAt\", \"Value\": datetime.datetime.utcnow().isoformat() + \"Z\"}])\n        action = f\"ISOLIERT: Security Groups von {iid} ersetzt durch {QSG}\"\n\n    isolated = action.startswith(\"ISOLIERT\")\n    lines = [\n        f\"GuardDuty: {d.get('title', d.get('type'))}\",\n        f\"Typ     : {d.get('type')}\",\n        f\"Schwere : {sev}\",\n        f\"Region  : {event.get('region')}\",\n    ]\n    if is_instance and iid:\n        lines += [f\"Instanz : {iid}\", f\"Gruppen : {', '.join(g for g in groups if g) or 'unbekannt'}\"]\n    lines += [\"\", f\"Aktion  : {action}\", \"\"]\n    if isolated:\n        lines += [\"Die Instanz erreicht jetzt weder Internet noch EFS, RDS oder SSM.\",\n                  \"Es wird nichts wiederhergestellt: ECS fuehrt die Tasks weiter als RUNNING,\",\n                  \"die ASG laesst die Instanz in Betrieb. Beides ist Handarbeit.\", \"\"]\n    lines.append(f\"Finding: {d.get('id')}\")\n\n    sns.publish(TopicArn=TOPIC,\n                Subject=f\"[{'ISOLIERT' if isolated else 'MELDUNG'}] GuardDuty {sev} {d.get('type','')}\"[:100],\n                Message=\"\\n\".join(lines))\n    print(action)\n"
+        },
+        "MemorySize": 256
+      },
+      "Metadata": {
+        "Note": "One function for both jobs, because the alternative needs a second EventBridge target on the cluster's AlertTopic and therefore an sns:Publish statement for events.amazonaws.com in the cluster template - two stacks to change instead of one, for a raw JSON email nobody enjoys reading. Every finding at or above NotifyMinSeverity is mailed, including those that concern no EC2 instance. Containment only: it replaces the security groups and notifies. No detach-instances, no deregister-container-instance - both restore capacity, and with persistence on EFS and in the shared database a replacement task recreates the compromise. detach-instances alone would be harmless, a fresh instance carries nothing over; it is left out because the agreed scope is isolation and nothing else."
+      }
+    },
+    "GuardDutyFindingRule": {
+      "Type": "AWS::Events::Rule",
+      "Condition": "ResponseEnabled",
+      "Properties": {
+        "Name": {
+          "Fn::Sub": "${ClusterName}-guardduty-findings"
+        },
+        "Description": "GuardDuty findings at or above NotifyMinSeverity",
+        "EventPattern": {
+          "source": [
+            "aws.guardduty"
+          ],
+          "detail-type": [
+            "GuardDuty Finding"
+          ],
+          "detail": {
+            "severity": [
+              {
+                "numeric": [
+                  ">=",
+                  {
+                    "Ref": "NotifyMinSeverity"
+                  }
+                ]
+              }
+            ]
+          }
+        },
+        "State": "ENABLED",
+        "Targets": [
+          {
+            "Id": "response",
+            "Arn": {
+              "Fn::GetAtt": [
+                "GuardDutyResponseFunction",
+                "Arn"
+              ]
+            }
+          }
+        ]
+      }
+    },
+    "GuardDutyFindingRulePermission": {
+      "Type": "AWS::Lambda::Permission",
+      "Condition": "ResponseEnabled",
+      "Properties": {
+        "FunctionName": {
+          "Fn::GetAtt": [
+            "GuardDutyResponseFunction",
+            "Arn"
+          ]
+        },
+        "Action": "lambda:InvokeFunction",
+        "Principal": "events.amazonaws.com",
+        "SourceArn": {
+          "Fn::GetAtt": [
+            "GuardDutyFindingRule",
+            "Arn"
+          ]
+        }
+      }
+    },
+    "GuardDutyResponseErrorAlarm": {
+      "Type": "AWS::CloudWatch::Alarm",
+      "Condition": "ResponseEnabled",
+      "Properties": {
+        "AlarmName": {
+          "Fn::Sub": "${ClusterName}-guardduty-response-errors"
+        },
+        "AlarmDescription": "The function that mails GuardDuty findings and isolates instances has failed. Threshold 0: the first failure notifies. Without this alarm the failure of the control looks exactly like the absence of a finding - no quarantine, and no mail either.",
+        "ActionsEnabled": true,
+        "AlarmActions": [
+          {
+            "Fn::ImportValue": {
+              "Fn::Sub": "${ClusterStackName}-AlertTopicArn"
+            }
+          }
+        ],
+        "Namespace": "AWS/Lambda",
+        "MetricName": "Errors",
+        "Statistic": "Sum",
+        "Dimensions": [
+          {
+            "Name": "FunctionName",
+            "Value": {
+              "Ref": "GuardDutyResponseFunction"
+            }
+          }
+        ],
+        "Period": 300,
+        "EvaluationPeriods": 1,
+        "Threshold": 0,
+        "ComparisonOperator": "GreaterThanThreshold",
+        "TreatMissingData": "notBreaching"
+      }
     }
   },
   "Outputs": {
     "TemplateVersion": {
       "Description": "Version of the guardduty template this stack was last updated with. Bump on every template change (see README).",
-      "Value": "1.0.0"
+      "Value": "1.3.1"
     },
     "DetectorId": {
       "Value": {
@@ -199,6 +403,43 @@
         }
       },
       "Description": "IAM role ARN for GuardDuty incident response Lambda (Phase 3 Step D)"
+    },
+    "GuardDutyResponseFunctionArn": {
+      "Condition": "ResponseEnabled",
+      "Description": "GuardDuty response Lambda",
+      "Value": {
+        "Fn::GetAtt": [
+          "GuardDutyResponseFunction",
+          "Arn"
+        ]
+      },
+      "Export": {
+        "Name": {
+          "Fn::Sub": "${AWS::StackName}-GuardDutyResponseFunctionArn"
+        }
+      }
+    }
+  },
+  "Conditions": {
+    "ResponseEnabled": {
+      "Fn::Not": [
+        {
+          "Fn::Equals": [
+            {
+              "Ref": "GuardDutyResponseAction"
+            },
+            "off"
+          ]
+        }
+      ]
+    },
+    "ResponseArmed": {
+      "Fn::Equals": [
+        {
+          "Ref": "GuardDutyResponseAction"
+        },
+        "quarantine"
+      ]
     }
   }
 }
