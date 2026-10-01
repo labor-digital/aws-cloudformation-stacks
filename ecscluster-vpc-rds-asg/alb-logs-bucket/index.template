@@ -43,6 +43,13 @@
           "IgnorePublicAcls": true,
           "RestrictPublicBuckets": true
         },
+        "OwnershipControls": {
+          "Rules": [
+            {
+              "ObjectOwnership": "BucketOwnerEnforced"
+            }
+          ]
+        },
         "LifecycleConfiguration": {
           "Rules": [
             {
@@ -81,6 +88,7 @@
           "Version": "2012-10-17",
           "Statement": [
             {
+              "Sid": "AllowElbLogDelivery",
               "Effect": "Allow",
               "Principal": {
                 "Service": "logdelivery.elasticloadbalancing.amazonaws.com"
@@ -88,6 +96,35 @@
               "Action": "s3:PutObject",
               "Resource": {
                 "Fn::Sub": "${AlbLogsBucket.Arn}/*/AWSLogs/${AWS::AccountId}/*"
+              },
+              "Condition": {
+                "StringEquals": {
+                  "aws:SourceAccount": {
+                    "Ref": "AWS::AccountId"
+                  }
+                }
+              }
+            },
+            {
+              "Sid": "DenyInsecureTransport",
+              "Effect": "Deny",
+              "Principal": "*",
+              "Action": "s3:*",
+              "Resource": [
+                {
+                  "Fn::GetAtt": [
+                    "AlbLogsBucket",
+                    "Arn"
+                  ]
+                },
+                {
+                  "Fn::Sub": "${AlbLogsBucket.Arn}/*"
+                }
+              ],
+              "Condition": {
+                "Bool": {
+                  "aws:SecureTransport": "false"
+                }
               }
             }
           ]
@@ -98,7 +135,7 @@
   "Outputs": {
     "TemplateVersion": {
       "Description": "Version of the alb-logs-bucket template this stack was last updated with. Bump on every template change (see README).",
-      "Value": "1.0.0"
+      "Value": "1.1.0"
     },
     "BucketName": {
       "Value": {

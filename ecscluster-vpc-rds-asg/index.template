@@ -97,6 +97,7 @@
             "KnownBadInputsAlarmAction",
             "KnownBadInputsAlarmThreshold",
             "SqliRuleSetAction",
+            "SqliExcludedPathPatterns",
             "SqliRuleSetAlarmAction",
             "SqliRuleSetAlarmThreshold",
             "WordPressRulesAction",
@@ -294,6 +295,11 @@
         "block"
       ],
       "Description": "Dedicated SQL injection signatures, including UNION-based injection in query arguments. off = the rule is not created at all; count = matches are counted and nothing is blocked; block = the rule enforces."
+    },
+    "SqliExcludedPathPatterns": {
+      "Type": "CommaDelimitedList",
+      "Default": "",
+      "Description": "Regex patterns for URI paths that AWSManagedRulesSQLiRuleSet must not inspect. Empty - the default - inspects every path. Anchor each pattern with ^ or it matches anywhere in the path. Only set this for a machine endpoint whose own query syntax collides with SQL injection signatures; never for a path that carries user input into a database. See the note on WafSqliExcludedPaths."
     },
     "WordPressRulesAction": {
       "Type": "String",
@@ -4551,6 +4557,22 @@
         ]
       }
     },
+    "WafSqliExcludedPaths": {
+      "Type": "AWS::WAFv2::RegexPatternSet",
+      "Condition": "SqliHasPathExclusions",
+      "Metadata": {
+        "Note": "Added for the Solr search on gwa.de, which broke the moment SqliRuleSetAction went to block in Frankfurt on 2026-09-29. The WordPress Solr plugin builds every query as q=(\" (TERM OR TERM*)\" OR ( (TERM OR TERM*))) - a double quote immediately followed by OR, which is the classic ' OR '1'='1 auth-bypass signature. No detector can tell the two apart and the plugin offers no way to phrase it differently, so the exception is unavoidable; it is the search itself that is broken, not one search term. Frankfurt runs ^/solr/ . TWO DELIBERATE CHOICES: the match runs on UriPath with LOWERCASE only, WITHOUT the URL_DECODE that the SecretPaths rule uses - an exception wants the narrowest reading it can get, so a percent-encoded path must not slip into it, whereas a blocking rule wants the broadest. And anchor every pattern with ^, because an unanchored pattern matches anywhere in the path. STILL OPEN: a path such as /solr/../something matches ^/solr/ and is exempted here; whether the load balancer routes that to Solr or normalises it first is untested. This exception is only ever as narrow as the listener rule that owns the prefix - keep the two in step, and prefer moving the endpoint to the internal listener over widening this list."
+      },
+      "Properties": {
+        "Name": {
+          "Fn::Sub": "${AWS::StackName}-sqli-excluded-paths"
+        },
+        "Scope": "REGIONAL",
+        "RegularExpressionList": {
+          "Ref": "SqliExcludedPathPatterns"
+        }
+      }
+    },
     "WafWebAcl": {
       "Type": "AWS::WAFv2::WebACL",
       "Metadata": {
@@ -4661,7 +4683,38 @@
                 "Statement": {
                   "ManagedRuleGroupStatement": {
                     "VendorName": "AWS",
-                    "Name": "AWSManagedRulesSQLiRuleSet"
+                    "Name": "AWSManagedRulesSQLiRuleSet",
+                    "ScopeDownStatement": {
+                      "Fn::If": [
+                        "SqliHasPathExclusions",
+                        {
+                          "NotStatement": {
+                            "Statement": {
+                              "RegexPatternSetReferenceStatement": {
+                                "Arn": {
+                                  "Fn::GetAtt": [
+                                    "WafSqliExcludedPaths",
+                                    "Arn"
+                                  ]
+                                },
+                                "FieldToMatch": {
+                                  "UriPath": {}
+                                },
+                                "TextTransformations": [
+                                  {
+                                    "Priority": 0,
+                                    "Type": "LOWERCASE"
+                                  }
+                                ]
+                              }
+                            }
+                          }
+                        },
+                        {
+                          "Ref": "AWS::NoValue"
+                        }
+                      ]
+                    }
                   }
                 },
                 "VisibilityConfig": {
@@ -5166,7 +5219,7 @@
     },
     "TemplateVersion": {
       "Description": "Version of the ecscluster-vpc-rds-asg template this stack was last updated with. Bump on every template change (see README).",
-      "Value": "1.7.8"
+      "Value": "1.7.9"
     }
   },
   "Conditions": {
@@ -5753,6 +5806,30 @@
           "Ref": "SqliRuleSetAction"
         },
         "count"
+      ]
+    },
+    "SqliHasPathExclusions": {
+      "Fn::And": [
+        {
+          "Condition": "SqliRuleSetActionEnabled"
+        },
+        {
+          "Fn::Not": [
+            {
+              "Fn::Equals": [
+                {
+                  "Fn::Join": [
+                    "",
+                    {
+                      "Ref": "SqliExcludedPathPatterns"
+                    }
+                  ]
+                },
+                ""
+              ]
+            }
+          ]
+        }
       ]
     },
     "WordPressRulesActionEnabled": {
