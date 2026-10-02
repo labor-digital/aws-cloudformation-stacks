@@ -274,7 +274,7 @@
         "count",
         "block"
       ],
-      "Description": "Broad OWASP-style signatures: XSS, path traversal, malformed requests, bad user agents. The most likely source of false positives on TYPO3 and Matomo. off = the rule is not created at all; count = matches are counted and nothing is blocked; block = the rule enforces."
+      "Description": "Broad OWASP-style signatures: XSS, path traversal, malformed requests, bad user agents. The most likely source of false positives on TYPO3 and Matomo. off = the rule is not created at all; count = matches are counted and nothing is blocked; block = the rule enforces. STAYS ON count: Seven of the nine relevant sub-rules would have to be excluded - NoUserAgent_Header kills RSS feeds, BadBots_Header kills AhrefsBot, and the body rules kill WordPress autosaves, image uploads, the Statamic control panel and Solr indexing. Only the two URI-path rules are clean, and those hit nothing that SecretPaths and KnownBadInputs do not already catch."
     },
     "KnownBadInputsAction": {
       "Type": "String",
