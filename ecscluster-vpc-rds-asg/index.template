@@ -82,7 +82,9 @@
             "EgressPolicy",
             "EgressExtraRules",
             "VpcFlowLogsAlarmAction",
-            "VpcFlowLogsAlarmThreshold"
+            "VpcFlowLogsAlarmThreshold",
+            "EgressBlockedAlarmAction",
+            "EgressBlockedAlarmThreshold"
           ]
         },
         {
@@ -392,6 +394,22 @@
       "Default": 500,
       "MinValue": 1,
       "Description": "Rejected VPC connections per 5 minutes before VpcFlowLogsAlarmAction fires."
+    },
+    "EgressBlockedAlarmAction": {
+      "Type": "String",
+      "Default": "alert",
+      "AllowedValues": [
+        "off",
+        "dashboard",
+        "alert"
+      ],
+      "Description": "Any single outbound connection blocked by SgEgress. Unlike VpcFlowLogsAlarmAction - which counts every REJECT including inbound internet scanning and therefore needs a surge threshold - this one filters on flow_direction=egress, so its baseline is zero and one blocked attempt is already the signal. Measured Paris over 7 days 2026-10-02: zero outbound rejects while EgressPolicy was open. Only meaningful once egress is restricted; harmless before that, because an allow-all egress rule produces nothing to count. off = not created. dashboard = exists, state and history only. alert = also notifies the cluster AlertTopic."
+    },
+    "EgressBlockedAlarmThreshold": {
+      "Type": "Number",
+      "Default": 0,
+      "MinValue": 0,
+      "Description": "Outbound connections blocked per minute before EgressBlockedAlarmAction fires. Default 0 means every single attempt alerts, which is the point: after measuring that nothing but 443, 123 and 53 leaves the ECS subnets, any blocked attempt is either a dependency we missed or something that does not belong there. Raise this only if a known, accepted source of blocked traffic appears - and prefer fixing that source."
     },
     "RdsErrorAlarmAction": {
       "Type": "String",
@@ -1086,9 +1104,16 @@
             "EgressRestricted",
             [
               {
-                "IpProtocol": "-1",
-                "CidrIp": "127.0.0.1/32",
-                "Description": "EgressPolicy=restricted - reaches nothing; the policy lives in SgEgress. An empty list would restore the AWS default allow-all, so 'no egress' has to be a rule that goes nowhere."
+                "IpProtocol": "tcp",
+                "FromPort": 2049,
+                "ToPort": 2049,
+                "CidrIp": {
+                  "Fn::GetAtt": [
+                    "Vpc",
+                    "CidrBlock"
+                  ]
+                },
+                "Description": "EgressPolicy=restricted - NFS to the EFS mount targets inside the VPC only. See the note on this group."
               }
             ],
             [
@@ -1105,13 +1130,13 @@
         "Vpc"
       ],
       "Metadata": {
-        "Note": "Egress is neutralised here only under EgressPolicy=restricted; the policy then lives in SgEgress. Under open this group keeps an explicit allow-all, which is exactly what the absent property gave it before - stated as a rule rather than left implicit so the switch is deterministic in both directions. ORDER MATTERS: see the EgressPolicy description before flipping."
+        "Note": "Egress is neutralised here only under EgressPolicy=restricted; the policy then lives in SgEgress. Under open this group keeps an explicit allow-all, which is exactly what the absent property gave it before - stated as a rule rather than left implicit so the switch is deterministic in both directions. ORDER MATTERS: see the EgressPolicy description before flipping. RULE DESCRIPTIONS HAVE TWO EC2 CONSTRAINTS that CloudFormation does not check and cfn-lint does not catch: under 256 characters, and only the characters a-zA-Z0-9 and . _-:/()#,@[]+=&;{}!$* - no apostrophes, no quotes. Both were violated here and both only surfaced on 2026-10-03, the first time EgressPolicy=restricted was actually deployed, because CloudFormation never evaluates the untaken branch of an Fn::If. Keep reasoning in this note, not in the rule description. CORRECTED IN 1.7.12: this group is NOT neutralised under EgressPolicy=restricted any more. Until 1.7.11 it got a rule to 127.0.0.1/32 like the other access groups, on the assumption that all egress policy belongs in SgEgress. That assumption was wrong for this group: SgEgress only opens 443, 53 and 123, so the port this group exists for was closed along with everything else. Found on 2026-10-03, minutes after Paris first switched to restricted - the new EgressBlockedAlarm reported it within 90 seconds, before anyone noticed a broken page. Security groups are additive AND stateful: the breakage only hits a task that starts after the switch, because established connections keep flowing. Destination is the VPC CIDR rather than the target security group, which would be a circular reference between the two groups."
       }
     },
     "SgEgress": {
       "Type": "AWS::EC2::SecurityGroup",
       "Metadata": {
-        "Note": "The single place the outbound policy of the EC2 instances is expressed. Its own group because rule sets are ADDITIVE across every group on an instance: SgVpcMysqlAccess, SgVpcLoadbalancerports and SgVpcEfsAccess all sit on the launch template, so restricting one while the others permit everything achieves nothing. Those three carry a placeholder rule to 127.0.0.1/32 under restricted - an empty SecurityGroupEgress list makes CloudFormation recreate the default allow-all, so 'no egress' has to be a rule that reaches nowhere. Not applied to the ALB, RDS or EFS groups: the ALB needs egress to its targets, the other two initiate nothing outbound."
+        "Note": "The single place the outbound policy of the EC2 instances is expressed. Its own group because rule sets are ADDITIVE across every group on an instance: SgVpcMysqlAccess, SgVpcLoadbalancerports and SgVpcEfsAccess all sit on the launch template, so restricting one while the others permit everything achieves nothing. Those three carry a placeholder rule to 127.0.0.1/32 under restricted - an empty SecurityGroupEgress list makes CloudFormation recreate the default allow-all, so 'no egress' has to be a rule that reaches nowhere. Not applied to the ALB, RDS or EFS groups: the ALB needs egress to its targets, the other two initiate nothing outbound. NTP RATIONALE: NTP. Not switchable and deliberately unpinned - time.aws.com resolves to a rotating set of public addresses. Measured in Paris over 14 days: 44,553 flows from 25 instances to 15 destinations, so every instance needs it. Without it the clock drifts and TLS handshakes and signature checks start failing hours later, with nothing pointing back at the egress change. The tighter alternative is the link-local Amazon Time Sync Service at 169.254.169.123, which no security group rule can reach or block - that is a chrony change on the instance, not a template one. RULE DESCRIPTIONS HAVE TWO EC2 CONSTRAINTS that CloudFormation does not check and cfn-lint does not catch: under 256 characters, and only the characters a-zA-Z0-9 and . _-:/()#,@[]+=&;{}!$* - no apostrophes, no quotes. Both were violated here and both only surfaced on 2026-10-03, the first time EgressPolicy=restricted was actually deployed, because CloudFormation never evaluates the untaken branch of an Fn::If. Keep reasoning in this note, not in the rule description."
       },
       "Properties": {
         "GroupName": {
@@ -1861,7 +1886,7 @@
                 "FromPort": 123,
                 "ToPort": 123,
                 "CidrIp": "0.0.0.0/0",
-                "Description": "NTP. Not switchable and deliberately unpinned - time.aws.com resolves to a rotating set of public addresses. Measured in Paris over 14 days: 44,553 flows from 25 instances to 15 destinations, so every instance needs it. Without it the clock drifts and TLS handshakes and signature checks start failing hours later, with nothing pointing back at the egress change. The tighter alternative is the link-local Amazon Time Sync Service at 169.254.169.123, which no security group rule can reach or block - that is a chrony change on the instance, not a template one."
+                "Description": "NTP. Not switchable and deliberately unpinned - time.aws.com rotates its addresses. See the note on this group."
               }
             ],
             [
@@ -2034,7 +2059,7 @@
               {
                 "IpProtocol": "-1",
                 "CidrIp": "127.0.0.1/32",
-                "Description": "EgressPolicy=restricted - reaches nothing; the policy lives in SgEgress. An empty list would restore the AWS default allow-all, so 'no egress' has to be a rule that goes nowhere."
+                "Description": "EgressPolicy=restricted - reaches nothing; the policy lives in SgEgress. An empty list would restore the AWS default allow-all, so this rule goes nowhere instead."
               }
             ],
             [
@@ -2052,7 +2077,7 @@
         "SgVpcLoadbalancerportsAccess"
       ],
       "Metadata": {
-        "Note": "Egress is neutralised here only under EgressPolicy=restricted; the policy then lives in SgEgress. Under open this group keeps an explicit allow-all, which is exactly what the absent property gave it before - stated as a rule rather than left implicit so the switch is deterministic in both directions. ORDER MATTERS: see the EgressPolicy description before flipping."
+        "Note": "Egress is neutralised here only under EgressPolicy=restricted; the policy then lives in SgEgress. Under open this group keeps an explicit allow-all, which is exactly what the absent property gave it before - stated as a rule rather than left implicit so the switch is deterministic in both directions. ORDER MATTERS: see the EgressPolicy description before flipping. RULE DESCRIPTIONS HAVE TWO EC2 CONSTRAINTS that CloudFormation does not check and cfn-lint does not catch: under 256 characters, and only the characters a-zA-Z0-9 and . _-:/()#,@[]+=&;{}!$* - no apostrophes, no quotes. Both were violated here and both only surfaced on 2026-10-03, the first time EgressPolicy=restricted was actually deployed, because CloudFormation never evaluates the untaken branch of an Fn::If. Keep reasoning in this note, not in the rule description. Egress stays neutralised here under EgressPolicy=restricted, unlike SgVpcEfsAccess and SgVpcMysqlAccess: this group only governs inbound traffic from the load balancer, and replies to an inbound connection need no egress rule on a stateful security group."
       }
     },
     "SgVpcMysqlAccess": {
@@ -2094,9 +2119,16 @@
             "EgressRestricted",
             [
               {
-                "IpProtocol": "-1",
-                "CidrIp": "127.0.0.1/32",
-                "Description": "EgressPolicy=restricted - reaches nothing; the policy lives in SgEgress. An empty list would restore the AWS default allow-all, so 'no egress' has to be a rule that goes nowhere."
+                "IpProtocol": "tcp",
+                "FromPort": 3306,
+                "ToPort": 3306,
+                "CidrIp": {
+                  "Fn::GetAtt": [
+                    "Vpc",
+                    "CidrBlock"
+                  ]
+                },
+                "Description": "EgressPolicy=restricted - MySQL to the RDS cluster inside the VPC only. See the note on this group."
               }
             ],
             [
@@ -2113,7 +2145,7 @@
         "Vpc"
       ],
       "Metadata": {
-        "Note": "Egress is neutralised here only under EgressPolicy=restricted; the policy then lives in SgEgress. Under open this group keeps an explicit allow-all, which is exactly what the absent property gave it before - stated as a rule rather than left implicit so the switch is deterministic in both directions. ORDER MATTERS: see the EgressPolicy description before flipping."
+        "Note": "Egress is neutralised here only under EgressPolicy=restricted; the policy then lives in SgEgress. Under open this group keeps an explicit allow-all, which is exactly what the absent property gave it before - stated as a rule rather than left implicit so the switch is deterministic in both directions. ORDER MATTERS: see the EgressPolicy description before flipping. RULE DESCRIPTIONS HAVE TWO EC2 CONSTRAINTS that CloudFormation does not check and cfn-lint does not catch: under 256 characters, and only the characters a-zA-Z0-9 and . _-:/()#,@[]+=&;{}!$* - no apostrophes, no quotes. Both were violated here and both only surfaced on 2026-10-03, the first time EgressPolicy=restricted was actually deployed, because CloudFormation never evaluates the untaken branch of an Fn::If. Keep reasoning in this note, not in the rule description. CORRECTED IN 1.7.12: this group is NOT neutralised under EgressPolicy=restricted any more. Until 1.7.11 it got a rule to 127.0.0.1/32 like the other access groups, on the assumption that all egress policy belongs in SgEgress. That assumption was wrong for this group: SgEgress only opens 443, 53 and 123, so the port this group exists for was closed along with everything else. Found on 2026-10-03, minutes after Paris first switched to restricted - the new EgressBlockedAlarm reported it within 90 seconds, before anyone noticed a broken page. Security groups are additive AND stateful: the breakage only hits a task that starts after the switch, because established connections keep flowing. Destination is the VPC CIDR rather than the target security group, which would be a circular reference between the two groups."
       }
     },
     "SgVpcMysql": {
@@ -4238,6 +4270,29 @@
         ]
       }
     },
+    "VpcEgressBlockedMetricFilter": {
+      "Type": "AWS::Logs::MetricFilter",
+      "Condition": "EgressBlockedAlarmEnabled",
+      "Metadata": {
+        "Note": "Positional pattern - it breaks silently if the flow log format changes field count. Kept in step with the LogFormat on VpcFlowLog, 17 fields since 1.7.7. The flow_direction=egress term is what separates this from VpcFlowLogsRejectedMetricFilter: that one counts inbound scanning too and needs a threshold in the hundreds, this one has a measured baseline of zero."
+      },
+      "Properties": {
+        "LogGroupName": {
+          "Ref": "VpcFlowLogGroup"
+        },
+        "FilterPattern": "[version, account_id, interface_id, srcaddr, dstaddr, srcport, dstport, protocol, packets, bytes, start, end, action=REJECT, log_status, pkt_srcaddr, pkt_dstaddr, flow_direction=egress]",
+        "MetricTransformations": [
+          {
+            "MetricNamespace": {
+              "Fn::Sub": "${AWS::StackName}/VpcFlowLogs"
+            },
+            "MetricName": "EgressBlockedConnections",
+            "MetricValue": "1",
+            "DefaultValue": 0
+          }
+        ]
+      }
+    },
     "VpcFlowLogsRejectedAlarm": {
       "Type": "AWS::CloudWatch::Alarm",
       "Condition": "VpcFlowLogsAlarmEnabled",
@@ -4273,6 +4328,41 @@
         "TreatMissingData": "notBreaching"
       }
     },
+    "VpcEgressBlockedAlarm": {
+      "Type": "AWS::CloudWatch::Alarm",
+      "Condition": "EgressBlockedAlarmEnabled",
+      "Properties": {
+        "AlarmName": {
+          "Fn::Sub": "${AWS::StackName}-egress-blocked"
+        },
+        "ActionsEnabled": {
+          "Fn::If": [
+            "EgressBlockedAlarmAlerts",
+            true,
+            false
+          ]
+        },
+        "AlarmActions": [
+          {
+            "Ref": "AlertTopic"
+          }
+        ],
+        "AlarmDescription": "An outbound connection was blocked by SgEgress. Period is 60s and not 300s like the other alarms: at threshold 0 there is nothing to smooth out and every minute of delay is a minute a service is failing silently. Expect two to three minutes to the mail, most of it log delivery. To find out what was blocked, run the saved query VpcEgressBlockedTraffic - it groups by pkt_srcaddr, dstaddr and dstport, so it names the instance, the destination and the port in one go. Then decide: add the port to EgressExtraRules, or fix the caller.",
+        "Namespace": {
+          "Fn::Sub": "${AWS::StackName}/VpcFlowLogs"
+        },
+        "MetricName": "EgressBlockedConnections",
+        "Statistic": "Sum",
+        "Period": 60,
+        "EvaluationPeriods": 1,
+        "DatapointsToAlarm": 1,
+        "Threshold": {
+          "Ref": "EgressBlockedAlarmThreshold"
+        },
+        "ComparisonOperator": "GreaterThanThreshold",
+        "TreatMissingData": "notBreaching"
+      }
+    },
     "VpcFlowLogsRejectedTrafficQuery": {
       "Type": "AWS::Logs::QueryDefinition",
       "DependsOn": "VpcFlowLogGroup",
@@ -4280,6 +4370,16 @@
         "Name": "VpcFlowLogsRejectedTraffic",
         "QueryString": {
           "Fn::Sub": "SOURCE logGroups(logGroupName: \"${VpcFlowLogGroup}\") START=-3600s END=0s\n| fields @timestamp, @message\n| parse @message \"* * * * * * * * * * * * * * * * *\" as version, account, eni, srcaddr, dstaddr, srcport, dstport, protocol, packets, bytes, startTime, endTime, action, status, pkt_srcaddr, pkt_dstaddr, direction\n| filter action = \"REJECT\"\n| stats count(*) as rejects by pkt_srcaddr, dstaddr, dstport\n| sort rejects desc\n| limit 50"
+        }
+      }
+    },
+    "VpcEgressBlockedTrafficQuery": {
+      "Type": "AWS::Logs::QueryDefinition",
+      "Condition": "EgressBlockedAlarmEnabled",
+      "Properties": {
+        "Name": "VpcEgressBlockedTraffic",
+        "QueryString": {
+          "Fn::Sub": "SOURCE logGroups(logGroupName: \"${VpcFlowLogGroup}\") START=-3600s END=0s\n| fields @timestamp, @message\n| parse @message \"* * * * * * * * * * * * * * * * *\" as version, account, eni, srcaddr, dstaddr, srcport, dstport, protocol, packets, bytes, startTime, endTime, action, status, pkt_srcaddr, pkt_dstaddr, direction\n| filter action = \"REJECT\" and direction = \"egress\"\n| stats count(*) as blocked by pkt_srcaddr, dstaddr, dstport\n| sort blocked desc\n| limit 50"
         }
       }
     },
@@ -5219,7 +5319,7 @@
     },
     "TemplateVersion": {
       "Description": "Version of the ecscluster-vpc-rds-asg template this stack was last updated with. Bump on every template change (see README).",
-      "Value": "1.7.9"
+      "Value": "1.7.12"
     }
   },
   "Conditions": {
@@ -5294,6 +5394,26 @@
       "Fn::Equals": [
         {
           "Ref": "VpcFlowLogsAlarmAction"
+        },
+        "alert"
+      ]
+    },
+    "EgressBlockedAlarmEnabled": {
+      "Fn::Not": [
+        {
+          "Fn::Equals": [
+            {
+              "Ref": "EgressBlockedAlarmAction"
+            },
+            "off"
+          ]
+        }
+      ]
+    },
+    "EgressBlockedAlarmAlerts": {
+      "Fn::Equals": [
+        {
+          "Ref": "EgressBlockedAlarmAction"
         },
         "alert"
       ]
