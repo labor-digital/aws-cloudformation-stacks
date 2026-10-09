@@ -81,18 +81,50 @@ Das sind die Punkte, die einen Deploy kosten. Sortiert nach Zeitpunkt, an dem si
 - ⚠️ **Der Cluster ist zu groß für einen Inline-Deploy.** CloudFormation nimmt per `--template-body`
   höchstens 51.200 Byte. Deploys laufen über S3 (`--template-url`) oder die Konsole, die den Upload selbst
   übernimmt.
+- ⚠️ **„Disable rollback" verhindert jede Ersetzung.** Wird ein Change Set mit *Preserve successfully
+  provisioned resources* ausgeführt und enthält es eine Ressource mit `Replacement: True`, bricht CloudFormation
+  mit `Replacement type updates not supported on stack with disable-rollback` ab. Schlimmer als der Abbruch
+  ist der Zustand danach: alles bis zur fehlgeschlagenen Ressource **bleibt stehen**. Am 2026-09-29 lief so
+  der Metric Filter auf 17 Feldern, während die Flow Logs bei 14 blieben — `vpc-rejected-surge` zählte
+  nichts mehr, ohne Fehlermeldung. Die Einstellung lässt sich im Fehlerzustand **nicht** mehr ändern, es
+  bleibt nur *Roll back* und ein neuer Anlauf.
+- ⚠️ **Ein Change Set auf den Cluster zeigt nie nur die eigene Änderung.** Eine Einzeilenkorrektur an den
+  WAF-Mustern erzeugte am 2026-10-07 **acht** geänderte Ressourcen. Vier sind die Abhängigkeitskette:
+  `WafSecretPathPatterns` → `WafWebAcl` (verweist per `Fn::GetAtt` darauf) → `WafWebAclAssociation` und
+  `WafLoggingConfiguration`. CloudFormation listet jede Ressource, deren Werte neu ausgewertet werden
+  müssen, mit `Replacement: Conditional`, obwohl sich an ihnen nichts ändert. Die anderen vier kommen vom
+  **AMI**: im Launch Template steht
+  `{{resolve:ssm:/aws/service/ecs/optimized-ami/amazon-linux-2023/recommended/image_id}}`, und diese
+  dynamische Referenz löst CloudFormation bei *jedem* Change Set neu auf. Hat AWS seitdem ein neues AMI
+  veröffentlicht, ändert sich die ID, und daran hängt `Launchtemplate` → `Ascalegroup` →
+  `CapacityProvider` → `EcsclusterCapacityProviderAssociation`.
+  **Folgenlos, weil die `Ascalegroup` keine `UpdatePolicy` hat** — laufende Instanzen werden nicht ersetzt,
+  die neue Launch-Template-Version greift erst beim nächsten Start. Trotzdem: Change Set vor dem Ausführen
+  ansehen, und bei `CapacityProvider` auf `RequiresRecreation` achten.
 - **Nach jeder Handbearbeitung `cfn-lint` laufen lassen.** CloudFormation meldet Formatfehler als
   `Template format error` ohne Zeilennummer; `cfn-lint` nennt die Stelle.
+- ⚠️ **Zwei Dinge findet `cfn-lint` nicht, und CloudFormation auch nicht.** Erstens: Beschreibungen von
+  SG-Regeln dürfen höchstens 255 Zeichen lang sein und nur `a-zA-Z0-9 . _-:/()#,@[]+=&;{}!$*` enthalten —
+  **kein Apostroph, keine Anführungszeichen**. Lange Begründungen gehören in `Metadata.Note`, dort gibt es
+  kein Limit. Zweitens, und das ist der Grund, warum so etwas lange überlebt: **CloudFormation wertet den
+  nicht genommenen Zweig eines `Fn::If` nie aus.** Der gesamte `restricted`-Pfad galt seit `1.7.1` als
+  fertig und enthielt drei Fehler, die alle erst beim ersten echten Einschalten am 2026-10-03 auftauchten.
+  Ein Parameter, der einen ganzen Zweig freischaltet, ist bis zu diesem Tag ungetesteter Code.
+- ⚠️ **Parameter kennen kein `Metadata`.** CloudFormation lehnt es mit
+  `Invalid template parameter property 'Metadata'` ab — nur Ressourcen tragen es. Begründungen zu einem
+  Parameter gehören in seine `Description` oder an die Ressource, die er steuert.
 - **`--capabilities CAPABILITY_NAMED_IAM`** beim GuardDuty-Stack (die Incident-Response-Rolle hat einen
   expliziten `RoleName`) und beim Cluster.
 
 **Beim Setzen der Parameter**
 
-- ⚠️ **`AscalegroupDesSize` kann jedes Update zu einem Ausfall machen.** Sein `MaxValue` ist `15`, während
-  ECS Managed Scaling die echte Kapazität laufend verschiebt. Liegt sie darüber, zieht CloudFormation sie
-  herunter — und weil `ManagedTerminationProtection` auf `DISABLED` steht, werden die Tasks **abgeworfen
-  statt gedraint**. Ist-Kapazität **unmittelbar vor dem Ausführen** lesen, nicht beim Erzeugen des Change
-  Sets. Läuft die Gruppe über `15`, erst den `MaxValue` heben.
+- ⚠️ **`AscalegroupDesSize` driftet gegen Managed Scaling.** ECS verschiebt die echte Kapazität laufend,
+  der Parameter bleibt stehen — beim nächsten Update zieht CloudFormation sie auf den Parameterwert zurück.
+  Ist-Kapazität **unmittelbar vor dem Ausführen** lesen, nicht beim Erzeugen des Change Sets, und den
+  Parameter darauf setzen. `MaxValue` liegt seit `1.7.4` bei `30`.
+  Kein Datenverlust dabei: `ManagedDraining` am Capacity Provider steht auf `ENABLED` (geprüft 2026-09-28),
+  Tasks ziehen also um, statt abgeworfen zu werden. `ManagedTerminationProtection` ist `DISABLED` und
+  betrifft nur die Auswahl beim Scale-in.
 - ⚠️ **Parameter, die in der Zielversion neu sind, haben keinen bisherigen Wert.** `aws cloudformation
   deploy` übernimmt für alles Übrige den Stack-Wert, für neue Parameter aber den **Template-Default**. Bei
   den `*AlarmAction`-Schaltern heißt das: ein Upgrade mit Defaults schaltet Alarme stumm, die vorher
@@ -344,6 +376,28 @@ bewusst heben, sobald ihre Schwelle gegen echten Traffic gelesen wurde — zuers
   vCPU-Stunde** abgerechnet.
 - Root-Console-Zugriffe erzeugen wiederkehrend `Policy:IAMUser/RootCredentialUsage`.
 
+## Eine Instanz hängt
+
+Erkennungsmerkmale, alle am 2026-10-06 gleichzeitig aufgetreten: `agentConnected: false` in
+`describe-container-instances`, `PingStatus: ConnectionLost` in SSM, `runningTasksCount: 0`, dazu CPU bei
+100 % und eine EBS-Leserate um Faktor 10.000 über dem Normalwert bei dauerhaft voller I/O-Queue. Die
+Instanz-Statuschecks bleiben dabei **grün** — der Hypervisor sieht nichts, das Betriebssystem kommt nur zu
+nichts mehr.
+
+- ⚠️ **Die ASG kann so eine Instanz nicht terminieren.** `terminate-instance-in-auto-scaling-group`
+  antwortet mit `MidTerminatingLifecycleAction` und bleibt dann hängen: Managed Draining wartet darauf,
+  dass ECS die Tasks abräumt, ECS wartet auf den Agenten, und der ist tot. Der Aufruf meldet **keinen
+  Fehler**, er tut nur nichts. Der richtige Griff ist `aws ec2 terminate-instances` — eine Instanz, die
+  ECS nicht mehr erreicht, hat ohnehin nichts zu drainieren.
+- **Was vorher noch zu holen ist**, weil es mit der Instanz verschwindet: `get-console-output --latest`
+  (ohne `--latest` kommt nur der Boot-Puffer), die EC2-Metriken `CPUUtilization`, `CPUCreditBalance` und
+  `StatusCheckFailed`, die EBS-Metriken `VolumeReadOps` und `VolumeQueueLength`, sowie
+  `list-findings` bei GuardDuty. Die Systemlogs liegen **nur** auf der Instanzplatte — in CloudWatch
+  stehen ausschließlich Container-Logs. Wer sie braucht, zieht vorher einen EBS-Snapshot.
+- ⚠️ **Speicher ist der einzige Engpass, den die Standardmetriken nicht zeigen.** CPU, Netzwerk, EBS, EFS
+  und CPU-Guthaben waren alle abrufbar und haben die Ursache ausgeschlossen; RAM blieb unsichtbar. Ohne
+  CloudWatch-Agent steht man beim nächsten Mal vor denselben Daten.
+
 ## ALB-Logging prüfen
 
 `access_logs.s3.enabled` kann `true` sein, während die Lieferung an der Bucket-Policy scheitert. Nach dem
@@ -385,8 +439,21 @@ Objekte mehr.
 
 ## DNS Firewall
 
-Zwei Regeln: Whitelist `ALLOW` (Prio 100), Catch-all `*` (Prio 200). Der Catch-all ist per Default
-**`ALERT`** — es wird protokolliert und trotzdem aufgelöst.
+Drei Regeln: Whitelist `ALLOW` (Prio 100), optional MX `ALLOW` (Prio 150, ab `1.7.8`), Catch-all `*`
+(Prio 200). Der Catch-all ist per Default **`ALERT`** — es wird protokolliert und trotzdem aufgelöst.
+
+- ⚠️ **`ALLOW` steht nicht im Query-Log.** Ein erlaubter Name sieht dort genauso aus wie einer, den nie
+  jemand abgefragt hat. Deshalb filtert `DnsFirewallWhitelistCandidates` auf `ALERT` und `BLOCK`, und
+  deshalb beweist eine leere Trefferliste nichts über den Verkehr, sondern nur über die Abdeckung.
+- ⚠️ **MX-Abfragen sind unbegrenzt.** Eine Mail-Validierung im Kontaktformular schlägt den MX-Eintrag jeder
+  Domain nach, die ein Besucher eintippt — keine Whitelist kann alle Mail-Anbieter der Welt enthalten. Unter
+  `BLOCK` wird eine korrekte Adresse abgelehnt. Dafür gibt es `DnsFirewallAllowMxQueries`. In Frankfurt über
+  14 Tage gemessen: `gmx.de`, `gmail.com`, `t-online.de`, `web.de`, `yahoo.com`, `icloud.com`, `aol.com` —
+  und `gmail.coml`, der Tippfehler eines Besuchers, der beweist, dass ein Formular dahintersteckt.
+- ⚠️ **Der Schalter bleibt `off`, solange der Catch-all `ALERT` ist.** Die Regel auf 150 beendet die
+  Auswertung, der Catch-all auf 200 feuert dann nie — und MX-Abfragen verschwinden aus
+  `DnsFirewallWhitelistCandidates`, also aus genau der Messung, mit der die Whitelist vervollständigt wird.
+  Zusammen mit `BLOCK` umlegen, nicht vorher.
 
 - **Durchsetzung ist ab `1.7.0` ein Parameter.** `DnsFirewallCatchAllAction` schaltet `ALERT`/`BLOCK`,
   `DnsFirewallBlockResponse` die Antwort (`NXDOMAIN` oder `NODATA`). Rückweg ebenso. `NXDOMAIN` meldet die
@@ -450,6 +517,17 @@ Allow-all-Regel, identisch zum vorherigen impliziten Zustand.
   Signaturprüfungen, ohne erkennbaren Bezug zur umgelegten Egress-Policy. Die engere Variante wäre der
   link-lokale Amazon Time Sync Service auf `169.254.169.123`, den keine Security Group erreicht oder
   blockiert — das ist eine chrony-Änderung auf der Instanz, keine im Template.
+- **Was tatsächlich eine Zusatzregel braucht — und es unterscheidet sich je Region.**
+  **Frankfurt**, gemessen 2026-09-29 über 7 Tage: nur `587` für den Mailversand. Ziele sind
+  `in-v3.mailjet.com` und `smtp.eu-central-1.mandrillapp.com`, per DNS bestätigt — aber **nicht auf `/32`
+  festnageln**, beide Anbieter rotieren, und ein blockierter Mailversand meldet sich bei niemandem. Der
+  Wert ist `587:0.0.0.0/0`; der Gewinn steckt in der Portbeschränkung, nicht im Ziel.
+  **Paris** braucht **nichts** — neu gemessen 2026-10-02 über 7 Tage: aus den ECS-Subnetzen gehen nur 443
+  und 123 hinaus. Das zuvor eingetragene `4318` (OTLP an `fly.dev`) wurde in der ganzen Woche nicht
+  angesprochen, das `587` ebenfalls nicht; beide waren zudem auf `/32` gepinnt. Seit 2026-10-03 steht dort
+  `EgressPolicy=restricted` mit leerem `EgressExtraRules`, verifiziert über alle 15 Services.
+  Alles andere auf `25/465/587` in derselben Messung lief in die Gegenrichtung: Scans auf die öffentliche
+  NAT-Adresse, die ein offenes Relay suchen.
 - **Warum Zieladressen zählen:** die DNS-Firewall sieht nie eine Verbindung, sie beantwortet nur eine
   Auflösung. Die CIDR in der SG-Regel ist das **einzige** im Template, das begrenzt, wohin Verkehr darf.
 - **`53` ist die Klammer zur DNS-Firewall** — sie zwingt jede Auflösung über den VPC-Resolver. **`443`
@@ -462,9 +540,15 @@ Allow-all-Regel, identisch zum vorherigen impliziten Zustand.
   sich von selbst — nach der Härtung wird jeder `REJECT` zum Signal mit Quelle und Ziel.
 - **Warum eine eigene Gruppe `SgEgress`:** SG-Regeln sind **additiv** über alle Gruppen einer Instanz.
   `SgVpcMysqlAccess`, `SgVpcLoadbalancerports` und `SgVpcEfsAccess` hängen alle am Launch Template — eine
-  davon zu beschränken bewirkt nichts. Unter `restricted` tragen die drei eine Platzhalterregel auf
-  `127.0.0.1/32`: eine **leere** `SecurityGroupEgress`-Liste lässt CloudFormation die Standardregel wieder
-  anlegen, „kein Egress" muss als Regel ins Nichts geschrieben werden.
+  davon zu beschränken bewirkt nichts. `SgVpcLoadbalancerports` trägt unter `restricted` eine
+  Platzhalterregel auf `127.0.0.1/32`: eine **leere** `SecurityGroupEgress`-Liste lässt CloudFormation die
+  Standardregel wieder anlegen, „kein Egress" muss als Regel ins Nichts geschrieben werden.
+  ⚠️ **Die beiden anderen behalten seit `1.7.12` ihren Port** — `SgVpcEfsAccess` TCP `2049`,
+  `SgVpcMysqlAccess` TCP `3306`, je zur VPC-CIDR. Bis `1.7.11` waren auch sie neutralisiert, nach der
+  Annahme, alle Egress-Politik gehöre in `SgEgress`. Die stimmt für diese beiden nicht: `SgEgress` öffnet
+  nur 443, 53 und 123, also war genau der Port zu, für den die Gruppe existiert. Am 2026-10-03 brach
+  dadurch bei der ersten Umstellung in Paris der EFS-Mount. Ziel ist die VPC-CIDR und nicht die
+  Ziel-Gruppe, weil das ein Zirkelbezug zwischen beiden Gruppen wäre.
 - ⚠️ **Reihenfolge — der eine Weg, sich auszusperren.** `SgEgress` erreicht eine Instanz über das Launch
   Template, und die ASG hat keine `UpdatePolicy`. Wer vorher die Flotte nicht erneuert hat, hat Instanzen
   ohne die Gruppe — und die Neutralisierung der drei anderen greift auf deren ENIs **sofort**. Vorher:
@@ -485,6 +569,20 @@ Allow-all-Regel, identisch zum vorherigen impliziten Zustand.
 
 - **Ein Flow Log auf VPC-Ebene, `TrafficType: REJECT`** — `ALL` erzeugt ein Vielfaches an Volumen und
   liefert für die Portscan-Erkennung nichts dazu.
+- ⚠️ **Eigenes `LogFormat` mit 17 Feldern, seit `1.7.7`.** Das Standardformat zeigt hinter dem NAT Gateway
+  nur dessen eigene Adresse; da alle Instanzen in privaten Subnetzen liegen, endet dort jede Untersuchung
+  ausgehenden Verkehrs. `pkt-srcaddr` und `pkt-dstaddr` nennen die Endpunkte vor der Übersetzung,
+  `flow-direction` sagt `ingress`/`egress`. Ohne das Richtungsfeld muss man aus den Ports raten, und bei
+  eingehendem Verkehr steht der aussagekräftige Port in `srcport`, nicht in `dstport` — am 2026-09-29
+  sahen so aggregierte Scanner-Antworten aus wie ausgehende Verbindungen zu Mining-Ports.
+  Wer das Format ändert, muss `VpcFlowLogsRejectedMetricFilter` **und** die gespeicherte Abfrage
+  mitziehen: das Filtermuster ist positionsbasiert und zählt bei abweichender Feldzahl stumm nichts.
+- ⚠️ **`flow-direction = "egress"` heißt *verlässt die VPC*, nicht *von uns initiiert*.** Die Antworten des
+  ALB an externe Browser sind ebenfalls `egress` und tragen den **ephemeren Client-Port** in `dstport`.
+  Ein Filter `srcport not in [443,80]` bleibt deshalb nötig; ohne ihn sieht eine ausgelieferte Webseite aus
+  wie eine ausgehende Verbindung auf Port 13755. Und immer `pkt-srcaddr` statt `srcaddr` gruppieren, sonst
+  zeigt jeder Flow über das NAT Gateway auf das Gateway. Steht das Gateway selbst als `pkt-srcaddr`, sind
+  es seine eigenen RST-Pakete — 40 Byte, hohe Ports, kein Eigenverkehr.
 - **`EnableEgressAnalysis=true` legt einen zweiten im ACCEPT-Modus an** — die Grundlage für die
   Egress-Baseline. Temporär: nach 7–14 Tagen zurück auf `false`, ACCEPT-Logs rechnen pro GB ab. Er wird nur
   von `VpcEgressPortsAnalysis` gelesen, nicht alarmiert.
@@ -512,7 +610,47 @@ mit dem WebACL in `cloudfront-alb-distribution`.
 - **Sechs Schalter für sieben Regeln** (beide Rate-Regeln teilen einen), Default überall `count` — **beim
   ersten Deploy wird nichts blockiert.** Promotion pro Regel: eine Woche `CountedRequests` lesen, dann
   `block`.
+- **Stand 2026-10-02:** `KnownBadInputs`, `SQLi`, `WordPress` und `SecretPaths` blocken in **beiden**
+  Regionen, dazu `SqliExcludedPathPatterns=^/solr/` als Ausnahme für die Solr-Suche. Die Rate-Regeln können
+  nicht scharf, solange `WafClientIpHeader` leer ist; CloudFormation verweigert die Kombination.
+- ⚠️ **`CommonRuleSet` bleibt dauerhaft auf `count`** — entschieden nach vollständiger Messung, Begründung
+  in der `Description` von `CommonRuleSetAction`. Kurz: sieben der neun relevanten Sub-Regeln müssten
+  ausgenommen werden (`NoUserAgent_Header` killt RSS-Feeds, `BadBots_Header` den AhrefsBot, die
+  Body-Regeln WordPress-Autosaves, Bild-Uploads, das Statamic-Control-Panel und die Solr-Indexierung).
+  Scharf würden nur die zwei Pfad-Regeln, und die treffen nichts, was `SecretPaths` und `KnownBadInputs`
+  nicht ohnehin fangen. **Nicht erneut vorschlagen**, ohne dass sich das Anwendungsprofil ändert.
+- ⚠️ **Die Prioritäten verdrängen einander.** `KnownBadInputs` (30) blockt `.env`-Pfade, bevor `SecretPaths`
+  (60) sie sieht — nach dem Scharfschalten bricht dessen Zähler ein. Verdrängung, kein Defekt.
+- **Die `*AlarmThreshold` sind seit 2026-10-03 je Region kalibriert**, aus den höchsten 5-Minuten-Werten
+  über 7 Tage statt aus Schätzungen: Frankfurt `KnownBadInputs` 500 und `WordPress` 50, Paris bleibt bei
+  50/20 bei einem Fünftel des Volumens. Zielmarke ist **eine bis fünf Auslösungen pro Woche** — darunter
+  verschläft der Alarm ein echtes Ereignis, darüber liest niemand mehr hin.
 - Der Client-IP-Header ist nur vertrauenswürdig, solange der ALB nicht direkt erreichbar ist.
+
+### Eine Regel scharf schalten — die Methodik
+
+Gemessen wird über die WAF-Logs, nicht über die Metriken: die Metrik sagt *wie viele*, der Log sagt *was*.
+
+- **Blockierende Regeln** über `filter action="BLOCK" | stats count(*) by terminatingRuleId, httpRequest.uri`.
+  Für die Schwelle zusätzlich `by bin(5m) | filter n > <schwelle>` — die **Anzahl der Perioden** über der
+  Schwelle entscheidet, nicht die Höhe der Spitze.
+- **Zählende Regeln** erscheinen **nicht** als `action="BLOCK"`, ihre Treffer stehen nur in den Labels:
+  `filter @message like /core-rule-set/ | parse @message /core-rule-set:(?<sub>[A-Za-z0-9_]+)/`.
+- ⚠️ **Label-Namen sind case-sensitiv und je Regelgruppe verschieden**: CommonRuleSet schreibt `_Body`,
+  `_Header`, `_URIPath`, KnownBadInputs schreibt `_BODY`. Eine falsche Schreibweise liefert stillschweigend
+  null Treffer statt einer Fehlermeldung.
+- ⚠️ **HTTP/2 schreibt Header-Namen klein.** Eine Abfrage auf `"name":"User-Agent"` verfehlt die Mehrheit
+  der Anfragen; beide Schreibweisen abdecken.
+- ⚠️ **Trefferzahlen allein genügen nicht — mindestens einen Datensatz je Sub-Regel dekodieren.** Am
+  2026-09-25 wurden in Frankfurt „20 Treffer/Tag, nur `SQLi_QueryArguments`" als unbedenkliches Rauschen
+  gelesen und die Regel scharf geschaltet. Es waren die Solr-Anfragen von `gwa.de`: das WP-Solr-Plugin baut
+  jede Suche als `q=(" (TERM OR TERM*)" OR ( (TERM OR TERM*)))`, und ein Anführungszeichen direkt gefolgt
+  von `OR` ist die `' OR '1'='1`-Signatur. Die Suche war vier Tage lang tot, in beiden Regionen.
+- **Das stärkste Fehltreffer-Signal** ist ein `Referer` von einer eigenen Domain — Cookies sind in der
+  Logging-Konfiguration geschwärzt und fallen als Beleg aus.
+- ⚠️ **`/.well-known` ohne abschließenden Schrägstrich wird von `SecretPaths` geblockt** und das ist
+  **richtig so**: ACME, `security.txt` und WebFinger benutzen immer den vollen Pfad, ein nackter Aufruf des
+  Verzeichnisses ist ein Directory-Listing-Versuch. Geprüft 2026-10-02, nicht als Fehltreffer behandeln.
 
 ### Warum `SecretPaths` nötig ist
 
@@ -522,6 +660,11 @@ Die Managed Groups erkennen das Absuchen nach Zugangsdaten kaum: gemessen an zwe
 heute gesucht wird. **Die Muster sind bewusst kein Parameter**, ein `.*` ließe sich durch keine
 `AllowedPattern` abfangen; Begründung und `/.well-known/`-Ausnahme in `Metadata.Note` von
 `WafSecretPathPatterns`.
+
+- ⚠️ **Archivendungen gehören bewusst nicht dazu.** Scanner suchen nach `/html.tar.gz` und `/upload.zip`,
+  aber auf unseren Seiten liegen legitime ZIP-Downloads. Ein blockierter Download kostet mehr als ein
+  durchgelassener Versuch auf eine Datei, die es nicht gibt. Entschieden 2026-09-30, nicht erneut
+  vorschlagen.
 
 ## ImageResolver
 

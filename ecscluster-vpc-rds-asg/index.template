@@ -60,12 +60,13 @@
         },
         {
           "Label": {
-            "default": "DNS Firewall"
+            "default": "DNS Firewall - name layer: which domains may be resolved"
           },
           "Parameters": [
             "DnsFirewallWhitelistDomains",
             "DnsFirewallRedirectionAction",
             "DnsFirewallCatchAllAction",
+            "DnsFirewallAllowMxQueries",
             "DnsFirewallBlockResponse",
             "DnsFirewallAlarmAction",
             "DnsFirewallAlarmThreshold",
@@ -75,7 +76,7 @@
         },
         {
           "Label": {
-            "default": "VPC Flow Logs & Egress"
+            "default": "VPC Flow Logs & Egress - IP and port layer: what may leave"
           },
           "Parameters": [
             "EnableEgressAnalysis",
@@ -89,7 +90,7 @@
         },
         {
           "Label": {
-            "default": "WAF"
+            "default": "WAF - inbound requests reaching the load balancer"
           },
           "Parameters": [
             "CommonRuleSetAction",
@@ -116,7 +117,8 @@
           ]
         }
       ]
-    }
+    },
+    "Note": "Three of these groups are security controls on different layers, and a new parameter belongs in exactly one of them:\n\nWAF decides which inbound requests reach the load balancer - rules, actions and their alarms.\n\nDNS Firewall decides which names may be resolved at all. It hangs on the VPC, so it covers every instance in it, including ones that are not part of the cluster.\n\nVPC Flow Logs & Egress decides what may leave on which port and towards which address - security groups, plus the logs and alarms that show what was refused.\n\nA parameter that filters by domain name goes to DNS Firewall even when its purpose is outbound control; one that filters by port or CIDR goes to Egress even when the motivation was a single hostname. The MX-query switch is the example: it reads like egress, but it creates a rule inside the DNS firewall rule group and only makes sense next to the catch-all action it must be set with."
   },
   "Parameters": {
     "KeypairName": {
@@ -250,7 +252,7 @@
         "true",
         "false"
       ],
-      "Description": "Enable ACCEPT-mode VPC Flow Logs. For temporary testing only: they exist to record which outbound ports are actually in use, so that a baseline can be derived and the security groups tightened against it."
+      "Description": "Enable ACCEPT-mode VPC Flow Logs. They record which outbound ports are actually in use, so that a baseline can be derived and the security groups tightened against it. Originally meant to be switched off again afterwards - but measured at about 46 MiB per day on a cluster of this size, which is under a euro a month, and the accept log answers a question the reject log cannot: whether a destination ever worked before it was blocked. Weigh the cost against that before turning it off; the volume scales with traffic, so measure on a busier VPC first."
     },
     "EgressPolicy": {
       "Type": "String",
@@ -3987,7 +3989,7 @@
         ]
       },
       "Metadata": {
-        "Note": "Priority 100 allows the whitelist, 150 optionally allows MX for any domain, 200 is the catch-all.\n\nFirst match wins - an ALLOW at 150 ends evaluation, so what it covers never reaches 200 and is never logged as ALERT either."
+        "Note": "Priority 100 allows the whitelist, 150 optionally allows MX for any domain, 200 is the catch-all.\n\nFirst match wins - an ALLOW at 150 ends evaluation, so what it covers never reaches 200 and is never logged as ALERT either.\n\nThe MX rule must sit below 200 or it never fires, because the catch-all matches everything. Above or below the whitelist makes no difference - a whitelisted domain is allowed either way.\n\nWhy it allows MX towards ANY domain: contact forms validate addresses at providers nobody has used before, and that set cannot be enumerated. The price is that MX stays the one open channel once the catch-all blocks, and a query name carries data. Accepted deliberately; do not close it without replacing the validation.\n\nKnown gap: only Qtype MX is allowed. A domain without an MX record falls back to its A record (RFC 5321), so a validator that mirrors that behaviour still fails on the second step. Rare, and it surfaces as a rejected address rather than as a DNS problem."
       }
     },
     "DnsFirewallRuleGroupAssociation": {
@@ -5334,7 +5336,7 @@
     },
     "TemplateVersion": {
       "Description": "Version of the ecscluster-vpc-rds-asg template this stack was last updated with. Bump on every template change (see README).",
-      "Value": "1.7.16"
+      "Value": "1.7.17"
     }
   },
   "Conditions": {
