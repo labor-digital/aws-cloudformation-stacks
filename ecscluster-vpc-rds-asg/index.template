@@ -1130,13 +1130,13 @@
         "Vpc"
       ],
       "Metadata": {
-        "Note": "Under restricted this group keeps one egress rule: tcp 2049 to Vpc.CidrBlock. The general outbound policy lives once in SgEgress, because rules are ADDITIVE across every group on the instance.\n\nOrder matters - read the EgressPolicy description before flipping."
+        "Note": "Under restricted this group keeps one egress rule: tcp 2049 to Vpc.CidrBlock. The general outbound policy lives once in SgEgress, because rules are ADDITIVE across every group on the instance.\n\nDestination is Vpc.CidrBlock and not SgVpcEfs - referencing that group here would make the two circular. Order matters - read the EgressPolicy description before flipping."
       }
     },
     "SgEgress": {
       "Type": "AWS::EC2::SecurityGroup",
       "Metadata": {
-        "Note": "The one place the outbound policy of the EC2 instances is expressed. Under restricted: 443 to 0.0.0.0/0, 53 to Vpc.CidrBlock, 123 NTP, plus up to four EgressExtraRules. Rules are ADDITIVE across every group on an instance.\n\nNTP is deliberately unpinned - time.aws.com rotates its addresses. Rule description limits and the Fn::If trap: see README."
+        "Note": "The one place the outbound policy of the EC2 instances is expressed. Under restricted: 443 to 0.0.0.0/0, 53 to Vpc.CidrBlock, 123 NTP, plus up to four EgressExtraRules. Rules are ADDITIVE across every group on an instance.\n\nNTP is deliberately unpinned - time.aws.com rotates its addresses. Drop it and the clock drifts until TLS handshakes fail hours later, with nothing pointing back at the egress change. The link-local 169.254.169.123 is tighter but no security group can reach or block it - that is a chrony change on the instance. Rule description limits and the Fn::If trap: see README."
       },
       "Properties": {
         "GroupName": {
@@ -2149,7 +2149,7 @@
         "Vpc"
       ],
       "Metadata": {
-        "Note": "Under restricted this group keeps one egress rule: tcp 3306 to Vpc.CidrBlock. The general outbound policy lives once in SgEgress, because rules are ADDITIVE across every group on the instance.\n\nOrder matters - read the EgressPolicy description before flipping."
+        "Note": "Under restricted this group keeps one egress rule: tcp 3306 to Vpc.CidrBlock. The general outbound policy lives once in SgEgress, because rules are ADDITIVE across every group on the instance.\n\nDestination is Vpc.CidrBlock and not SgVpcMysql - referencing that group here would make the two circular. Order matters - read the EgressPolicy description before flipping."
       }
     },
     "SgVpcMysql": {
@@ -2324,7 +2324,7 @@
         }
       },
       "Metadata": {
-        "Note": "long_query_time only matters together with slow_query_log, and decides whether the slowquery export carries anything at all. RdsSlowQueryAlarm reads a metric filter over that log.\n\nDeliberately unset: log_queries_not_using_indexes - it floods the log on WordPress-shaped workloads."
+        "Note": "long_query_time only matters together with slow_query_log, and decides whether the slowquery export carries anything at all. RdsSlowQueryAlarm reads a metric filter over that log, so lowering this raises what the alarm sees - the two belong together.\n\nDeliberately unset: log_queries_not_using_indexes - it floods the log on WordPress-shaped workloads."
       }
     },
     "Rdscl": {
@@ -2798,7 +2798,7 @@
     "Loadbalancer": {
       "Type": "AWS::ElasticLoadBalancingV2::LoadBalancer",
       "Metadata": {
-        "Note": "IpAddressType ipv4 deliberately: the VPC has no IPv6 CIDR and neither subnet has Ipv6CidrBlock, so dualstack needs IPv6 in the VPC and both subnets first. The only IPv6 setting in the repository.\n\nAn external monitor reporting an IPv6 problem is not measuring this balancer."
+        "Note": "IpAddressType ipv4 deliberately: the VPC has no IPv6 CIDR and neither subnet has Ipv6CidrBlock, so dualstack needs IPv6 in the VPC and both subnets first. The only IPv6 setting in the repository.\n\nAn external monitor reporting an IPv6 problem is not measuring this balancer - it has no IPv6 address, so what answered was whatever sits in front, in practice the CDN."
       },
       "Properties": {
         "LoadBalancerAttributes": [
@@ -2930,7 +2930,7 @@
         "Loadbalancer"
       ],
       "Metadata": {
-        "Note": "Default action is a fixed 404, not a forward into the empty Deftarget. Forwarding produced a balancer-generated 503 per request matching no host rule - about 10,700 a day, 97 to 99 percent from scanners, all counted in HTTPCode_ELB_5XX_Count.\n\n404 counts as 4xx, so the elb-5xx alarm sees the roughly 240 genuine events a day instead."
+        "Note": "Default action is a fixed 404, not a forward into the empty Deftarget. Forwarding produced a balancer-generated 503 per request matching no host rule - about 10,700 a day, 97 to 99 percent from scanners, all counted in HTTPCode_ELB_5XX_Count, so the elb-5xx alarm measured scanner volume rather than service health.\n\n404 counts as 4xx, so the alarm sees the roughly 240 genuine events a day instead."
       }
     },
     "Httpsdefaultlistener": {
@@ -2963,14 +2963,14 @@
         "Loadbalancer"
       ],
       "Metadata": {
-        "Note": "Default action is a fixed 404, not a forward into the empty Deftarget. Forwarding produced a balancer-generated 503 per request matching no host rule - about 10,700 a day, 97 to 99 percent from scanners, all counted in HTTPCode_ELB_5XX_Count.\n\n404 counts as 4xx, so the elb-5xx alarm sees the roughly 240 genuine events a day instead."
+        "Note": "Default action is a fixed 404, not a forward into the empty Deftarget. Forwarding produced a balancer-generated 503 per request matching no host rule - about 10,700 a day, 97 to 99 percent from scanners, all counted in HTTPCode_ELB_5XX_Count, so the elb-5xx alarm measured scanner volume rather than service health.\n\n404 counts as 4xx, so the alarm sees the roughly 240 genuine events a day instead."
       }
     },
     "CommonRuleSetSurgeAlarm": {
       "Type": "AWS::CloudWatch::Alarm",
       "Condition": "CommonRuleSetAlarmEnabled",
       "Metadata": {
-        "Note": "Per-rule WAF surge alarm, Period 300, threshold from its own parameter. MetricName follows CommonRuleSetActionCounts: CountedRequests while counting, BlockedRequests once blocking.\n\nDimensioned on Rule=AWSManagedRulesCommonRuleSet, so the mail names it - a Rule=ALL alarm cannot."
+        "Note": "Per-rule WAF surge alarm, Period 300, threshold from its own parameter. MetricName follows CommonRuleSetActionCounts: CountedRequests while counting, BlockedRequests once blocking - so one threshold holds through the counting weeks and after promotion.\n\nDimensioned on Rule=AWSManagedRulesCommonRuleSet, so the mail names it. That is what tells an attack apart from a rule misfiring; a Rule=ALL alarm cannot."
       },
       "Properties": {
         "AlarmName": {
@@ -3029,7 +3029,7 @@
       "Type": "AWS::CloudWatch::Alarm",
       "Condition": "KnownBadInputsAlarmEnabled",
       "Metadata": {
-        "Note": "Per-rule WAF surge alarm, Period 300, threshold from its own parameter. MetricName follows KnownBadInputsActionCounts: CountedRequests while counting, BlockedRequests once blocking.\n\nDimensioned on Rule=AWSManagedRulesKnownBadInputsRuleSet, so the mail names it - a Rule=ALL alarm cannot."
+        "Note": "Per-rule WAF surge alarm, Period 300, threshold from its own parameter. MetricName follows KnownBadInputsActionCounts: CountedRequests while counting, BlockedRequests once blocking - so one threshold holds through the counting weeks and after promotion.\n\nDimensioned on Rule=AWSManagedRulesKnownBadInputsRuleSet, so the mail names it. That is what tells an attack apart from a rule misfiring; a Rule=ALL alarm cannot."
       },
       "Properties": {
         "AlarmName": {
@@ -3088,7 +3088,7 @@
       "Type": "AWS::CloudWatch::Alarm",
       "Condition": "SqliRuleSetAlarmEnabled",
       "Metadata": {
-        "Note": "Per-rule WAF surge alarm, Period 300, threshold from its own parameter. MetricName follows SqliRuleSetActionCounts: CountedRequests while counting, BlockedRequests once blocking.\n\nDimensioned on Rule=AWSManagedRulesSQLiRuleSet, so the mail names it - a Rule=ALL alarm cannot."
+        "Note": "Per-rule WAF surge alarm, Period 300, threshold from its own parameter. MetricName follows SqliRuleSetActionCounts: CountedRequests while counting, BlockedRequests once blocking - so one threshold holds through the counting weeks and after promotion.\n\nDimensioned on Rule=AWSManagedRulesSQLiRuleSet, so the mail names it. That is what tells an attack apart from a rule misfiring; a Rule=ALL alarm cannot."
       },
       "Properties": {
         "AlarmName": {
@@ -3147,7 +3147,7 @@
       "Type": "AWS::CloudWatch::Alarm",
       "Condition": "WordPressRulesAlarmEnabled",
       "Metadata": {
-        "Note": "Per-rule WAF surge alarm, Period 300, threshold from its own parameter. MetricName follows WordPressRulesActionCounts: CountedRequests while counting, BlockedRequests once blocking.\n\nDimensioned on Rule=AWSManagedRulesWordPressRuleSet, so the mail names it - a Rule=ALL alarm cannot."
+        "Note": "Per-rule WAF surge alarm, Period 300, threshold from its own parameter. MetricName follows WordPressRulesActionCounts: CountedRequests while counting, BlockedRequests once blocking - so one threshold holds through the counting weeks and after promotion.\n\nDimensioned on Rule=AWSManagedRulesWordPressRuleSet, so the mail names it. That is what tells an attack apart from a rule misfiring; a Rule=ALL alarm cannot."
       },
       "Properties": {
         "AlarmName": {
@@ -3206,7 +3206,7 @@
       "Type": "AWS::CloudWatch::Alarm",
       "Condition": "RateLimitAlarmEnabled",
       "Metadata": {
-        "Note": "Per-rule WAF surge alarm, Period 300, threshold from its own parameter. MetricName follows RateLimitActionCounts: CountedRequests while counting, BlockedRequests once blocking.\n\nDimensioned on Rule=RateLimitSourceIp, so the mail names it - a Rule=ALL alarm cannot."
+        "Note": "Per-rule WAF surge alarm, Period 300, threshold from its own parameter. MetricName follows RateLimitActionCounts: CountedRequests while counting, BlockedRequests once blocking - so one threshold holds through the counting weeks and after promotion.\n\nDimensioned on Rule=RateLimitSourceIp, so the mail names it. That is what tells an attack apart from a rule misfiring; a Rule=ALL alarm cannot."
       },
       "Properties": {
         "AlarmName": {
@@ -3265,7 +3265,7 @@
       "Type": "AWS::CloudWatch::Alarm",
       "Condition": "RateLimitForwardedIpAlarmEnabled",
       "Metadata": {
-        "Note": "Per-rule WAF surge alarm, Period 300, threshold from its own parameter. MetricName follows RateLimitActionCounts: CountedRequests while counting, BlockedRequests once blocking.\n\nDimensioned on Rule=RateLimitForwardedIp, so the mail names it - a Rule=ALL alarm cannot."
+        "Note": "Per-rule WAF surge alarm, Period 300, threshold from its own parameter. MetricName follows RateLimitActionCounts: CountedRequests while counting, BlockedRequests once blocking - so one threshold holds through the counting weeks and after promotion.\n\nDimensioned on Rule=RateLimitForwardedIp, so the mail names it. That is what tells an attack apart from a rule misfiring; a Rule=ALL alarm cannot."
       },
       "Properties": {
         "AlarmName": {
@@ -3324,7 +3324,7 @@
       "Type": "AWS::CloudWatch::Alarm",
       "Condition": "SecretPathsAlarmEnabled",
       "Metadata": {
-        "Note": "Per-rule WAF surge alarm, Period 300, threshold from its own parameter. MetricName follows SecretPathsActionCounts: CountedRequests while counting, BlockedRequests once blocking.\n\nDimensioned on Rule=SecretPaths, so the mail names it - a Rule=ALL alarm cannot."
+        "Note": "Per-rule WAF surge alarm, Period 300, threshold from its own parameter. MetricName follows SecretPathsActionCounts: CountedRequests while counting, BlockedRequests once blocking - so one threshold holds through the counting weeks and after promotion.\n\nDimensioned on Rule=SecretPaths, so the mail names it. That is what tells an attack apart from a rule misfiring; a Rule=ALL alarm cannot."
       },
       "Properties": {
         "AlarmName": {
@@ -3730,7 +3730,7 @@
         "LogFormat": "${version} ${account-id} ${interface-id} ${srcaddr} ${dstaddr} ${srcport} ${dstport} ${protocol} ${packets} ${bytes} ${start} ${end} ${action} ${log-status} ${pkt-srcaddr} ${pkt-dstaddr} ${flow-direction}"
       },
       "Metadata": {
-        "Note": "Custom LogFormat, 17 fields instead of the 14-field default, ending pkt-srcaddr pkt-dstaddr flow-direction. Without the pkt fields every record behind the NAT gateway shows only the gateway.\n\nLogFormat is create-only - changing it replaces the flow log and leaves a gap in delivery."
+        "Note": "Custom LogFormat, 17 fields instead of the 14-field default, ending pkt-srcaddr pkt-dstaddr flow-direction. Without the pkt fields every record behind the NAT gateway shows only the gateway; flow-direction names ingress or egress in one field, which the default format leaves to guesswork over source ports.\n\nLogFormat is create-only - changing it replaces the flow log and leaves a gap in delivery."
       }
     },
     "VpcAcceptFlowLogGroup": {
@@ -3816,7 +3816,7 @@
         "LogFormat": "${version} ${account-id} ${interface-id} ${srcaddr} ${dstaddr} ${srcport} ${dstport} ${protocol} ${packets} ${bytes} ${start} ${end} ${action} ${log-status} ${pkt-srcaddr} ${pkt-dstaddr} ${flow-direction}"
       },
       "Metadata": {
-        "Note": "Custom LogFormat, 17 fields instead of the 14-field default, ending pkt-srcaddr pkt-dstaddr flow-direction. Without the pkt fields every record behind the NAT gateway shows only the gateway.\n\nLogFormat is create-only - changing it replaces the flow log and leaves a gap in delivery."
+        "Note": "Custom LogFormat, 17 fields instead of the 14-field default, ending pkt-srcaddr pkt-dstaddr flow-direction. Without the pkt fields every record behind the NAT gateway shows only the gateway; flow-direction names ingress or egress in one field, which the default format leaves to guesswork over source ports.\n\nLogFormat is create-only - changing it replaces the flow log and leaves a gap in delivery."
       }
     },
     "VpcEgressPortsQuery": {
@@ -4029,7 +4029,7 @@
     "AlertTopic": {
       "Type": "AWS::SNS::Topic",
       "Metadata": {
-        "Note": "Single notification path for this cluster and every ecsservice stack, via the AlertTopicArn export. Alarms reference an ARN, never an address, so adding Slack or Opsgenie touches no alarm.\n\nDeliberately not KMS-encrypted: payloads carry metric names, thresholds and stack names only."
+        "Note": "Single notification path for this cluster and every ecsservice stack, via the AlertTopicArn export. Alarms reference an ARN, never an address, so adding Slack or Opsgenie touches no alarm.\n\nDeliberately not KMS-encrypted: payloads carry metric names, thresholds and stack names only. If that changes, the key policy must also grant kms:GenerateDataKey* and kms:Decrypt to cloudwatch.amazonaws.com and events.amazonaws.com, or delivery stops silently."
       },
       "Properties": {
         "TopicName": {
@@ -4155,7 +4155,7 @@
     "DnsFirewallBlockMetricFilter": {
       "Type": "AWS::Logs::MetricFilter",
       "Metadata": {
-        "Note": "Counterpart to DnsFirewallAlertMetricFilter. The firewall writes ALERT while auditing, BLOCK once it enforces.\n\nA single filter on ALERT would stop counting at the moment enforcement begins, taking its alarm and the saved query silently to zero."
+        "Note": "Counterpart to DnsFirewallAlertMetricFilter. The firewall writes ALERT while auditing, BLOCK once it enforces.\n\nA single filter on ALERT would stop counting at the moment enforcement begins, taking its alarm and the saved query silently to zero. Two metrics keep the distinction visible: ALERT means something resolved that the whitelist does not cover, BLOCK means it was refused."
       },
       "Properties": {
         "LogGroupName": {
@@ -4222,7 +4222,7 @@
       "Type": "AWS::CloudWatch::Alarm",
       "Condition": "DnsFirewallBlockAlarmEnabled",
       "Metadata": {
-        "Note": "Period 300. Exists only while the catch-all blocks, so it can default to alert without changing a normal deploy.\n\nA blocked resolution does not disturb a running container, it breaks the next task placement - without this the failure surfaces only at the next deployment."
+        "Note": "Period 300. Exists only while the catch-all blocks, so it can default to alert without changing a normal deploy. It closes a gap the surge alarm cannot: that one is dimensioned for volume and sits still while a single missing whitelist entry breaks image pulls.\n\nA blocked resolution does not disturb a running container, it breaks the next task placement - without this the failure surfaces only at the next deployment."
       },
       "Properties": {
         "AlarmName": {
@@ -4278,7 +4278,7 @@
       "Type": "AWS::Logs::MetricFilter",
       "Condition": "EgressBlockedAlarmEnabled",
       "Metadata": {
-        "Note": "Positional pattern on 17 fields, in step with the LogFormat on VpcFlowLog since 1.7.7 - it breaks silently if the field count changes.\n\naction=REJECT plus flow_direction=egress separates this from VpcFlowLogsRejectedMetricFilter, which also counts inbound scanning and needs a threshold in the hundreds. Alarm Period 60, threshold 0."
+        "Note": "Positional pattern on 17 fields, in step with the LogFormat on VpcFlowLog since 1.7.7 - it breaks silently if the field count changes.\n\naction=REJECT plus flow_direction=egress separates this from VpcFlowLogsRejectedMetricFilter, which also counts inbound scanning and needs a threshold in the hundreds. This one has a measured baseline of zero, hence alarm Period 60 and threshold 0."
       },
       "Properties": {
         "LogGroupName": {
@@ -4634,14 +4634,14 @@
         }
       },
       "Metadata": {
-        "Note": "The alarm widget lists alarms by constructed ARN, not by Ref: most are conditional and a conditional Ref cannot be woven into this JSON body readably. An alarm set to off shows as unavailable.\n\ndashboard as an alarm action sets ActionsEnabled false - it does not place the alarm here."
+        "Note": "The alarm widget lists alarms by constructed ARN, not by Ref: most are conditional on their *AlarmAction parameter, and a conditional Ref means an Fn::If inside this JSON string body. An alarm set to off shows as unavailable.\n\ndashboard as an alarm action sets ActionsEnabled false - it does not place the alarm here."
       }
     },
     "WafSecretPathPatterns": {
       "Type": "AWS::WAFv2::RegexPatternSet",
       "Condition": "SecretPathsActionEnabled",
       "Metadata": {
-        "Note": "Six expressions, the only WebACL content we author ourselves. Expression 0 matches any dot-prefixed segment, so the rule pairs it with a NotStatement STARTS_WITH /.well-known/ - the WAF dialect has no lookaheads. Matching on UriPath after URL_DECODE and LOWERCASE. Quota ten per set, ten sets per region.\n\nSEPARATOR RULE: between keyword and extension only dot or underscore, never a hyphen. Reasoning and measurements in TASKS.md."
+        "Note": "Six expressions, the only WebACL content we write ourselves. Expression 0 matches any dot-prefixed segment, hence the NotStatement STARTS_WITH /.well-known/ - the WAF dialect has no lookaheads. Matches UriPath after URL_DECODE and LOWERCASE. Quota ten per set, ten sets per region.\n\nconfig.json and config.yaml are deliberately absent: single-page apps fetch them at runtime. SEPARATOR RULE: between keyword and extension only dot or underscore, never a hyphen. Measurements in TASKS.md."
       },
       "Properties": {
         "Name": {
@@ -4665,7 +4665,7 @@
       "Type": "AWS::WAFv2::RegexPatternSet",
       "Condition": "SqliHasPathExclusions",
       "Metadata": {
-        "Note": "Scope-down NotStatement on the SQLi group, priority 40. Added for a WordPress Solr search whose query shape is indistinguishable from an auth-bypass attempt.\n\nLOWERCASE only, WITHOUT the URL_DECODE that SecretPaths uses - an exception wants the narrowest reading. Anchor every pattern with ^."
+        "Note": "Scope-down NotStatement on the SQLi group, priority 40. Added for a WordPress Solr search whose query shape is indistinguishable from an auth-bypass attempt - the plugin offers no way to phrase it differently.\n\nLOWERCASE only, WITHOUT the URL_DECODE that SecretPaths uses - an exception wants the narrowest reading. Anchor every pattern with ^, an unanchored one matches anywhere in the path. Open: /solr/../x matches ^/solr/ and is exempted, whether the balancer normalises that is untested."
       },
       "Properties": {
         "Name": {
@@ -4680,7 +4680,7 @@
     "WafWebAcl": {
       "Type": "AWS::WAFv2::WebACL",
       "Metadata": {
-        "Note": "Scope REGIONAL, attached to the ALB - unlike the CLOUDFRONT-scoped WebACL in cloudfront-alb-distribution, which lives in us-east-1. Priorities 20 CommonRuleSet, 30 KnownBadInputs, 40 SQLi, 50 WordPress, 60 SecretPaths, 90 and 91 rate limiting.\n\nRate limiting last so floods stay classified by the groups above. Behind a CDN set WafClientIpHeader, or blocking on rate takes the proxy out for every site behind it."
+        "Note": "Scope REGIONAL, attached to the ALB - unlike the CLOUDFRONT-scoped WebACL in cloudfront-alb-distribution, which lives in us-east-1. Priorities 20 CommonRuleSet, 30 KnownBadInputs, 40 SQLi, 50 WordPress, 60 SecretPaths, 90 and 91 rate limiting.\n\nRate limiting last so floods stay classified by the groups above. Every rule has its own off/count/block parameter: one global switch would promote them all at once, which defeats the counting period. Behind a CDN set WafClientIpHeader, or blocking on rate takes the proxy out for every site behind it."
       },
       "Properties": {
         "Name": {
@@ -5109,7 +5109,7 @@
     "WafLogDeliveryPolicy": {
       "Type": "AWS::Logs::ResourcePolicy",
       "Metadata": {
-        "Note": "WAF logging fails, or delivers nothing, unless the log group grants delivery.logs.amazonaws.com logs:CreateLogStream and logs:PutLogEvents. The console adds this implicitly, CloudFormation does not.\n\nCloudWatch Logs resource policies are account-wide per region and capped at ten."
+        "Note": "WAF logging fails, or delivers nothing, unless the log group grants delivery.logs.amazonaws.com logs:CreateLogStream and logs:PutLogEvents. The console adds this implicitly, CloudFormation does not.\n\nScoped to the WAF log group of this stack with SourceAccount and SourceArn conditions, against the confused-deputy case. CloudWatch Logs resource policies are account-wide per region and capped at ten."
       },
       "DependsOn": [
         "WafLogGroup"
