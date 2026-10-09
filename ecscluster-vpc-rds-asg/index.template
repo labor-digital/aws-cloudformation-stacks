@@ -4289,7 +4289,7 @@
       "Type": "AWS::Logs::MetricFilter",
       "Condition": "EgressBlockedAlarmEnabled",
       "Metadata": {
-        "Note": "Destinations inside the public subnets are excluded on purpose, since 2026-10-09. Those are not outbound attempts but replies to the load balancer whose connection tracking entry had expired - the closing FIN or RST then counts as a new outbound connection and is dropped by SgVpcLoadbalancerports.\n\nMeasured over four days: the class produces isolated events of two to six flows per hour, plus bursts of 150 to 180 whenever the autoscaling group replaces an instance. Six alarm mails in one night for a routine instance swap. A rate threshold cannot separate it: a burst caused by a healthy swap and one caused by an overloaded instance look the same, they differ only in the state of the instance - which this alarm does not measure. Instance health belongs in a CPU or agent alarm, not here.\n\nThe flow logs still contain the class; only the metric ignores it. Read it with the saved query and a destination filter: dstaddr like /^10\\.1\\.[12]\\./ for this class, not like /^10\\./ for real egress."
+        "Note": "Destinations inside the public subnets are excluded on purpose. They are not outbound attempts but traffic towards the load balancer that no longer matches a tracked inbound flow - the egress rules then apply, and the destination is an ephemeral port that no rule allows.\n\nTwo populations hide in this class, and they differ in payload, not in rate. About forty bytes per packet is a closing FIN or RST after the connection tracking entry expired: harmless, and produced in bulk whenever the autoscaling group replaces an instance. Full MTU packets carry a real response - the container answered after the load balancer had already closed the connection on its idle timeout, so the port mapping was gone and the packet left with the container port as its source. That one is the symptom of a request that outlived the idle timeout, and the client had its 504 long before the packet was dropped.\n\nNeither belongs in this alarm, and no rate threshold separates them - the loud events are the harmless ones. Instance health belongs in a CPU or agent alarm. Requests that outlive the idle timeout belong in HTTPCode_ELB_5XX_Count and in the request duration, measured where they happen.\n\nThe flow logs still hold the whole class; only the metric ignores it. Split by destination when reading them: the public subnets for this class, everything outside the VPC for real egress."
       },
       "Properties": {
         "LogGroupName": {
@@ -5334,7 +5334,7 @@
     },
     "TemplateVersion": {
       "Description": "Version of the ecscluster-vpc-rds-asg template this stack was last updated with. Bump on every template change (see README).",
-      "Value": "1.7.15"
+      "Value": "1.7.16"
     }
   },
   "Conditions": {
