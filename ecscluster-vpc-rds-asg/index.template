@@ -85,7 +85,11 @@
             "VpcFlowLogsAlarmAction",
             "VpcFlowLogsAlarmThreshold",
             "EgressBlockedAlarmAction",
-            "EgressBlockedAlarmThreshold"
+            "EgressBlockedAlarmThreshold",
+            "AlbLateResponseAlarmAction",
+            "AlbLateResponseAlarmThreshold",
+            "AlbLateResponseMinBytes",
+            "AlbLateResponseMaxPackets"
           ]
         },
         {
@@ -573,6 +577,34 @@
         "allow"
       ],
       "Description": "Lets MX lookups through the catch-all rule. Mail validation in a contact form resolves the MX record of whatever domain a visitor types, and that set is unbounded - no whitelist can hold every mail provider on earth, so under DnsFirewallCatchAllAction=BLOCK a correct address gets rejected. Measured in Frankfurt over 14 days: gmx.de, gmail.com, t-online.de, web.de, yahoo.com, icloud.com, aol.com - and gmail.coml, a visitor's typo, which is what proves a form is doing the lookup. off = MX is treated like any other query. allow = MX resolves regardless of the whitelist. KEEP THIS OFF WHILE THE CATCH-ALL IS ALERT: the rule sits at priority 150 and terminates evaluation, so the catch-all at 200 never fires and MX lookups stop appearing in DnsFirewallWhitelistCandidates - the very measurement used to complete the whitelist. Turn it to allow in the same change as BLOCK, not before. DNS exfiltration over MX records is possible in theory; a broken contact form on every customer site is certain."
+    },
+    "AlbLateResponseAlarmAction": {
+      "Type": "String",
+      "Default": "dashboard",
+      "AllowedValues": [
+        "off",
+        "dashboard",
+        "alert"
+      ],
+      "Description": "Replies to the load balancer that were dropped because they still carried a full payload - the container answered after the load balancer had already closed the connection on its 60 second idle timeout. The client got its 504 long before, so this does not report an outage; it names the service that is too slow. Default dashboard because a known slow job mails every night until it is fixed. Raise to alert once the backlog is clear, then any occurrence is a regression."
+    },
+    "AlbLateResponseAlarmThreshold": {
+      "Type": "Number",
+      "Default": 0,
+      "MinValue": 0,
+      "Description": "Late replies per minute before AlbLateResponseAlarmAction fires. Default 0 means every single one, which is the point: a request that outlives the idle timeout is never normal. Measured in eu-central-1 over 48 hours - two occurrences, both the same nightly cache warm-up, byte for byte identical."
+    },
+    "AlbLateResponseMinBytes": {
+      "Type": "Number",
+      "Default": 2000,
+      "MinValue": 1,
+      "Description": "Lower bound on bytes per flow record for a dropped reply to count as carrying payload. Together with AlbLateResponseMaxPackets this separates the two populations sharing this traffic class: measured payload runs 1014 to 1442 bytes per packet over 13 to 17 packets, connection-tracking cleanup is a flat 40 bytes per packet. Both bounds must hold, which forces more than 100 bytes per packet."
+    },
+    "AlbLateResponseMaxPackets": {
+      "Type": "Number",
+      "Default": 20,
+      "MinValue": 1,
+      "Description": "Upper bound on packets per flow record. A long burst of small control packets can pass AlbLateResponseMinBytes by sheer count - replacing an instance produces exactly that. Capping packets keeps those out without a rate threshold, which was measured not to separate the two populations."
     }
   },
   "Rules": {
@@ -3839,8 +3871,11 @@
       "Properties": {
         "Name": "VpcEgressPortsAnalysis",
         "QueryString": {
-          "Fn::Sub": "SOURCE logGroups(logGroupName: \"${VpcAcceptFlowLogGroup}\") START=-604800s END=0s\n| fields @timestamp, @message\n| parse @message \"* * * * * * * * * * * * * *\" as version, account, eni, srcaddr, dstaddr, srcport, dstport, protocol, packets, bytes, startTime, endTime, action, status\n| filter action = \"ACCEPT\"\n| filter srcaddr like /^10\\.1\\.[34]\\./\n| filter dstaddr not like /^10\\./\n| filter srcport != 443 and srcport != 80\n| stats count(*) as connections, sum(bytes) as totalBytes by dstport, protocol\n| sort connections desc\n| limit 500"
+          "Fn::Sub": "SOURCE logGroups(logGroupName: \"${VpcAcceptFlowLogGroup}\") START=-604800s END=0s\n| fields @timestamp, @message\n| parse @message \"* * * * * * * * * * * * * * * * *\" as version, account, eni, srcaddr, dstaddr, srcport, dstport, protocol, packets, bytes, startTime, endTime, action, status, pkt_srcaddr, pkt_dstaddr, direction\n| filter action = \"ACCEPT\"\n| filter srcaddr like /^10\\.1\\.[34]\\./\n| filter dstaddr not like /^10\\./\n| filter srcport != 443 and srcport != 80\n| stats count(*) as connections, sum(bytes) as totalBytes by dstport, protocol\n| sort connections desc\n| limit 500"
         }
+      },
+      "Metadata": {
+        "Note": "Seventeen placeholders, matching the custom LogFormat on both flow logs. It parsed fourteen until 2026-10-14 - the trailing field then swallowed log-status, pkt-srcaddr, pkt-dstaddr and flow-direction, so status held four values at once. Fields one to thirteen stayed correct, which is why the query kept working and the defect survived unnoticed.\n\nThe srcport filter is the reason direction is not used here: it predates the custom format and excludes replies from the load balancer by their port instead. Both work; changing it would change which rows the query returns, so it stays until someone measures the difference."
       }
     },
     "RdsErrorLogGroup": {
@@ -4396,7 +4431,7 @@
       "Properties": {
         "Name": "VpcEgressBlockedTraffic",
         "QueryString": {
-          "Fn::Sub": "SOURCE logGroups(logGroupName: \"${VpcFlowLogGroup}\") START=-3600s END=0s\n| fields @timestamp, @message\n| parse @message \"* * * * * * * * * * * * * * * * *\" as version, account, eni, srcaddr, dstaddr, srcport, dstport, protocol, packets, bytes, startTime, endTime, action, status, pkt_srcaddr, pkt_dstaddr, direction\n| filter action = \"REJECT\" and direction = \"egress\"\n| filter dstaddr not like /^10\\.1\\.[12]\\./\n| stats count(*) as blocked by pkt_srcaddr, dstaddr, dstport\n| sort blocked desc\n| limit 50"
+          "Fn::Sub": "SOURCE logGroups(logGroupName: \"${VpcFlowLogGroup}\") START=-3600s END=0s\n| fields @timestamp, @message\n| parse @message \"* * * * * * * * * * * * * * * * *\" as version, account, eni, srcaddr, dstaddr, srcport, dstport, protocol, packets, bytes, startTime, endTime, action, status, pkt_srcaddr, pkt_dstaddr, direction\n| filter action = \"REJECT\" and direction = \"egress\"\n| filter dstaddr not like /^10\\.1\\.[12]\\./\n| stats count(*) as blocked, min(startTime) as firstEpoch, max(startTime) as lastEpoch by pkt_srcaddr, dstaddr, dstport\n| fields formatDate(fromMillis(firstEpoch * 1000), \"%Y-%m-%d %H:%M:%S\", \"UTC\") as firstUtc, formatDate(fromMillis(lastEpoch * 1000), \"%Y-%m-%d %H:%M:%S\", \"UTC\") as lastUtc\n| sort lastEpoch desc\n| limit 50"
         }
       }
     },
@@ -4546,15 +4581,7 @@
           {
             "Name": "DBInstanceIdentifier",
             "Value": {
-              "Fn::Join": [
-                "-",
-                [
-                  {
-                    "Ref": "AWS::StackName"
-                  },
-                  "Rdsinstance1"
-                ]
-              ]
+              "Fn::Sub": "${AWS::StackName}-rdsinstance1"
             }
           }
         ],
@@ -4568,7 +4595,7 @@
         "TreatMissingData": "notBreaching"
       },
       "Metadata": {
-        "Note": "Statistic Maximum, not Sum: DatabaseConnections is a gauge, so summing a period gives a meaningless multiple.\n\nDimensioned on the writer instance, where max_connections applies. Namespace AWS/RDS, unlike the RdsError and RdsSlowQuery alarms, which read metric filters over exported logs."
+        "Note": "Statistic Maximum, not Sum: DatabaseConnections is a gauge, so summing a period gives a meaningless multiple.\n\nDimensioned on the writer instance, where max_connections applies. Namespace AWS/RDS, unlike the RdsError and RdsSlowQuery alarms, which read metric filters over exported logs.\n\nThe dimension value is lower case on purpose. RDS folds every DBInstanceIdentifier to lower case while CloudWatch dimension values are case sensitive, so a mixed-case value matches no metric and the alarm sits on OK forever under TreatMissingData notBreaching - its state until 2026-10-13, with zero datapoints since creation. This holds only while the stack name is lower case too; CloudFormation has no Fn::Lower. The resource keeps its own mixed-case identifier, which RDS folds anyway. Verify with aws cloudwatch list-metrics --namespace AWS/RDS --metric-name DatabaseConnections."
       }
     },
     "ElbHttp5xxAlarm": {
@@ -4643,7 +4670,7 @@
           "Fn::Sub": "${AWS::StackName}-Overview"
         },
         "DashboardBody": {
-          "Fn::Sub": "{\"start\":\"-PT3H\",\"widgets\":[{\"type\":\"metric\",\"x\":0,\"y\":0,\"width\":12,\"height\":6,\"properties\":{\"title\":\"ECS CPU by Service\",\"view\":\"timeSeries\",\"stacked\":false,\"metrics\":[[{\"expression\":\"SEARCH('{AWS/ECS,ClusterName,ServiceName} ClusterName=\\\"${AWS::StackName}-Ecscluster\\\" MetricName=\\\"CPUUtilization\\\"','Average',300)\",\"label\":\"${!LABEL}\",\"id\":\"cpu\"}]],\"period\":300,\"stat\":\"Average\",\"region\":\"${AWS::Region}\",\"yAxis\":{\"left\":{\"min\":0,\"max\":100}}}},{\"type\":\"metric\",\"x\":12,\"y\":0,\"width\":12,\"height\":6,\"properties\":{\"title\":\"ECS Memory by Service\",\"view\":\"timeSeries\",\"stacked\":false,\"metrics\":[[{\"expression\":\"SEARCH('{AWS/ECS,ClusterName,ServiceName} ClusterName=\\\"${AWS::StackName}-Ecscluster\\\" MetricName=\\\"MemoryUtilization\\\"','Average',300)\",\"label\":\"${!LABEL}\",\"id\":\"mem\"}]],\"period\":300,\"stat\":\"Average\",\"region\":\"${AWS::Region}\",\"yAxis\":{\"left\":{\"min\":0,\"max\":100}}}},{\"type\":\"metric\",\"x\":0,\"y\":6,\"width\":12,\"height\":6,\"properties\":{\"title\":\"RDS CPU & Connections\",\"view\":\"timeSeries\",\"stacked\":false,\"metrics\":[[\"AWS/RDS\",\"CPUUtilization\",\"DBClusterIdentifier\",\"${Rdscl}\",{\"stat\":\"Average\",\"label\":\"CPU %\"}],[\"AWS/RDS\",\"DatabaseConnections\",\"DBClusterIdentifier\",\"${Rdscl}\",{\"stat\":\"Average\",\"label\":\"Connections\",\"yAxis\":\"right\"}]],\"period\":300,\"region\":\"${AWS::Region}\",\"yAxis\":{\"left\":{\"min\":0,\"max\":100,\"label\":\"CPU %\"},\"right\":{\"min\":0,\"label\":\"Connections\"}},\"annotations\":{\"horizontal\":[{\"label\":\"rds-connections alarm\",\"value\":60,\"yAxis\":\"right\"}]}}},{\"type\":\"metric\",\"x\":12,\"y\":6,\"width\":12,\"height\":6,\"properties\":{\"title\":\"VPC Rejected Connections\",\"view\":\"timeSeries\",\"stacked\":false,\"metrics\":[[\"${AWS::StackName}/VpcFlowLogs\",\"RejectedConnections\",{\"stat\":\"Sum\",\"label\":\"Rejected/5min\"}]],\"period\":300,\"region\":\"${AWS::Region}\",\"annotations\":{\"horizontal\":[{\"label\":\"Alarm threshold\",\"value\":500}]}}},{\"type\":\"alarm\",\"x\":0,\"y\":12,\"width\":24,\"height\":7,\"properties\":{\"title\":\"Cluster alarms - red = firing, grey = not created (action set to off)\",\"alarms\":[\"arn:aws:cloudwatch:${AWS::Region}:${AWS::AccountId}:alarm:${AWS::StackName}-AlarmWafCommonRuleSet\",\"arn:aws:cloudwatch:${AWS::Region}:${AWS::AccountId}:alarm:${AWS::StackName}-AlarmWafKnownBadInputs\",\"arn:aws:cloudwatch:${AWS::Region}:${AWS::AccountId}:alarm:${AWS::StackName}-AlarmWafSQLi\",\"arn:aws:cloudwatch:${AWS::Region}:${AWS::AccountId}:alarm:${AWS::StackName}-AlarmWafWordPress\",\"arn:aws:cloudwatch:${AWS::Region}:${AWS::AccountId}:alarm:${AWS::StackName}-AlarmWafRateLimitSourceIp\",\"arn:aws:cloudwatch:${AWS::Region}:${AWS::AccountId}:alarm:${AWS::StackName}-AlarmWafRateLimitForwardedIp\",\"arn:aws:cloudwatch:${AWS::Region}:${AWS::AccountId}:alarm:${AWS::StackName}-dns-firewall-alert-surge\",\"arn:aws:cloudwatch:${AWS::Region}:${AWS::AccountId}:alarm:${AWS::StackName}-dns-firewall-blocked\",\"arn:aws:cloudwatch:${AWS::Region}:${AWS::AccountId}:alarm:${AWS::StackName}-vpc-rejected-surge\",\"arn:aws:cloudwatch:${AWS::Region}:${AWS::AccountId}:alarm:${AWS::StackName}-rds-error\",\"arn:aws:cloudwatch:${AWS::Region}:${AWS::AccountId}:alarm:${AWS::StackName}-rds-slow-queries\",\"arn:aws:cloudwatch:${AWS::Region}:${AWS::AccountId}:alarm:${AWS::StackName}-rds-connections\",\"arn:aws:cloudwatch:${AWS::Region}:${AWS::AccountId}:alarm:${AWS::StackName}-elb-5xx\"],\"sortBy\":\"stateUpdatedTimestamp\",\"states\":[\"ALARM\",\"INSUFFICIENT_DATA\",\"OK\"]}},{\"type\":\"log\",\"x\":0,\"y\":19,\"width\":8,\"height\":7,\"properties\":{\"title\":\"DNS Firewall - what the whitelist does not cover (14d)\",\"region\":\"${AWS::Region}\",\"view\":\"table\",\"query\":\"SOURCE '${AWS::StackName}-DnsFirewallLogs' | filter firewall_rule_action in [\\\"ALERT\\\",\\\"BLOCK\\\"] | filter query_type not in [\\\"PTR\\\"] | stats count(*) as requests by query_name, firewall_rule_action | sort requests desc | limit 20\"}},{\"type\":\"log\",\"x\":8,\"y\":19,\"width\":8,\"height\":7,\"properties\":{\"title\":\"Rejected outbound connections - signal once egress is restricted\",\"region\":\"${AWS::Region}\",\"view\":\"table\",\"query\":\"SOURCE '${AWS::StackName}-VpcFlowLogs' | stats count(*) as flows by dstAddr, dstPort, srcAddr | sort flows desc | limit 20\"}},{\"type\":\"log\",\"x\":16,\"y\":19,\"width\":8,\"height\":7,\"properties\":{\"title\":\"Slow queries (long_query_time)\",\"region\":\"${AWS::Region}\",\"view\":\"table\",\"query\":\"SOURCE '/aws/rds/cluster/${Rdscl}/slowquery' | parse @message /Query_time: (?<qt>[0-9.]+)/ | filter ispresent(qt) | sort qt desc | limit 20\"}}]}"
+          "Fn::Sub": "{\"start\":\"-PT3H\",\"widgets\":[{\"type\":\"metric\",\"x\":0,\"y\":0,\"width\":12,\"height\":6,\"properties\":{\"title\":\"ECS CPU by Service\",\"view\":\"timeSeries\",\"stacked\":false,\"metrics\":[[{\"expression\":\"SEARCH('{AWS/ECS,ClusterName,ServiceName} ClusterName=\\\"${AWS::StackName}-Ecscluster\\\" MetricName=\\\"CPUUtilization\\\"','Average',300)\",\"label\":\"${!LABEL}\",\"id\":\"cpu\"}]],\"period\":300,\"stat\":\"Average\",\"region\":\"${AWS::Region}\",\"yAxis\":{\"left\":{\"min\":0,\"max\":100}}}},{\"type\":\"metric\",\"x\":12,\"y\":0,\"width\":12,\"height\":6,\"properties\":{\"title\":\"ECS Memory by Service\",\"view\":\"timeSeries\",\"stacked\":false,\"metrics\":[[{\"expression\":\"SEARCH('{AWS/ECS,ClusterName,ServiceName} ClusterName=\\\"${AWS::StackName}-Ecscluster\\\" MetricName=\\\"MemoryUtilization\\\"','Average',300)\",\"label\":\"${!LABEL}\",\"id\":\"mem\"}]],\"period\":300,\"stat\":\"Average\",\"region\":\"${AWS::Region}\",\"yAxis\":{\"left\":{\"min\":0,\"max\":100}}}},{\"type\":\"metric\",\"x\":0,\"y\":6,\"width\":12,\"height\":6,\"properties\":{\"title\":\"RDS CPU & Connections\",\"view\":\"timeSeries\",\"stacked\":false,\"metrics\":[[\"AWS/RDS\",\"CPUUtilization\",\"DBClusterIdentifier\",\"${Rdscl}\",{\"stat\":\"Average\",\"label\":\"CPU %\"}],[\"AWS/RDS\",\"DatabaseConnections\",\"DBClusterIdentifier\",\"${Rdscl}\",{\"stat\":\"Average\",\"label\":\"Connections\",\"yAxis\":\"right\"}]],\"period\":300,\"region\":\"${AWS::Region}\",\"yAxis\":{\"left\":{\"min\":0,\"max\":100,\"label\":\"CPU %\"},\"right\":{\"min\":0,\"label\":\"Connections\"}},\"annotations\":{\"horizontal\":[{\"label\":\"rds-connections alarm\",\"value\":${RdsConnectionsAlarmThreshold},\"yAxis\":\"right\"}]}}},{\"type\":\"metric\",\"x\":12,\"y\":6,\"width\":12,\"height\":6,\"properties\":{\"title\":\"VPC Rejected Connections\",\"view\":\"timeSeries\",\"stacked\":false,\"metrics\":[[\"${AWS::StackName}/VpcFlowLogs\",\"RejectedConnections\",{\"stat\":\"Sum\",\"label\":\"Rejected/5min\"}]],\"period\":300,\"region\":\"${AWS::Region}\",\"annotations\":{\"horizontal\":[{\"label\":\"Alarm threshold\",\"value\":${VpcFlowLogsAlarmThreshold}}]}}},{\"type\":\"alarm\",\"x\":0,\"y\":12,\"width\":24,\"height\":7,\"properties\":{\"title\":\"Cluster alarms - red = firing, grey = not created (action set to off)\",\"alarms\":[\"arn:aws:cloudwatch:${AWS::Region}:${AWS::AccountId}:alarm:${AWS::StackName}-AlarmWafCommonRuleSet\",\"arn:aws:cloudwatch:${AWS::Region}:${AWS::AccountId}:alarm:${AWS::StackName}-AlarmWafKnownBadInputs\",\"arn:aws:cloudwatch:${AWS::Region}:${AWS::AccountId}:alarm:${AWS::StackName}-AlarmWafSQLi\",\"arn:aws:cloudwatch:${AWS::Region}:${AWS::AccountId}:alarm:${AWS::StackName}-AlarmWafWordPress\",\"arn:aws:cloudwatch:${AWS::Region}:${AWS::AccountId}:alarm:${AWS::StackName}-AlarmWafRateLimitSourceIp\",\"arn:aws:cloudwatch:${AWS::Region}:${AWS::AccountId}:alarm:${AWS::StackName}-AlarmWafRateLimitForwardedIp\",\"arn:aws:cloudwatch:${AWS::Region}:${AWS::AccountId}:alarm:${AWS::StackName}-AlarmWafSecretPaths\",\"arn:aws:cloudwatch:${AWS::Region}:${AWS::AccountId}:alarm:${AWS::StackName}-dns-firewall-alert-surge\",\"arn:aws:cloudwatch:${AWS::Region}:${AWS::AccountId}:alarm:${AWS::StackName}-dns-firewall-blocked\",\"arn:aws:cloudwatch:${AWS::Region}:${AWS::AccountId}:alarm:${AWS::StackName}-vpc-rejected-surge\",\"arn:aws:cloudwatch:${AWS::Region}:${AWS::AccountId}:alarm:${AWS::StackName}-egress-blocked\",\"arn:aws:cloudwatch:${AWS::Region}:${AWS::AccountId}:alarm:${AWS::StackName}-alb-late-response\",\"arn:aws:cloudwatch:${AWS::Region}:${AWS::AccountId}:alarm:${AWS::StackName}-rds-error\",\"arn:aws:cloudwatch:${AWS::Region}:${AWS::AccountId}:alarm:${AWS::StackName}-rds-slow-queries\",\"arn:aws:cloudwatch:${AWS::Region}:${AWS::AccountId}:alarm:${AWS::StackName}-rds-connections\",\"arn:aws:cloudwatch:${AWS::Region}:${AWS::AccountId}:alarm:${AWS::StackName}-elb-5xx\"],\"sortBy\":\"stateUpdatedTimestamp\",\"states\":[\"ALARM\",\"INSUFFICIENT_DATA\",\"OK\"]}},{\"type\":\"log\",\"x\":0,\"y\":19,\"width\":8,\"height\":7,\"properties\":{\"title\":\"DNS Firewall - what the whitelist does not cover (14d)\",\"region\":\"${AWS::Region}\",\"view\":\"table\",\"query\":\"SOURCE '${AWS::StackName}-DnsFirewallLogs' | filter firewall_rule_action in [\\\"ALERT\\\",\\\"BLOCK\\\"] | filter query_type not in [\\\"PTR\\\"] | stats count(*) as requests by query_name, firewall_rule_action | sort requests desc | limit 20\"}},{\"type\":\"log\",\"x\":8,\"y\":19,\"width\":8,\"height\":7,\"properties\":{\"title\":\"Rejected outbound connections - signal once egress is restricted\",\"region\":\"${AWS::Region}\",\"view\":\"table\",\"query\":\"SOURCE '${AWS::StackName}-VpcFlowLogs' | stats count(*) as flows by dstAddr, dstPort, srcAddr | sort flows desc | limit 20\"}},{\"type\":\"log\",\"x\":16,\"y\":19,\"width\":8,\"height\":7,\"properties\":{\"title\":\"Slow queries (long_query_time)\",\"region\":\"${AWS::Region}\",\"view\":\"table\",\"query\":\"SOURCE '/aws/rds/cluster/${Rdscl}/slowquery' | parse @message /Query_time: (?<qt>[0-9.]+)/ | filter ispresent(qt) | sort qt desc | limit 20\"}}]}"
         }
       },
       "Metadata": {
@@ -5170,6 +5197,79 @@
           }
         ]
       }
+    },
+    "AlbLateResponseMetricFilter": {
+      "Type": "AWS::Logs::MetricFilter",
+      "Condition": "AlbLateResponseAlarmEnabled",
+      "Metadata": {
+        "Note": "The counterpart to VpcEgressBlockedMetricFilter: that one drops every reply to the load balancer, this one keeps the half still carrying a payload. Splitting by destination removes the noise and the signal together - the two populations differ in payload, not in destination or rate. Measured in eu-central-1 over 48 hours: fifteen groups, two of them payload.\n\nThe bounds are parameters because they rest on four measured cases, and both must hold, which forces more than a hundred bytes per packet. A packet count alone is defeated by a long burst of control packets, a byte count alone by the same burst.\n\nThis counts a symptom and misses most of them. The request already ended in a 504 that HTTPCode_ELB_5XX_Count sees; it only surfaces here when the reply arrives after the tracking entry is gone, so a backend answering at 70 seconds never reaches this metric. A pointer to the slow service, never a count of timeouts."
+      },
+      "Properties": {
+        "LogGroupName": {
+          "Ref": "VpcFlowLogGroup"
+        },
+        "FilterPattern": {
+          "Fn::Sub": "[version, account_id, interface_id, srcaddr, dstaddr = 10.1.1.* || dstaddr = 10.1.2.*, srcport, dstport, protocol, packets < ${AlbLateResponseMaxPackets}, bytes > ${AlbLateResponseMinBytes}, start, end, action=REJECT, log_status, pkt_srcaddr, pkt_dstaddr, flow_direction=egress]"
+        },
+        "MetricTransformations": [
+          {
+            "MetricNamespace": {
+              "Fn::Sub": "${AWS::StackName}/VpcFlowLogs"
+            },
+            "MetricName": "AlbLateResponses",
+            "MetricValue": "1",
+            "DefaultValue": 0
+          }
+        ]
+      }
+    },
+    "AlbLateResponseAlarm": {
+      "Type": "AWS::CloudWatch::Alarm",
+      "Condition": "AlbLateResponseAlarmEnabled",
+      "Properties": {
+        "AlarmName": {
+          "Fn::Sub": "${AWS::StackName}-alb-late-response"
+        },
+        "ActionsEnabled": {
+          "Fn::If": [
+            "AlbLateResponseAlarmAlerts",
+            true,
+            false
+          ]
+        },
+        "AlarmActions": [
+          {
+            "Ref": "AlertTopic"
+          }
+        ],
+        "AlarmDescription": "A backend finished a response after the load balancer had already closed the connection on its 60 second idle timeout, so the reply was dropped on the way out. Nobody lost data - the client received a 504 one to two minutes earlier. What this names is the service that is too slow, which the 504 alone does not. Run the saved query AlbLateResponseTraffic: it groups by pkt_srcaddr and gives the first and last occurrence in UTC, so the instance and the time window are immediate. Then take that window into the load balancer access logs and read the request line - target_processing_time -1 marks the ones that never answered.",
+        "Namespace": {
+          "Fn::Sub": "${AWS::StackName}/VpcFlowLogs"
+        },
+        "MetricName": "AlbLateResponses",
+        "Statistic": "Sum",
+        "Period": 60,
+        "EvaluationPeriods": 1,
+        "DatapointsToAlarm": 1,
+        "Threshold": {
+          "Ref": "AlbLateResponseAlarmThreshold"
+        },
+        "ComparisonOperator": "GreaterThanThreshold",
+        "TreatMissingData": "notBreaching"
+      }
+    },
+    "AlbLateResponseTrafficQuery": {
+      "Type": "AWS::Logs::QueryDefinition",
+      "Condition": "AlbLateResponseAlarmEnabled",
+      "Metadata": {
+        "Note": "Deliberately unfiltered by payload: bytesPerPacket shows both populations side by side, so the split the metric filter applies stays checkable. Around forty is tracking cleanup, above a thousand a real response. srcport is grouped because it identifies the class on its own - the container port appears only once the port mapping is gone, which is what makes a reply late.\n\nTimestamps are aggregated as numbers and formatted afterwards: min and max return null over strings, and CloudWatch drops null columns without an error."
+      },
+      "Properties": {
+        "Name": "AlbLateResponseTraffic",
+        "QueryString": {
+          "Fn::Sub": "SOURCE logGroups(logGroupName: \"${VpcFlowLogGroup}\") START=-86400s END=0s\n| fields @timestamp, @message\n| parse @message \"* * * * * * * * * * * * * * * * *\" as version, account, eni, srcaddr, dstaddr, srcport, dstport, protocol, packets, bytes, startTime, endTime, action, status, pkt_srcaddr, pkt_dstaddr, direction\n| filter action = \"REJECT\" and direction = \"egress\"\n| filter dstaddr like /^10\\.1\\.[12]\\./\n| stats sum(bytes) as bytesTotal, sum(packets) as packetsTotal, min(startTime) as firstEpoch, max(startTime) as lastEpoch by pkt_srcaddr, srcport\n| fields bytesTotal / packetsTotal as bytesPerPacket, formatDate(fromMillis(firstEpoch * 1000), \"%Y-%m-%d %H:%M:%S\", \"UTC\") as firstUtc, formatDate(fromMillis(lastEpoch * 1000), \"%Y-%m-%d %H:%M:%S\", \"UTC\") as lastUtc\n| sort lastEpoch desc\n| limit 50"
+        }
+      }
     }
   },
   "Outputs": {
@@ -5336,7 +5436,7 @@
     },
     "TemplateVersion": {
       "Description": "Version of the ecscluster-vpc-rds-asg template this stack was last updated with. Bump on every template change (see README).",
-      "Value": "1.7.17"
+      "Value": "1.7.18"
     }
   },
   "Conditions": {
@@ -6065,6 +6165,26 @@
           "Ref": "AWS::Region"
         },
         "us-east-1"
+      ]
+    },
+    "AlbLateResponseAlarmEnabled": {
+      "Fn::Not": [
+        {
+          "Fn::Equals": [
+            {
+              "Ref": "AlbLateResponseAlarmAction"
+            },
+            "off"
+          ]
+        }
+      ]
+    },
+    "AlbLateResponseAlarmAlerts": {
+      "Fn::Equals": [
+        {
+          "Ref": "AlbLateResponseAlarmAction"
+        },
+        "alert"
       ]
     }
   }
