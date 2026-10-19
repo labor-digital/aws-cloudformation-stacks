@@ -39,7 +39,8 @@
             "RdsSlowQueryAlarmThreshold",
             "RdsLongQueryTime",
             "RdsConnectionsAlarmAction",
-            "RdsConnectionsAlarmThreshold"
+            "RdsConnectionsAlarmThreshold",
+            "RdsMaxUserConnections"
           ]
         },
         {
@@ -605,6 +606,12 @@
       "Default": 20,
       "MinValue": 1,
       "Description": "Upper bound on packets per flow record. A long burst of small control packets can pass AlbLateResponseMinBytes by sheer count - replacing an instance produces exactly that. Capping packets keeps those out without a rate threshold, which was measured not to separate the two populations."
+    },
+    "RdsMaxUserConnections": {
+      "Type": "Number",
+      "Default": 40,
+      "MinValue": 0,
+      "Description": "Maximum simultaneous connections per database account. Every service has its own user, so this caps a single service rather than the fleet: a runaway one exhausts its own budget and is refused with error 1203, while the other services keep connecting. 0 disables it and restores the old behaviour, where one service could take the whole pool.\n\nSized against three simultaneous offenders, not one. The tro services share a codebase, a cache warmer and the same expensive 404 rendering, so they are not independent - whatever overloads one is likely to reach the others in the same minute. Against 144 total, three accounts at 40 leave 24 connections, which is still above anything the remaining services need at normal load. A fourth would exhaust the pool; at that point the problem is not the cap.\n\nDeliberately far above normal use - the whole cluster idles near one connection - because the real risk of this setting is cutting off a legitimate burst and becoming the outage itself."
     }
   },
   "Rules": {
@@ -2351,8 +2358,14 @@
         "Family": "aurora-mysql8.0",
         "Parameters": {
           "max_connections": "{log(DBInstanceClassMemory/805306368)*60}",
+          "max_user_connections": {
+            "Ref": "RdsMaxUserConnections"
+          },
           "sort_buffer_size": 1048576
         }
+      },
+      "Metadata": {
+        "Note": "max_user_connections is the blast radius control, not a capacity setting. max_connections is the total; this one is the share a single account may take. Both are needed - without the second, one overloaded service holds connections long enough to exhaust the pool, and every other service is then refused at connect time. That happened on 2026-10-16: one site under a scan drove connections from 1 to over 120 of 144, and healthy sites returned an identical database-error page in 12 milliseconds.\n\nIt only isolates because every service has its own database user. MySQL counts per account, so a shared user would turn this into a fleet-wide cap and make things worse. Verify before changing it: SELECT user, COUNT(*) FROM information_schema.processlist GROUP BY user.\n\nDynamic parameter, applied without a restart. The alternative - per-account limits via ALTER USER - lives in mysql.user, which CloudFormation cannot see or manage, and would be drift by construction."
       }
     },
     "RdsclParameterGroup": {
@@ -5436,7 +5449,7 @@
     },
     "TemplateVersion": {
       "Description": "Version of the ecscluster-vpc-rds-asg template this stack was last updated with. Bump on every template change (see README).",
-      "Value": "1.7.18"
+      "Value": "1.7.19"
     }
   },
   "Conditions": {
