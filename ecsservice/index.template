@@ -354,8 +354,9 @@
     },
     "ImageResolverFunction" : {
       "Type" : "AWS::Lambda::Function",
+      "DependsOn" : [ "ImageResolverLogGroup" ],
       "Metadata" : {
-        "Note" : "Resolves the Docker image to use in the TaskDefinition. On Create it returns InitialDockerImage directly. On Update it calls ecs:DescribeServices to get the ARN of the task definition the service is actively running, then reads the image from that revision - ensuring CF always uses the currently deployed image rather than the stale value in InitialDockerImage. SkipImageResolver=true bypasses the ECS lookup and uses InitialDockerImage directly, for cases where a specific image must be forced."
+        "Note" : "Resolves the Docker image to use in the TaskDefinition. On Create it returns InitialDockerImage directly. On Update it calls ecs:DescribeServices to get the ARN of the task definition the service is actively running, then reads the image from that revision - ensuring CF always uses the currently deployed image rather than the stale value in InitialDockerImage. SkipImageResolver=true bypasses the ECS lookup and uses InitialDockerImage directly, for cases where a specific image must be forced. DependsOn on the log group is deliberate and is NOT one of the redundant W3005 entries: this function does not Ref the group, so without it CloudFormation may delete the group while the custom resource's Delete request is still invoking this function. Lambda then recreates /aws/lambda/<name>, the new group belongs to no stack, survives the rollback, and the next CREATE fails with 'already exists'. Seen on 2026-10-20 with lab-fac-app-p. Do not remove it to silence a linter."
       },
       "Properties" : {
         "FunctionName" : { "Fn::Join" : [ "-", [ { "Ref" : "AWS::StackName" }, "ImageResolver" ] ] },
@@ -444,8 +445,9 @@
     "ImageRegressionGuardFunction" : {
       "Type" : "AWS::Lambda::Function",
       "Condition" : "EnableImageRegressionGuard",
+      "DependsOn" : [ "ImageRegressionGuardLogGroup" ],
       "Metadata" : {
-        "Note" : "Detective control for image regressions. EventBridge invokes it on every ECS deployment start (SERVICE_DEPLOYMENT_IN_PROGRESS). It reads the currently rolling-out image (PRIMARY deployment) and the one it is replacing (ACTIVE deployment), looks up each image's ECR push time, and publishes to the cluster AlertTopic when the incoming image is OLDER than the outgoing one - catching both a CloudFormation parameter update that reverted the task image and an accidental redeploy of an old build. Deploying the same or a newer image is silent. Detective, not preventive: it fires as the rollout begins, so it complements the deployment circuit breaker rather than replacing it."
+        "Note" : "Detective control for image regressions. EventBridge invokes it on every ECS deployment start (SERVICE_DEPLOYMENT_IN_PROGRESS). It reads the currently rolling-out image (PRIMARY deployment) and the one it is replacing (ACTIVE deployment), looks up each image's ECR push time, and publishes to the cluster AlertTopic when the incoming image is OLDER than the outgoing one - catching both a CloudFormation parameter update that reverted the task image and an accidental redeploy of an old build. Deploying the same or a newer image is silent. Detective, not preventive: it fires as the rollout begins, so it complements the deployment circuit breaker rather than replacing it. DependsOn on the log group is deliberate and is NOT one of the redundant W3005 entries: this function does not Ref the group, so without it CloudFormation may delete the group while the custom resource's Delete request is still invoking this function. Lambda then recreates /aws/lambda/<name>, the new group belongs to no stack, survives the rollback, and the next CREATE fails with 'already exists'. Seen on 2026-10-20 with lab-fac-app-p. Do not remove it to silence a linter."
       },
       "Properties" : {
         "FunctionName" : { "Fn::Join" : [ "-", [ { "Ref" : "AWS::StackName" }, "ImageRegressionGuard" ] ] },
@@ -1278,7 +1280,7 @@
     },
     "TemplateVersion" : {
       "Description" : "Version of the ecsservice template this stack was last updated with. Bump on every template change (see README).",
-      "Value" : "1.7.0"
+      "Value" : "1.7.1"
     }
   }
 }
