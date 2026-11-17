@@ -15,6 +15,10 @@
           "Parameters" : [ "ListenerRuleHost", "ListenerRulePath", "ListenerRulePriority" ]
         },
         {
+          "Label" : { "default" : "Authentication" },
+          "Parameters" : [ "AuthPoolStackName", "AuthSessionDuration" ]
+        },
+        {
           "Label" : { "default" : "Service" },
           "Parameters" : [ "TaskMemory", "ServiceDesiredCount", "ServiceMaxCapacity", "ECSHealthCheckGracePeriod", "ServiceTrafficPort", "ServiceTrafficProtocol", "ECSHealthCheckPath", "VolumeMountPath", "ContainerCommand" ]
         },
@@ -49,6 +53,17 @@
       "Type" : "String",
       "Default" : "*",
       "MinLength" : 1
+    },
+    "AuthPoolStackName" : {
+      "Description" : "Optional cognito-userpool stack name. Leave empty to preserve the existing unauthenticated HTTPS rule; when set, this service imports the pool, shared app client, and managed login domain exports.",
+      "Type" : "String",
+      "Default" : ""
+    },
+    "AuthSessionDuration" : {
+      "Description" : "Maximum ALB authentication session duration for this service. The pool's AuthSessionMaxDuration may impose a shorter refresh-token lifetime.",
+      "Type" : "String",
+      "Default" : "12h",
+      "AllowedValues" : [ "1h", "4h", "8h", "12h", "24h", "7d" ]
     },
     "ListenerRulePriority" : {
       "Description" : "The Priority for the ListenerRule",
@@ -234,7 +249,26 @@
       ]
     }
   },
+  "Mappings": {
+    "AuthSession": {
+      "1h": { "Seconds": 3600 },
+      "4h": { "Seconds": 14400 },
+      "8h": { "Seconds": 28800 },
+      "12h": { "Seconds": 43200 },
+      "24h": { "Seconds": 86400 },
+      "7d": { "Seconds": 604800 }
+    }
+  },
   "Conditions": {
+    "UseAuth": {
+      "Fn::Not": [ { "Fn::Equals": [ { "Ref": "AuthPoolStackName" }, "" ] } ]
+    },
+    "UseAuthWithPath": {
+      "Fn::And": [
+        { "Condition": "UseAuth" },
+        { "Fn::Not": [ { "Fn::Equals": [ { "Ref": "ListenerRulePath" }, "*" ] } ] }
+      ]
+    },
     "HasContainerCommand": {
       "Fn::Not": [
         { "Fn::Equals": [ { "Ref": "ContainerCommand" }, "" ] }
@@ -728,16 +762,43 @@
     "LoadbalancerRule" : {
       "Type" : "AWS::ElasticLoadBalancingV2::ListenerRule",
       "Properties" : {
-        "Actions" : [ {
-          "TargetGroupArn" : { "Ref" : "Target" },
-          "Type" : "forward"
-        } ],
+        "Actions" : {
+          "Fn::If" : [
+            "UseAuth",
+            [ {
+              "Type" : "authenticate-cognito",
+              "Order" : 1,
+              "AuthenticateCognitoConfig" : {
+                "UserPoolArn" : { "Fn::ImportValue" : { "Fn::Sub" : "${AuthPoolStackName}-UserPoolArn" } },
+                "UserPoolClientId" : { "Fn::ImportValue" : { "Fn::Sub" : "${AuthPoolStackName}-UserPoolClientId" } },
+                "UserPoolDomain" : { "Fn::ImportValue" : { "Fn::Sub" : "${AuthPoolStackName}-AuthDomainName" } },
+                "Scope" : "openid email",
+                "SessionTimeout" : { "Fn::FindInMap" : [ "AuthSession", { "Ref" : "AuthSessionDuration" }, "Seconds" ] },
+                "OnUnauthenticatedRequest" : "authenticate"
+              }
+            }, {
+              "TargetGroupArn" : { "Ref" : "Target" },
+              "Type" : "forward",
+              "Order" : 2
+            } ],
+            [ {
+              "TargetGroupArn" : { "Ref" : "Target" },
+              "Type" : "forward"
+            } ]
+          ]
+        },
         "Conditions" : [ {
           "Field" : "host-header",
           "Values" : [ { "Ref" : "ListenerRuleHost" } ]
         }, {
           "Field" : "path-pattern",
-          "Values" : [ { "Ref" : "ListenerRulePath" } ]
+          "Values" : {
+            "Fn::If" : [
+              "UseAuthWithPath",
+              [ { "Ref" : "ListenerRulePath" }, "/oauth2/idpresponse" ],
+              [ { "Ref" : "ListenerRulePath" } ]
+            ]
+          }
         } ],
         "ListenerArn" : { "Fn::ImportValue" : { "Fn::Sub" : "${ClusterStackName}-ListenerArnHttps" } },
         "Priority" : { "Ref" : "ListenerRulePriority" }
@@ -1280,7 +1341,7 @@
     },
     "TemplateVersion" : {
       "Description" : "Version of the ecsservice template this stack was last updated with. Bump on every template change (see README).",
-      "Value" : "1.7.1"
+      "Value" : "1.8.0"
     }
   }
 }

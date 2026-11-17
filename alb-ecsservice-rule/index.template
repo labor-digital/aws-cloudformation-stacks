@@ -21,10 +21,42 @@
       "Default" : "*",
       "MinLength" : 1
     },
+    "AuthPoolStackName" : {
+      "Description" : "Optional cognito-userpool stack name. Leave empty to preserve the existing unauthenticated HTTPS rule; when set, this rule imports the pool, shared app client, and managed login domain exports.",
+      "Type" : "String",
+      "Default" : ""
+    },
+    "AuthSessionDuration" : {
+      "Description" : "Maximum ALB authentication session duration for this rule. The pool's AuthSessionMaxDuration may impose a shorter refresh-token lifetime.",
+      "Type" : "String",
+      "Default" : "12h",
+      "AllowedValues" : [ "1h", "4h", "8h", "12h", "24h", "7d" ]
+    },
     "ListenerRulePriority" : {
       "Description" : "The Priority for the ListenerRule.",
       "Type" : "Number",
       "MinValue" : 1
+    }
+  },
+  "Mappings" : {
+    "AuthSession" : {
+      "1h" : { "Seconds" : 3600 },
+      "4h" : { "Seconds" : 14400 },
+      "8h" : { "Seconds" : 28800 },
+      "12h" : { "Seconds" : 43200 },
+      "24h" : { "Seconds" : 86400 },
+      "7d" : { "Seconds" : 604800 }
+    }
+  },
+  "Conditions" : {
+    "UseAuth" : {
+      "Fn::Not" : [ { "Fn::Equals" : [ { "Ref" : "AuthPoolStackName" }, "" ] } ]
+    },
+    "UseAuthWithPath" : {
+      "Fn::And" : [
+        { "Condition" : "UseAuth" },
+        { "Fn::Not" : [ { "Fn::Equals" : [ { "Ref" : "ListenerRulePath" }, "*" ] } ] }
+      ]
     }
   },
   "Resources" : {
@@ -56,20 +88,53 @@
     "LoadbalancerRuleHttps" : {
       "Type" : "AWS::ElasticLoadBalancingV2::ListenerRule",
       "Properties" : {
-        "Actions" : [ {
-          "TargetGroupArn" : { "Fn::ImportValue" : { "Fn::Sub" : "${EcsServiceStackName}-TargetGroupArn" } },
-          "Type" : "forward"
-        } ],
+        "Actions" : {
+          "Fn::If" : [
+            "UseAuth",
+            [ {
+              "Type" : "authenticate-cognito",
+              "Order" : 1,
+              "AuthenticateCognitoConfig" : {
+                "UserPoolArn" : { "Fn::ImportValue" : { "Fn::Sub" : "${AuthPoolStackName}-UserPoolArn" } },
+                "UserPoolClientId" : { "Fn::ImportValue" : { "Fn::Sub" : "${AuthPoolStackName}-UserPoolClientId" } },
+                "UserPoolDomain" : { "Fn::ImportValue" : { "Fn::Sub" : "${AuthPoolStackName}-AuthDomainName" } },
+                "Scope" : "openid email",
+                "SessionTimeout" : { "Fn::FindInMap" : [ "AuthSession", { "Ref" : "AuthSessionDuration" }, "Seconds" ] },
+                "OnUnauthenticatedRequest" : "authenticate"
+              }
+            }, {
+              "TargetGroupArn" : { "Fn::ImportValue" : { "Fn::Sub" : "${EcsServiceStackName}-TargetGroupArn" } },
+              "Type" : "forward",
+              "Order" : 2
+            } ],
+            [ {
+              "TargetGroupArn" : { "Fn::ImportValue" : { "Fn::Sub" : "${EcsServiceStackName}-TargetGroupArn" } },
+              "Type" : "forward"
+            } ]
+          ]
+        },
         "Conditions" : [ {
           "Field" : "host-header",
           "Values" : [ { "Ref" : "ListenerRuleHost" } ]
         }, {
           "Field" : "path-pattern",
-          "Values" : [ { "Ref" : "ListenerRulePath" } ]
+          "Values" : {
+            "Fn::If" : [
+              "UseAuthWithPath",
+              [ { "Ref" : "ListenerRulePath" }, "/oauth2/idpresponse" ],
+              [ { "Ref" : "ListenerRulePath" } ]
+            ]
+          }
         } ],
         "ListenerArn" : { "Fn::ImportValue" : { "Fn::Sub" : "${ClusterStackName}-ListenerArnHttps" } },
         "Priority" : { "Ref" : "ListenerRulePriority" }
       }
+    }
+  },
+  "Outputs" : {
+    "TemplateVersion" : {
+      "Description" : "Version of this CloudFormation template.",
+      "Value" : "1.1.0"
     }
   }
 }

@@ -1,0 +1,483 @@
+{
+  "AWSTemplateFormatVersion": "2010-09-09",
+  "Metadata": {
+    "AWS::CloudFormation::Interface": {
+      "ParameterGroups": [
+        {
+          "Label": { "default": "Email allowlist" },
+          "Parameters": [ "AllowedDomains", "AllowedEmails" ]
+        },
+        {
+          "Label": { "default": "Managed login domain" },
+          "Parameters": [ "AuthDomainName", "AuthCertificateArn" ]
+        },
+        {
+          "Label": { "default": "Shared application client" },
+          "Parameters": [ "AuthCallbackUrls", "AuthSessionMaxDuration" ]
+        },
+        {
+          "Label": { "default": "Email delivery" },
+          "Parameters": [ "MailjetApiKey", "MailjetApiSecret", "MailFromAddress", "MailFromName", "MailProductName", "MailLanguage" ]
+        },
+        {
+          "Label": { "default": "Mail sender artifact" },
+          "Parameters": [ "MailSenderCodeBucket", "MailSenderCodeKey" ]
+        },
+        {
+          "Label": { "default": "Optional Amazon SES fallback" },
+          "Parameters": [ "SesIdentityArn" ]
+        },
+        {
+          "Label": { "default": "Operations" },
+          "Parameters": [ "DeletionProtection", "ClusterStackName", "MailSenderErrorAlarmAction" ]
+        }
+      ]
+    }
+  },
+  "Parameters": {
+    "AllowedDomains": {
+      "Type": "String",
+      "Default": "",
+      "AllowedPattern": "^$|^ *[A-Za-z0-9.-]+ *(, *[A-Za-z0-9.-]+ *)*$",
+      "Description": "Comma-separated email domains allowed to register, for example example.com,internal.example. Values are trimmed and compared case-insensitively. Domain matching is exact: subdomains do not match a parent domain. At least one of AllowedDomains or AllowedEmails must be non-empty. The Lambda environment is limited to 4 KB total; allowlists, Mailjet credentials, and mail settings share this limit."
+    },
+    "AllowedEmails": {
+      "Type": "String",
+      "Default": "",
+      "AllowedPattern": "^$|^ *[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+ *(, *[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+ *)*$",
+      "Description": "Comma-separated email addresses allowed to register, for example person@example.com. Values are trimmed and compared case-insensitively; plus-addressing is matched literally and is not normalized. At least one of AllowedDomains or AllowedEmails must be non-empty. The Lambda environment is limited to 4 KB total; allowlists, Mailjet credentials, and mail settings share this limit."
+    },
+    "AuthDomainName": {
+      "Type": "String",
+      "MinLength": 1,
+      "MaxLength": 63,
+      "AllowedPattern": "^[A-Za-z0-9.-]+$",
+      "Description": "Fully qualified custom domain for Cognito managed login, for example auth.example.com. Do not include a scheme or path. The ACM certificate must be in us-east-1."
+    },
+    "AuthCertificateArn": {
+      "Type": "String",
+      "MinLength": 1,
+      "Description": "ARN of the ACM certificate for AuthDomainName. The certificate must be issued in us-east-1, regardless of the user pool Region."
+    },
+    "AuthCallbackUrls": {
+      "Type": "CommaDelimitedList",
+      "Description": "Comma-separated exact HTTPS callback URLs for every protected service, each in the form https://service.example.com/oauth2/idpresponse. Wildcards are not supported; add a service URL before deploying that service. A Cognito app client supports at most 100 callback URLs."
+    },
+    "AuthSessionMaxDuration": {
+      "Type": "String",
+      "Default": "7d",
+      "AllowedValues": [ "1d", "7d", "30d", "90d", "365d" ],
+      "Description": "Maximum refresh-token lifetime shared by all services using this client. Each service ALB session is additionally limited by its AuthSessionDuration; the effective duration is the shorter value."
+    },
+    "MailjetApiKey": {
+      "Type": "String",
+      "NoEcho": true,
+      "MinLength": 1,
+      "Description": "Mailjet API key for the Send API v3.1 Basic Auth credentials. This value and all other Lambda environment variables share a 4 KB total limit; keep the combined allowlists, credentials, and mail settings within it."
+    },
+    "MailjetApiSecret": {
+      "Type": "String",
+      "NoEcho": true,
+      "MinLength": 1,
+      "Description": "Mailjet API secret for the Send API v3.1 Basic Auth credentials. This value and all other Lambda environment variables share a 4 KB total limit; keep the combined allowlists, credentials, and mail settings within it."
+    },
+    "MailFromAddress": {
+      "Type": "String",
+      "MinLength": 3,
+      "Description": "Verified sender email address configured in Mailjet. All Lambda environment variable values, including this setting, share a 4 KB total limit."
+    },
+    "MailFromName": {
+      "Type": "String",
+      "Default": "Security",
+      "MinLength": 1,
+      "Description": "Display name shown as the sender of the one-time-code emails. All Lambda environment variable values share a 4 KB total limit."
+    },
+    "MailProductName": {
+      "Type": "String",
+      "Default": "Protected service",
+      "MinLength": 1,
+      "Description": "Product or environment name shown in the email subject and HTML body. All Lambda environment variable values share a 4 KB total limit."
+    },
+    "MailLanguage": {
+      "Type": "String",
+      "Default": "de",
+      "AllowedValues": [ "de", "en" ],
+      "Description": "Language used for the sender email subject and HTML text."
+    },
+    "MailSenderCodeBucket": {
+      "Type": "String",
+      "MinLength": 1,
+      "Description": "Name of the regional S3 bucket containing the versioned Mail Sender ZIP artifact."
+    },
+    "MailSenderCodeKey": {
+      "Type": "String",
+      "MinLength": 1,
+      "Description": "S3 object key of the versioned Mail Sender ZIP artifact in MailSenderCodeBucket."
+    },
+    "DeletionProtection": {
+      "Type": "String",
+      "Default": "ACTIVE",
+      "AllowedValues": [ "ACTIVE", "INACTIVE" ],
+      "Description": "Controls Cognito user-pool deletion protection. Use INACTIVE only when you intentionally plan to delete the pool."
+    },
+    "ClusterStackName": {
+      "Type": "String",
+      "Default": "",
+      "Description": "Optional name of the cluster stack. Set this only when enabling the sender error alarm so it can import the cluster AlertTopicArn export."
+    },
+    "MailSenderErrorAlarmAction": {
+      "Type": "String",
+      "Default": "dashboard",
+      "AllowedValues": [ "off", "dashboard", "alert" ],
+      "Description": "Sender error alarm mode: off omits the alarm, dashboard creates a non-notifying alarm, and alert sends alarm actions to the cluster AlertTopicArn."
+    },
+    "SesIdentityArn": {
+      "Type": "String",
+      "Default": "",
+      "Description": "Optional ARN of a verified Amazon SES identity in this Region. Set this only if Cognito requires an SES configuration for EMAIL_OTP despite the custom email sender; when provided, Cognito uses this identity as its DEVELOPER email source."
+    }
+  },
+  "Rules": {
+    "AtLeastOneAllowlist": {
+      "Assertions": [
+        {
+          "Assert": {
+            "Fn::Or": [
+              { "Fn::Not": [ { "Fn::Equals": [ { "Ref": "AllowedDomains" }, "" ] } ] },
+              { "Fn::Not": [ { "Fn::Equals": [ { "Ref": "AllowedEmails" }, "" ] } ] }
+            ]
+          },
+          "AssertDescription": "Provide at least one non-empty value in AllowedDomains or AllowedEmails."
+        }
+      ]
+    }
+  },
+  "Conditions": {
+    "ConfigureSesEmail": {
+      "Fn::Not": [ { "Fn::Equals": [ { "Ref": "SesIdentityArn" }, "" ] } ]
+    },
+    "EnableMailSenderErrorAlarm": {
+      "Fn::And": [
+        { "Fn::Not": [ { "Fn::Equals": [ { "Ref": "ClusterStackName" }, "" ] } ] },
+        { "Fn::Not": [ { "Fn::Equals": [ { "Ref": "MailSenderErrorAlarmAction" }, "off" ] } ] }
+      ]
+    },
+    "MailSenderErrorAlarmNotifies": {
+      "Fn::Equals": [ { "Ref": "MailSenderErrorAlarmAction" }, "alert" ]
+    }
+  },
+  "Resources": {
+    "MailSenderKey": {
+      "Type": "AWS::KMS::Key",
+      "Properties": {
+        "Description": { "Fn::Sub": "KMS key for ${AWS::StackName} Cognito email sender" },
+        "EnableKeyRotation": true,
+        "KeyPolicy": {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Sid": "AllowAccountAdministration",
+              "Effect": "Allow",
+              "Principal": {
+                "AWS": { "Fn::Sub": "arn:${AWS::Partition}:iam::${AWS::AccountId}:root" }
+              },
+              "Action": "kms:*",
+              "Resource": "*"
+            },
+            {
+              "Sid": "AllowCognitoToEncryptEmailCodes",
+              "Effect": "Allow",
+              "Principal": { "Service": "cognito-idp.amazonaws.com" },
+              "Action": [ "kms:CreateGrant", "kms:Encrypt" ],
+              "Resource": "*",
+              "Condition": {
+                "StringEquals": {
+                  "kms:CallerAccount": { "Ref": "AWS::AccountId" }
+                }
+              }
+            }
+          ]
+        }
+      }
+    },
+    "MailSenderRole": {
+      "Type": "AWS::IAM::Role",
+      "Properties": {
+        "AssumeRolePolicyDocument": {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Effect": "Allow",
+              "Principal": { "Service": "lambda.amazonaws.com" },
+              "Action": "sts:AssumeRole"
+            }
+          ]
+        },
+        "ManagedPolicyArns": [ "arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole" ],
+        "Path": "/",
+        "RoleName": { "Fn::Sub": "${AWS::StackName}-MailSenderRole" },
+        "Policies": [
+          {
+            "PolicyName": "DecryptCognitoEmailCodes",
+            "PolicyDocument": {
+              "Version": "2012-10-17",
+              "Statement": [
+                {
+                  "Effect": "Allow",
+                  "Action": [ "kms:Decrypt" ],
+                  "Resource": { "Fn::GetAtt": [ "MailSenderKey", "Arn" ] }
+                }
+              ]
+            }
+          }
+        ]
+      }
+    },
+    "MailSenderLogGroup": {
+      "Type": "AWS::Logs::LogGroup",
+      "Properties": {
+        "LogGroupName": { "Fn::Sub": "/aws/lambda/${AWS::StackName}-MailSender" },
+        "RetentionInDays": 14
+      }
+    },
+    "MailSenderFunction": {
+      "Type": "AWS::Lambda::Function",
+      "DependsOn": [ "MailSenderLogGroup" ],
+      "Properties": {
+        "FunctionName": { "Fn::Sub": "${AWS::StackName}-MailSender" },
+        "Runtime": "nodejs22.x",
+        "Handler": "index.handler",
+        "Role": { "Fn::GetAtt": [ "MailSenderRole", "Arn" ] },
+        "Timeout": 30,
+        "MemorySize": 256,
+        "Environment": {
+          "Variables": {
+            "ALLOWED_DOMAINS": { "Ref": "AllowedDomains" },
+            "ALLOWED_EMAILS": { "Ref": "AllowedEmails" },
+            "KMS_KEY_ARN": { "Fn::GetAtt": [ "MailSenderKey", "Arn" ] },
+            "MAILJET_API_KEY": { "Ref": "MailjetApiKey" },
+            "MAILJET_API_SECRET": { "Ref": "MailjetApiSecret" },
+            "MAIL_FROM_ADDRESS": { "Ref": "MailFromAddress" },
+            "MAIL_FROM_NAME": { "Ref": "MailFromName" },
+            "MAIL_PRODUCT_NAME": { "Ref": "MailProductName" },
+            "MAIL_LANGUAGE": { "Ref": "MailLanguage" }
+          }
+        },
+        "Code": {
+          "S3Bucket": { "Ref": "MailSenderCodeBucket" },
+          "S3Key": { "Ref": "MailSenderCodeKey" }
+        }
+      }
+    },
+    "MailSenderPermission": {
+      "Type": "AWS::Lambda::Permission",
+      "Properties": {
+        "Action": "lambda:InvokeFunction",
+        "FunctionName": { "Fn::GetAtt": [ "MailSenderFunction", "Arn" ] },
+        "Principal": "cognito-idp.amazonaws.com",
+        "SourceAccount": { "Ref": "AWS::AccountId" }
+      }
+    },
+    "PreSignUpRole": {
+      "Type": "AWS::IAM::Role",
+      "Properties": {
+        "AssumeRolePolicyDocument": {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Effect": "Allow",
+              "Principal": { "Service": "lambda.amazonaws.com" },
+              "Action": "sts:AssumeRole"
+            }
+          ]
+        },
+        "ManagedPolicyArns": [ "arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole" ],
+        "Path": "/",
+        "RoleName": { "Fn::Sub": "${AWS::StackName}-PreSignUpRole" }
+      }
+    },
+    "PreSignUpLogGroup": {
+      "Type": "AWS::Logs::LogGroup",
+      "Properties": {
+        "LogGroupName": { "Fn::Sub": "/aws/lambda/${AWS::StackName}-PreSignUp" },
+        "RetentionInDays": 14
+      }
+    },
+    "PreSignUpFunction": {
+      "Type": "AWS::Lambda::Function",
+      "DependsOn": [ "PreSignUpLogGroup" ],
+      "Properties": {
+        "FunctionName": { "Fn::Sub": "${AWS::StackName}-PreSignUp" },
+        "Runtime": "python3.12",
+        "Handler": "index.handler",
+        "Role": { "Fn::GetAtt": [ "PreSignUpRole", "Arn" ] },
+        "Timeout": 10,
+        "MemorySize": 128,
+        "Environment": {
+          "Variables": {
+            "ALLOWED_DOMAINS": { "Ref": "AllowedDomains" },
+            "ALLOWED_EMAILS": { "Ref": "AllowedEmails" }
+          }
+        },
+        "Code": {
+          "ZipFile": "import os\n\ndef _entries(name):\n    return {item.strip().lower() for item in os.environ.get(name, '').split(',') if item.strip()}\n\ndef _is_allowed(address, domains, emails):\n    normalized = (address or '').strip().lower()\n    at_index = normalized.rfind('@')\n    if at_index <= 0 or at_index == len(normalized) - 1:\n        return False\n    domain = normalized[at_index + 1:]\n    return normalized in emails or domain in domains\n\ndef handler(event, context):\n    email = event.get('request', {}).get('userAttributes', {}).get('email', '')\n    if not _is_allowed(email, _entries('ALLOWED_DOMAINS'), _entries('ALLOWED_EMAILS')):\n        raise Exception('This email address is not allowed.')\n    return event\n"
+        }
+      }
+    },
+    "PreSignUpPermission": {
+      "Type": "AWS::Lambda::Permission",
+      "Properties": {
+        "Action": "lambda:InvokeFunction",
+        "FunctionName": { "Fn::GetAtt": [ "PreSignUpFunction", "Arn" ] },
+        "Principal": "cognito-idp.amazonaws.com",
+        "SourceAccount": { "Ref": "AWS::AccountId" }
+      }
+    },
+    "UserPool": {
+      "Type": "AWS::Cognito::UserPool",
+      "DependsOn": [ "PreSignUpPermission", "MailSenderPermission" ],
+      "Properties": {
+        "UserPoolName": { "Fn::Sub": "${AWS::StackName}-UserPool" },
+        "UserPoolTier": "ESSENTIALS",
+        "DeletionProtection": { "Ref": "DeletionProtection" },
+        "UsernameAttributes": [ "email" ],
+        "UsernameConfiguration": { "CaseSensitive": false },
+        "Schema": [
+          {
+            "AttributeDataType": "String",
+            "Name": "email",
+            "Mutable": false,
+            "Required": true
+          }
+        ],
+        "AutoVerifiedAttributes": [ "email" ],
+        "MfaConfiguration": "OFF",
+        "Policies": {
+          "SignInPolicy": {
+            "AllowedFirstAuthFactors": [ "EMAIL_OTP" ]
+          }
+        },
+        "AdminCreateUserConfig": {
+          "AllowAdminCreateUserOnly": false
+        },
+        "EmailConfiguration": {
+          "Fn::If": [
+            "ConfigureSesEmail",
+            {
+              "EmailSendingAccount": "DEVELOPER",
+              "SourceArn": { "Ref": "SesIdentityArn" }
+            },
+            { "Ref": "AWS::NoValue" }
+          ]
+        },
+        "LambdaConfig": {
+          "PreSignUp": { "Fn::GetAtt": [ "PreSignUpFunction", "Arn" ] },
+          "CustomEmailSender": {
+            "LambdaArn": { "Fn::GetAtt": [ "MailSenderFunction", "Arn" ] },
+            "LambdaVersion": "V1_0"
+          },
+          "KMSKeyID": { "Fn::GetAtt": [ "MailSenderKey", "Arn" ] }
+        }
+      }
+    },
+    "UserPoolDomain": {
+      "Type": "AWS::Cognito::UserPoolDomain",
+      "Properties": {
+        "UserPoolId": { "Ref": "UserPool" },
+        "Domain": { "Ref": "AuthDomainName" },
+        "CustomDomainConfig": {
+          "CertificateArn": { "Ref": "AuthCertificateArn" }
+        },
+        "ManagedLoginVersion": 2
+      }
+    },
+    "UserPoolClient": {
+      "Type": "AWS::Cognito::UserPoolClient",
+      "Properties": {
+        "UserPoolId": { "Ref": "UserPool" },
+        "GenerateSecret": true,
+        "AllowedOAuthFlows": [ "code" ],
+        "AllowedOAuthFlowsUserPoolClient": true,
+        "AllowedOAuthScopes": [ "openid", "email" ],
+        "CallbackURLs": { "Ref": "AuthCallbackUrls" },
+        "ExplicitAuthFlows": [ "ALLOW_USER_AUTH", "ALLOW_REFRESH_TOKEN_AUTH" ],
+        "SupportedIdentityProviders": [ "COGNITO" ],
+        "RefreshTokenValidity": {
+          "Fn::Select": [
+            0,
+            { "Fn::Split": [ "d", { "Ref": "AuthSessionMaxDuration" } ] }
+          ]
+        },
+        "TokenValidityUnits": { "RefreshToken": "days" }
+      }
+    },
+    "ManagedLoginBranding": {
+      "Type": "AWS::Cognito::ManagedLoginBranding",
+      "Properties": {
+        "UserPoolId": { "Ref": "UserPool" },
+        "ClientId": { "Ref": "UserPoolClient" },
+        "UseCognitoProvidedValues": true
+      }
+    },
+    "MailSenderErrorAlarm": {
+      "Type": "AWS::CloudWatch::Alarm",
+      "Condition": "EnableMailSenderErrorAlarm",
+      "Properties": {
+        "AlarmName": { "Fn::Sub": "${AWS::StackName}-MailSenderErrors" },
+        "ActionsEnabled": { "Fn::If": [ "MailSenderErrorAlarmNotifies", true, false ] },
+        "AlarmActions": [
+          {
+            "Fn::ImportValue": {
+              "Fn::Sub": "${ClusterStackName}-AlertTopicArn"
+            }
+          }
+        ],
+        "AlarmDescription": "The Cognito custom email sender Lambda reported one or more errors.",
+        "MetricName": "Errors",
+        "Namespace": "AWS/Lambda",
+        "Statistic": "Sum",
+        "Period": 300,
+        "EvaluationPeriods": 1,
+        "Threshold": 0,
+        "ComparisonOperator": "GreaterThanThreshold",
+        "Dimensions": [
+          {
+            "Name": "FunctionName",
+            "Value": { "Ref": "MailSenderFunction" }
+          }
+        ],
+        "TreatMissingData": "notBreaching"
+      }
+    }
+  },
+  "Outputs": {
+    "AuthDomainCloudFrontTarget": {
+      "Description": "CloudFront distribution hostname for the manual DNS CNAME of AuthDomainName.",
+      "Value": { "Fn::GetAtt": [ "UserPoolDomain", "CloudFrontDistribution" ] }
+    },
+    "UserPoolId": {
+      "Description": "ID of this Cognito user pool.",
+      "Value": { "Ref": "UserPool" },
+      "Export": { "Name": { "Fn::Sub": "${AWS::StackName}-UserPoolId" } }
+    },
+    "UserPoolArn": {
+      "Description": "ARN of this Cognito user pool for ALB authenticate-cognito rules.",
+      "Value": { "Fn::GetAtt": [ "UserPool", "Arn" ] },
+      "Export": { "Name": { "Fn::Sub": "${AWS::StackName}-UserPoolArn" } }
+    },
+    "UserPoolClientId": {
+      "Description": "ID of the shared Cognito app client for ALB authenticate-cognito rules.",
+      "Value": { "Ref": "UserPoolClient" },
+      "Export": { "Name": { "Fn::Sub": "${AWS::StackName}-UserPoolClientId" } }
+    },
+    "AuthDomainName": {
+      "Description": "Fully qualified custom managed-login domain for ALB authenticate-cognito rules.",
+      "Value": { "Ref": "AuthDomainName" },
+      "Export": { "Name": { "Fn::Sub": "${AWS::StackName}-AuthDomainName" } }
+    },
+    "TemplateVersion": {
+      "Description": "Version of this CloudFormation template.",
+      "Value": "1.0.0"
+    }
+  }
+}

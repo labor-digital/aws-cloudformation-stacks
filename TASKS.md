@@ -1092,6 +1092,32 @@ keine Verwaltungsaufgabe, kein Import und kein `wp-cron`-Lauf berechtigt länger
 
 ---
 
+## `cognito-userpool` — Testliste für den ersten echten Deploy
+
+In dieser Reihenfolge abarbeiten; die ersten Punkte entscheiden, ob die nachfolgenden Auth-Schritte
+überhaupt erreichbar sind:
+
+- [ ] Pool zunächst **ohne** `SesIdentityArn` mit `EMAIL_OTP` anlegen. Falls Cognito eine SES-Identity verlangt,
+  eine verifizierte Identity anlegen, den Parameter setzen und den Stack erneut deployen.
+- [ ] Akzeptiert Cognito die `MailSenderKey`-Policy für den Service-Principal, und kann der Custom-Sender-Trigger
+  beim ersten Versuch aufgerufen werden?
+- [ ] Managed Login v2 zeigt bei der Registrierung kein Passwortfeld.
+- [ ] Beim Erstkontakt die Anzahl der Codes feststellen: Registrierung bestätigen und danach den Login beginnen.
+- [ ] Akzeptiert der ALB den vollständigen benutzerdefinierten Domainnamen in
+  `AuthenticateCognitoConfig.UserPoolDomain`?
+- [ ] Bei `ListenerRulePath` ungleich `*` trifft der Rücksprung auf `/oauth2/idpresponse` dieselbe HTTPS-Regel.
+- [ ] Direkt nach dem Rücksprung WAF-`CountedRequests` und Logs auf Treffer durch `code`, `state` oder große
+  Auth-Cookies prüfen.
+- [ ] Eine nicht freigegebene Adresse erhält keine Mail; die Pre-Sign-up-Lambda weist sie mit einer klaren
+  Meldung zurück.
+- [ ] Mit einem absichtlich ungültigen Mailjet-Key den Senderfehler und den konfigurierten Fehleralarm prüfen;
+  danach den gültigen Key wiederherstellen.
+
+Bewusst nicht Teil dieser Iteration: GitHub-Actions-Build/Upload für das ZIP, Ablage der Mailjet-Zugangsdaten
+im Secrets Manager und öffentliche Pfadausnahmen für Webhooks oder Monitoring.
+
+---
+
 ## Sicherheitslage
 
 | Maßnahme | Gebaut? |

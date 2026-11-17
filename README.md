@@ -17,6 +17,7 @@ Punkte und der Stand der Cluster: [TASKS.md](TASKS.md).
 | `ecscluster-vpc-rds-asg/alb-logs-bucket` | S3-Bucket für ALB-Zugriffslogs mit DSGVO-Lifecycle; überlebt die Stack-Löschung |
 | `ecscluster-vpc-rds-asg/guardduty` | GuardDuty Detector, Quarantine-SG, Incident-Response-Rolle. Ein Stack pro Region |
 | `ecscluster-vpc-rds-asg/backup-vaults-mirror` | Backup-Vaults in der Zielregion für regionsübergreifende Kopien |
+| `cognito-userpool` | Geteilter Cognito-App-Client für E-Mail-OTP-Login mit Allowlist und Mailjet-Versand |
 | `ecsservice` | Ein containerisierter Service auf einem bestehenden Cluster |
 | `alb-ecsservice-rule` | Zusätzliche Host/Pfad-Regel auf die TargetGroup eines bestehenden Service |
 | `alb-redirect-rule` | URL-Redirect-Regel auf dem ALB |
@@ -40,8 +41,10 @@ Pro Region. Der Name des Cluster-Stacks steht schon vor Schritt 1 fest, weil Sch
    (`BackupCopyDestinationRegion`, Default `eu-north-1`).
 3. **`ecscluster-vpc-rds-asg`**
 4. **`guardduty`** — **nach** dem Cluster, die Quarantine-SG importiert `${Cluster}-Vpc`. Einmal pro Region.
-5. **`ecsservice`** — pro Anwendung.
-6. Optional: `alb-ecsservice-rule`, `alb-redirect-rule`, `alb-additional-certificate`,
+5. Optional: **`cognito-userpool`** — nach dem Cluster (der optionale Alarm importiert dessen AlertTopic) und
+   **vor** jedem geschützten Service. ZIP bauen und in einen regionalen Artefakt-Bucket hochladen.
+6. **`ecsservice`** — pro Anwendung; für geschützte Services Callback zuerst im Pool eintragen.
+7. Optional: `alb-ecsservice-rule`, `alb-redirect-rule`, `alb-additional-certificate`,
    `cloudfront-alb-distribution`, `global-accelerator-alb`.
 
 Nur 3→4 ist durch einen Import erzwungen. 1 und 2 lassen sich nachziehen — bis dahin fehlen ALB-Logs bzw.
@@ -185,6 +188,8 @@ Alles außer `LogsBucketName` läuft über Exports:
 | `${Cluster}-LoadbalancerArn` | Cluster | `ecsservice` (Scale-in-Alarm), `global-accelerator-alb` |
 | `${Cluster}-AlertTopicArn` | Cluster (ab `1.1.0`) | `ecsservice` (Alarme, `ImageRegressionGuard`) |
 | `${Service}-TargetGroupArn` | `ecsservice` | `alb-ecsservice-rule` |
+| `${Pool}-UserPoolId` | `cognito-userpool` | Betrieb und Diagnose |
+| `${Pool}-UserPoolArn`, `-UserPoolClientId`, `-AuthDomainName` | `cognito-userpool` | `ecsservice`, `alb-ecsservice-rule` (`authenticate-cognito`) |
 | `${LogsBucket}-BucketName` / `-BucketArn` | `alb-logs-bucket` | Cluster — **als Parameter von Hand**, nicht per `ImportValue` |
 | `${Cert}-CertificateArn` | `certificate`, `alb-additional-certificate` | manuelle Zuweisung |
 | `${CloudFront}-DistributionId` / `-DistributionDomainName` | `cloudfront-alb-distribution` | manuelle Verwendung |
@@ -204,6 +209,52 @@ aws cloudformation describe-stacks --region <region> \
   --query "Stacks[?Outputs[?OutputKey=='TargetGroupArn']].{stack:StackName, version:(Outputs[?OutputKey=='TemplateVersion'].OutputValue)[0]}" \
   --output table
 ```
+
+## `cognito-userpool` — E-Mail-OTP-Schranke
+
+Der Stack stellt einen Cognito-Pool im Essentials-Tier, Managed Login v2 unter einer eigenen Domain und
+einen **geteilten App Client** bereit. Der erste Faktor ist ausschließlich `EMAIL_OTP`; Passwort-Login und
+MFA sind aus. Die Client-ID wird exportiert, das Client-Secret bleibt beim Pool und wird nicht über
+CloudFormation-Exports an die Service-Stacks weitergegeben.
+
+### Einrichten und anbinden
+
+1. Im Verzeichnis `cognito-userpool/mail-sender` `./build.sh` ausführen und das versionierte ZIP nach
+   Anleitung in [mail-sender/README.md](cognito-userpool/mail-sender/README.md) in einen regionalen
+   Artefakt-Bucket hochladen. `MailSenderCodeBucket` und `MailSenderCodeKey` müssen auf genau diesen
+   unveränderlichen Key zeigen.
+2. Den Pool mit `AllowedDomains` und/oder `AllowedEmails` anlegen. Mindestens eine Liste muss Einträge
+   enthalten. Domainmatching ist case-insensitiv und exakt (keine Subdomains); Adressen werden ebenfalls
+   exakt und case-insensitiv verglichen, ohne Plus-Alias-Normalisierung. Die Sender-Lambda prüft die
+   Allowlist bei jedem Mailanlass vor dem Entschlüsseln des Codes; die Pre-Sign-up-Lambda lehnt unerlaubte
+   Registrierungen zusätzlich mit einer klaren Meldung ab. Adresse und Code werden nicht geloggt.
+3. `AuthDomainName` mit einer eigenen Domain und `AuthCertificateArn` mit einem ACM-Zertifikat aus
+   `us-east-1` setzen. Nach dem Erstellen den ausgegebenen `AuthDomainCloudFrontTarget` als manuelles
+   CNAME-Ziel in der DNS-Zone eintragen.
+4. Vor jedem geschützten Service dessen exakte Callback-URL
+   `https://<service-host>/oauth2/idpresponse` zu `AuthCallbackUrls` hinzufügen und zuerst den Pool-Stack
+   aktualisieren. Danach im `ecsservice`-Stack `AuthPoolStackName` auf den Pool-Stacknamen setzen; bei einer
+   zusätzlichen `alb-ecsservice-rule` muss dieselbe Authentisierung dort ebenfalls eingeschaltet werden.
+   Bei `ListenerRulePath` ungleich `*` wird der Rücksprungpfad `/oauth2/idpresponse` automatisch ergänzt.
+
+`AuthSessionMaxDuration` begrenzt die Refresh-Token-Laufzeit poolweit (Default `7d`). `AuthSessionDuration`
+begrenzt die ALB-Sitzung pro Service (Default `12h`); maßgeblich ist die kürzere Dauer. Das Entfernen einer
+Adresse oder Domain verhindert neue Codes, beendet aber keine bereits laufenden Sitzungen sofort. Beim
+Erstkontakt können zwei Codes anfallen — einer zur Bestätigung der Registrierung und ein weiterer für den
+ersten Login; das muss beim ersten echten Deploy verifiziert werden.
+
+⚠️ **Grenzen und Wechselwirkungen:**
+
+- Pro AWS-Konto und Region sind höchstens **vier Cognito Custom Domains** möglich; die Quote ist nicht
+  erhöhbar. Ein Pool kann mehrere Services bedienen.
+- Ein App Client unterstützt höchstens **100 Callback-URLs**. Wildcards sind nicht zulässig. Jeder neue
+  Service erfordert daher zuerst ein Pool-Update; fehlt der Eintrag, endet der Login mit `redirect_mismatch`.
+- **Kein `cloudfront-alb-distribution` vor einen geschützten Service setzen.** Dessen Cache-Key lässt Cookies
+  aus; zusammen mit authentifizierten ALB-Antworten ist das keine unterstützte Kombination.
+- Der Auth-Zweig in den Listener-Regeln ist bis zum ersten echten Einschalten nur strukturell geprüft. Beim
+  ersten Rücksprung WAF-`CountedRequests` und Logs auf Treffer durch `code`, `state` oder Auth-Cookies prüfen.
+- Änderungen am gemeinsamen Client betreffen alle angebundenen Services; ein Service lässt sich nicht
+  separat vom Pool-Client entkoppeln. Ein Pool-Update kann laufende Anmeldungen unterbrechen.
 
 ## Löschverhalten
 

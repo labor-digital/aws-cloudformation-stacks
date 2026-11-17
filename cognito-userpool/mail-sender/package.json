@@ -1,0 +1,20 @@
+{
+  "name": "cognito-userpool-mail-sender",
+  "version": "1.0.0",
+  "private": true,
+  "engines": {
+    "node": ">=22.0.0 <23.0.0"
+  },
+  "type": "module",
+  "scripts": {
+    "build": "./build.sh",
+    "test": "node --test"
+  },
+  "dependencies": {
+    "@aws-crypto/client-node": "5.0.2"
+  },
+  "devDependencies": {
+    "archiver": "7.0.1",
+    "esbuild": "0.28.2"
+  }
+}

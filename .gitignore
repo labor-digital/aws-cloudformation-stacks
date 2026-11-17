@@ -3,3 +3,7 @@
 .settings/
 .idea
 .DS_Store
+/cognito-userpool/mail-sender/node_modules/
+/cognito-userpool/mail-sender/.build/
+/cognito-userpool/mail-sender/dist/
+.junie
