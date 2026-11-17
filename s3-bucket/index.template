@@ -1,0 +1,237 @@
+{
+  "AWSTemplateFormatVersion": "2010-09-09",
+  "Description": "Hardened S3 bucket for ALB access logs or Lambda deployment artifacts. Create a separate stack for each bucket purpose.",
+  "Metadata": {
+    "AWS::CloudFormation::Interface": {
+      "ParameterGroups": [
+        {
+          "Label": {
+            "default": "Bucket identity"
+          },
+          "Parameters": [
+            "BucketName",
+            "BucketPurpose"
+          ]
+        },
+        {
+          "Label": {
+            "default": "Lifecycle"
+          },
+          "Parameters": [
+            "RetentionDays",
+            "NoncurrentVersionRetentionDays"
+          ]
+        }
+      ]
+    }
+  },
+  "Parameters": {
+    "BucketName": {
+      "Type": "String",
+      "MinLength": 3,
+      "MaxLength": 63,
+      "AllowedPattern": "^[a-z0-9][a-z0-9.-]*[a-z0-9]$",
+      "ConstraintDescription": "Use 3 to 63 lowercase letters, numbers, periods, or hyphens; the name must begin and end with a letter or number.",
+      "Description": "Globally unique S3 bucket name. Choose a name that includes the intended AWS Region because each purpose uses a separate regional bucket."
+    },
+    "BucketPurpose": {
+      "Type": "String",
+      "Default": "alb-access-logs",
+      "AllowedValues": [
+        "alb-access-logs",
+        "lambda-artifacts"
+      ],
+      "Description": "Select alb-access-logs for ALB log delivery with object expiration, or lambda-artifacts for versioned deployment packages without current-object expiration. Create a separate bucket stack for each purpose; do not change this value on an existing bucket."
+    },
+    "RetentionDays": {
+      "Type": "Number",
+      "Default": 14,
+      "Description": "Days before current ALB access log objects are permanently deleted. Used only when BucketPurpose is alb-access-logs; ignored for lambda-artifacts."
+    },
+    "NoncurrentVersionRetentionDays": {
+      "Type": "Number",
+      "Default": 1,
+      "MinValue": 1,
+      "Description": "Days to retain noncurrent object versions before permanent deletion. Applies to both bucket purposes; consider a longer period, such as 90 days, for lambda-artifacts."
+    }
+  },
+  "Conditions": {
+    "IsAccessLogBucket": {
+      "Fn::Equals": [
+        {
+          "Ref": "BucketPurpose"
+        },
+        "alb-access-logs"
+      ]
+    }
+  },
+  "Resources": {
+    "AlbLogsBucket": {
+      "Type": "AWS::S3::Bucket",
+      "DeletionPolicy": "Retain",
+      "UpdateReplacePolicy": "Retain",
+      "Properties": {
+        "BucketName": {
+          "Ref": "BucketName"
+        },
+        "BucketEncryption": {
+          "ServerSideEncryptionConfiguration": [
+            {
+              "ServerSideEncryptionByDefault": {
+                "SSEAlgorithm": "AES256"
+              }
+            }
+          ]
+        },
+        "VersioningConfiguration": {
+          "Status": "Enabled"
+        },
+        "PublicAccessBlockConfiguration": {
+          "BlockPublicAcls": true,
+          "BlockPublicPolicy": true,
+          "IgnorePublicAcls": true,
+          "RestrictPublicBuckets": true
+        },
+        "OwnershipControls": {
+          "Rules": [
+            {
+              "ObjectOwnership": "BucketOwnerEnforced"
+            }
+          ]
+        },
+        "LifecycleConfiguration": {
+          "Rules": [
+            {
+              "Id": "AbortIncompleteMultipartUploads",
+              "AbortIncompleteMultipartUpload": {
+                "DaysAfterInitiation": 7
+              },
+              "Status": "Enabled"
+            },
+            {
+              "Fn::If": [
+                "IsAccessLogBucket",
+                {
+                  "Id": "DeleteLogs",
+                  "ExpirationInDays": {
+                    "Ref": "RetentionDays"
+                  },
+                  "NoncurrentVersionExpiration": {
+                    "NoncurrentDays": {
+                      "Ref": "NoncurrentVersionRetentionDays"
+                    }
+                  },
+                  "Status": "Enabled"
+                },
+                {
+                  "Id": "ExpireNoncurrentVersions",
+                  "NoncurrentVersionExpiration": {
+                    "NoncurrentDays": {
+                      "Ref": "NoncurrentVersionRetentionDays"
+                    }
+                  },
+                  "Status": "Enabled"
+                }
+              ]
+            },
+            {
+              "Id": "CleanupDeleteMarkers",
+              "ExpiredObjectDeleteMarker": true,
+              "Status": "Enabled"
+            }
+          ]
+        }
+      }
+    },
+    "AlbLogsBucketPolicy": {
+      "Type": "AWS::S3::BucketPolicy",
+      "Properties": {
+        "Bucket": {
+          "Ref": "AlbLogsBucket"
+        },
+        "PolicyDocument": {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Fn::If": [
+                "IsAccessLogBucket",
+                {
+                  "Sid": "AllowElbLogDelivery",
+                  "Effect": "Allow",
+                  "Principal": {
+                    "Service": "logdelivery.elasticloadbalancing.amazonaws.com"
+                  },
+                  "Action": "s3:PutObject",
+                  "Resource": {
+                    "Fn::Sub": "${AlbLogsBucket.Arn}/*/AWSLogs/${AWS::AccountId}/*"
+                  },
+                  "Condition": {
+                    "StringEquals": {
+                      "aws:SourceAccount": {
+                        "Ref": "AWS::AccountId"
+                      }
+                    }
+                  }
+                },
+                {
+                  "Ref": "AWS::NoValue"
+                }
+              ]
+            },
+            {
+              "Sid": "DenyInsecureTransport",
+              "Effect": "Deny",
+              "Principal": "*",
+              "Action": "s3:*",
+              "Resource": [
+                {
+                  "Fn::GetAtt": [
+                    "AlbLogsBucket",
+                    "Arn"
+                  ]
+                },
+                {
+                  "Fn::Sub": "${AlbLogsBucket.Arn}/*"
+                }
+              ],
+              "Condition": {
+                "Bool": {
+                  "aws:SecureTransport": "false"
+                }
+              }
+            }
+          ]
+        }
+      }
+    }
+  },
+  "Outputs": {
+    "TemplateVersion": {
+      "Description": "Version of the s3-bucket template this stack was last updated with. Bump on every template change (see README).",
+      "Value": "2.0.0"
+    },
+    "BucketName": {
+      "Value": {
+        "Ref": "AlbLogsBucket"
+      },
+      "Export": {
+        "Name": {
+          "Fn::Sub": "${AWS::StackName}-BucketName"
+        }
+      }
+    },
+    "BucketArn": {
+      "Value": {
+        "Fn::GetAtt": [
+          "AlbLogsBucket",
+          "Arn"
+        ]
+      },
+      "Export": {
+        "Name": {
+          "Fn::Sub": "${AWS::StackName}-BucketArn"
+        }
+      }
+    }
+  }
+}

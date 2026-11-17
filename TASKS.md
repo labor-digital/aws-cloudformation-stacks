@@ -1135,7 +1135,7 @@ im Secrets Manager und öffentliche Pfadausnahmen für Webhooks oder Monitoring.
 | ALB nur über den Proxy erreichbar | ❌ offen für `0.0.0.0/0`, kein Origin-Header, Default-Action leitet weiter |
 | Secrets außerhalb der Task-Definition | ➖ `DOPPLER_TOKEN` bleibt Klartext, bewusst entschieden |
 | RDS-Anmeldung | ❌ statisches, geteiltes Passwort |
-| ALB-Log-Eimer gehärtet | ✅ `1.1.0` seit 2026-10-02: TLS-Deny, `BucketOwnerEnforced`, `aws:SourceAccount` |
+| S3-Bucket gehärtet | ✅ `2.0.0`: TLS-Deny, `BucketOwnerEnforced`, `aws:SourceAccount`; ALB-Logs und Lambda-Artefakte als getrennte Zwecke |
 
 Zwei Folgerungen, die ausgesprochen gehören: **DNS-`BLOCK` bei unbeschränktem Egress bringt wenig**, denn
 eine Anwendung, die die Auflösung überspringt und direkt eine IP anwählt, ist davon unberührt — beides

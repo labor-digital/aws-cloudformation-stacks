@@ -14,7 +14,7 @@ Punkte und der Stand der Cluster: [TASKS.md](TASKS.md).
 | Template | Zweck |
 |---|---|
 | `ecscluster-vpc-rds-asg` | Vollständiger ECS-Cluster: VPC, RDS Aurora, ASG, ALB, EFS, AWS Backup, DNS Firewall, WAF, Monitoring |
-| `ecscluster-vpc-rds-asg/alb-logs-bucket` | S3-Bucket für ALB-Zugriffslogs mit DSGVO-Lifecycle; überlebt die Stack-Löschung |
+| `s3-bucket` | Gehärteter S3-Bucket für ALB-Zugriffslogs oder Lambda-Artefakte; je Zweck ein eigener Stack |
 | `ecscluster-vpc-rds-asg/guardduty` | GuardDuty Detector, Quarantine-SG, Incident-Response-Rolle. Ein Stack pro Region |
 | `ecscluster-vpc-rds-asg/backup-vaults-mirror` | Backup-Vaults in der Zielregion für regionsübergreifende Kopien |
 | `cognito-userpool` | Geteilter Cognito-App-Client für E-Mail-OTP-Login mit Allowlist und Mailjet-Versand |
@@ -36,19 +36,22 @@ Punkte und der Stand der Cluster: [TASKS.md](TASKS.md).
 
 Pro Region. Der Name des Cluster-Stacks steht schon vor Schritt 1 fest, weil Schritt 1 und 2 ihn brauchen.
 
-1. **`alb-logs-bucket`** — liefert `BucketName` für `LogsBucketName`. Nachziehbar.
+1. **`s3-bucket` mit `BucketPurpose=alb-access-logs`** — liefert `BucketName` für `LogsBucketName`. Nachziehbar.
 2. **`backup-vaults-mirror`** — **vor** dem Cluster und in der **Zielregion**
    (`BackupCopyDestinationRegion`, Default `eu-north-1`).
 3. **`ecscluster-vpc-rds-asg`**
 4. **`guardduty`** — **nach** dem Cluster, die Quarantine-SG importiert `${Cluster}-Vpc`. Einmal pro Region.
 5. Optional: **`cognito-userpool`** — nach dem Cluster (der optionale Alarm importiert dessen AlertTopic) und
-   **vor** jedem geschützten Service. ZIP bauen und in einen regionalen Artefakt-Bucket hochladen.
+   **vor** jedem geschützten Service. Dafür zuerst einen eigenen `s3-bucket`-Stack mit
+   `BucketPurpose=lambda-artifacts` anlegen, dann das ZIP bauen und in diesen regionalen Artefakt-Bucket
+   hochladen.
 6. **`ecsservice`** — pro Anwendung; für geschützte Services Callback zuerst im Pool eintragen.
 7. Optional: `alb-ecsservice-rule`, `alb-redirect-rule`, `alb-additional-certificate`,
    `cloudfront-alb-distribution`, `global-accelerator-alb`.
 
 Nur 3→4 ist durch einen Import erzwungen. 1 und 2 lassen sich nachziehen — bis dahin fehlen ALB-Logs bzw.
-die Regionskopien.
+die Regionskopien. Der Artefakt-Bucket ist nur für den Cognito-Mail-Sender und andere Lambda-Artefakte
+erforderlich.
 
 ## Drift prüfen
 
@@ -190,7 +193,7 @@ Alles außer `LogsBucketName` läuft über Exports:
 | `${Service}-TargetGroupArn` | `ecsservice` | `alb-ecsservice-rule` |
 | `${Pool}-UserPoolId` | `cognito-userpool` | Betrieb und Diagnose |
 | `${Pool}-UserPoolArn`, `-UserPoolClientId`, `-AuthDomainName` | `cognito-userpool` | `ecsservice`, `alb-ecsservice-rule` (`authenticate-cognito`) |
-| `${LogsBucket}-BucketName` / `-BucketArn` | `alb-logs-bucket` | Cluster — **als Parameter von Hand**, nicht per `ImportValue` |
+| `${LogsBucket}-BucketName` / `-BucketArn` | `s3-bucket` | Cluster — **als Parameter von Hand**, nicht per `ImportValue` |
 | `${Cert}-CertificateArn` | `certificate`, `alb-additional-certificate` | manuelle Zuweisung |
 | `${CloudFront}-DistributionId` / `-DistributionDomainName` | `cloudfront-alb-distribution` | manuelle Verwendung |
 | `${Accel}-AcceleratorArn` / `-AcceleratorDnsName` / `-StaticIp1` / `-StaticIp2` | `global-accelerator-alb` | DNS-Einträge |
@@ -219,10 +222,12 @@ CloudFormation-Exports an die Service-Stacks weitergegeben.
 
 ### Einrichten und anbinden
 
-1. Im Verzeichnis `cognito-userpool/mail-sender` `./build.sh` ausführen und das versionierte ZIP nach
-   Anleitung in [mail-sender/README.md](cognito-userpool/mail-sender/README.md) in einen regionalen
-   Artefakt-Bucket hochladen. `MailSenderCodeBucket` und `MailSenderCodeKey` müssen auf genau diesen
-   unveränderlichen Key zeigen.
+1. Für den Sender einen separaten regionalen Artefakt-Bucket-Stack mit `s3-bucket/index.template` und
+   `BucketPurpose=lambda-artifacts` anlegen. Ein solcher Bucket kann von mehreren Lambda-Deployments in
+   derselben Region verwendet werden; die Versionierung liegt im Objekt-Key. Im Verzeichnis
+   `cognito-userpool/mail-sender` danach `./build.sh` ausführen und das versionierte ZIP nach Anleitung in
+   [mail-sender/README.md](cognito-userpool/mail-sender/README.md) hochladen. `MailSenderCodeBucket` und
+   `MailSenderCodeKey` müssen auf genau diesen unveränderlichen Key zeigen.
 2. Den Pool mit `AllowedDomains` und/oder `AllowedEmails` anlegen. Mindestens eine Liste muss Einträge
    enthalten. Domainmatching ist case-insensitiv und exakt (keine Subdomains); Adressen werden ebenfalls
    exakt und case-insensitiv verglichen, ohne Plus-Alias-Normalisierung. Die Sender-Lambda prüft die
@@ -263,8 +268,8 @@ ersten Login; das muss beim ersten echten Deploy verifiziert werden.
   zurück ist ein Restore.
 - **Die ALB Deletion Protection blockiert das Löschen** und muss vorher manuell abgeschaltet werden — der
   einzige eingebaute Bremsklotz.
-- **`alb-logs-bucket` überlebt jedes Löschen** (`DeletionPolicy` und `UpdateReplacePolicy` auf `Retain`) —
-  mit Absicht, damit der Cluster iterierbar bleibt, ohne den Audit-Trail zu riskieren.
+- **S3-Buckets aus `s3-bucket` überleben die Stack-Löschung** (`DeletionPolicy` und `UpdateReplacePolicy`
+  auf `Retain`) — mit Absicht, damit ALB-Audit-Trail und Lambda-Artefakte erhalten bleiben.
 - **Zertifikats-Stacks scheitern beim ersten Löschversuch oft**, weil das Zertifikat noch als „in
   Verwendung" am Listener gilt. Einige Minuten warten.
 
@@ -285,7 +290,7 @@ festverdrahtet (DSGVO)** — jede Analyse ist damit auf zwei Wochen begrenzt.
 | `/aws/rds/cluster/<Rdscl>/error` | Aurora Error Log | — |
 | `/aws/rds/cluster/<Rdscl>/slowquery` | Slow Query Log | `RdsLongQueryTime` |
 | `aws-waf-logs-${Cluster}-waf` | vollständige Requests, `authorization`/`cookie` redigiert | — |
-| S3 `<LogsBucket>/<Cluster>/` | ALB Access Logs — Statuscodes und URLs | `LogsBucketName` |
+| S3 `s3-bucket`: `<LogsBucket>/<Cluster>/` | ALB Access Logs — Statuscodes und URLs | `LogsBucketName` |
 | `${Service}-LogGroup` | stdout/stderr des Containers (`awslogs`, Prefix `ECSDockerTask`) | — |
 | `/aws/lambda/<Service>-ImageResolver` | Auflösung des Images bei jedem Update | — |
 | `/aws/lambda/<Service>-ImageRegressionGuard` | Entscheidung bei jedem Rollout | — |
@@ -879,17 +884,6 @@ Images per `ecr:DescribeImages` die `imagePushedAt`. Ist das eingehende **älter
   **ein** Pattern zusammen, die Varianz steckt in den maskierten Tokens. Nicht wieder einbauen, ohne vorher
   das Logformat zu ändern.
 
-## alb-logs-bucket
-
-Ein Bucket pro Region, den sich alle Cluster dieser Region teilen — jeder schreibt unter eigenem Prefix.
-
-- **Lifecycle deckt drei Fälle ab:** aktuelle Versionen nach `RetentionDays`, `NoncurrentVersionExpiration`
-  nach 1 Tag, Delete-Marker und abgebrochene Multipart-Uploads nach 7 Tagen. Ohne die Noncurrent-Regel
-  wüchse der Bucket trotz Versionierung unbegrenzt und höbe die DSGVO-Grenze auf.
-- **Die Bucket-Policy ist regionsgebunden** — sie erlaubt dem Service-Principal
-  `logdelivery.elasticloadbalancing.amazonaws.com` das Schreiben unter `AWSLogs/<account-id>/*`. Daher ein
-  Bucket pro Region.
-
 ## guardduty
 
 Detector, Quarantine Security Group (null Egress-Regeln) und Incident-Response-Rolle. `ClusterName` dient
@@ -950,6 +944,33 @@ Stack-Region mit Client-IP-Weiterleitung.
 - **`ClientAffinityEnabled=SOURCE_IP` nur bei echtem Bedarf** — es verschlechtert die Lastverteilung.
 - **Kein Deployment in `us-east-1` nötig**, anders als bei CloudFront; verwaltet wird der Dienst intern in
   `us-west-2`.
+
+## s3-bucket
+
+Ein Template erzeugt zwei getrennte, gehärtete Buckets. Für jeden Bucket einen eigenen Stack anlegen; der
+Name ist frei wählbar, muss aber global eindeutig sein und sollte die Region enthalten.
+
+| `BucketPurpose` | Lifecycle und Zugriff |
+|---|---|
+| `alb-access-logs` | ELB-Logzustellung ist erlaubt; aktuelle Logobjekte laufen nach `RetentionDays` (Default 14 Tage) ab. Nicht aktuelle Versionen laufen nach `NoncurrentVersionRetentionDays` (Default 1 Tag) ab. |
+| `lambda-artifacts` | Keine Ablaufzeit für aktuelle Artefakte; nur nicht aktuelle Versionen laufen nach `NoncurrentVersionRetentionDays` ab (Default 1 Tag; für Artefakte eher 90 Tage setzen). Keine ELB-Logzustellung. |
+
+Beide Varianten behalten Versionierung, SSE `AES256`, Public Access Block, `BucketOwnerEnforced`, TLS-Deny
+und `Retain` auf `DeletionPolicy` und `UpdateReplacePolicy`. Ein Artefakt-Bucket ist regional und kann von
+mehreren Lambda-Deployments genutzt werden; neue Artefakt-Versionen erhalten einen neuen Objekt-Key.
+
+- ⚠️ **Bestehenden ALB-Log-Bucket sicher umstellen:** Den tatsächlichen Namen aus dem bisherigen Stack-Output
+  `BucketName` auslesen und genau diesen als `BucketName` setzen; `BucketPurpose=alb-access-logs` und die
+  bisherige `RetentionDays` beibehalten. Vor dem Ausführen des Change Sets prüfen, dass die Ressource
+  `AlbLogsBucket` nicht `Replacement: True` zeigt. Bei einer Ersetzung abbrechen — der alte Bucket bleibt
+  wegen `Retain` bestehen, und der Cluster würde weiterhin in ihn schreiben.
+  ```bash
+  aws cloudformation describe-stacks --stack-name <logs-stack> \
+    --query "Stacks[0].Outputs[?OutputKey=='BucketName'].OutputValue" --output text
+  ```
+- ⚠️ **Den Zweck eines bestehenden Buckets nicht wechseln.** Ein Wechsel von `alb-access-logs` zu
+  `lambda-artifacts` entfernt die ELB-Logzustellungsberechtigung; die ALB-Zugriffslogs enden dann still.
+  Für den anderen Zweck einen separaten Stack und Bucket anlegen.
 
 ---
 
