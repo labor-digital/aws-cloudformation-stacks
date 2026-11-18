@@ -32,7 +32,7 @@
         },
         {
           "Label" : { "default" : "Alarms" },
-          "Parameters" : [ "ServiceHighCpuAlarmAction", "ServiceHighCpuThreshold", "ServiceHighMemoryAlarmAction", "ServiceHighMemoryThreshold", "ServiceLowCpuAlarmAction", "ServiceLowCpuThreshold", "ServiceLowMemoryAlarmAction", "ServiceLowMemoryThreshold", "ServiceHttp5xxTargetAlarmAction", "ServiceHttp5xxTargetThreshold", "ServiceHttp4xxAnomalyAlarmAction", "ServiceHttp4xxAnomalyBand", "EnableImageRegressionAlarm" ]
+          "Parameters" : [ "ServiceHighCpuAlarmAction", "ServiceHighCpuThreshold", "ServiceHighMemoryAlarmAction", "ServiceHighMemoryThreshold", "ServiceHighMemoryMaxAlarmAction", "ServiceHighMemoryMaxThreshold", "ServiceAlarmEvaluationPeriods", "ServiceLowCpuAlarmAction", "ServiceLowCpuThreshold", "ServiceLowMemoryAlarmAction", "ServiceLowMemoryThreshold", "ServiceHttp5xxTargetAlarmAction", "ServiceHttp5xxTargetThreshold", "ServiceHttp4xxAnomalyAlarmAction", "ServiceHttp4xxAnomalyBand", "EnableImageRegressionAlarm" ]
         }
       ]
     }
@@ -175,6 +175,13 @@
       "MinValue": 0,
       "MaxValue": 100
     },
+    "ServiceHighMemoryMaxThreshold": {
+      "Type": "Number",
+      "Description": "Memory utilization threshold (percent) for AlarmHighMemoryMax, the companion alarm that reads Maximum instead of Average and therefore sees a single runaway task. Values above 100 are normal and expected: MemoryUtilization is measured against MemoryReservation, not against a hard limit. Default 120, derived from a fleet measurement in which 17 of 19 services stayed below 111. Whether the alarm exists and whether it notifies is set by ServiceHighMemoryMaxAlarmAction, not by this value.",
+      "Default": 120,
+      "MinValue": 0,
+      "MaxValue": 400
+    },
     "ServiceLowCpuThreshold": {
       "Type": "Number",
       "Description": "CPU utilization threshold (percent) for AlarmLowCpu, which fires when the service average stays BELOW this value - a way to notice a service that has stopped receiving traffic. Whether the alarm exists is set by ServiceLowCpuAlarmAction, which defaults to off. Leaving this at 0 while switching the alarm on creates an alarm that can never fire, since CPU is never below zero: pick a real value first.",
@@ -207,6 +214,19 @@
       "Description": "Notification level for AlarmHighMemory (average service memory above ServiceHighMemoryThreshold for 5 minutes). off = the alarm is not created at all. dashboard = the alarm exists and its state is visible in the console and on dashboards, but ActionsEnabled is false so nothing reaches the alert topic. alert = the alarm also notifies the cluster AlertTopic. Defaults to dashboard: it fires occasionally (three times across 15 Paris services), so calibrate per service before promoting it.",
       "Default": "dashboard",
       "AllowedValues": [ "off", "dashboard", "alert" ]
+    },
+    "ServiceHighMemoryMaxAlarmAction": {
+      "Type": "String",
+      "Description": "Notification level for AlarmHighMemoryMax, which watches the WORST task in this service rather than the service average. off = the alarm is not created at all. dashboard = the alarm exists with ActionsEnabled false (state and history only). alert = it also notifies the cluster AlertTopic.\n\nWhy this exists next to AlarmHighMemory: that one uses Statistic Average over the whole service, so with three tasks a single leaking container would have to reach 171 percent before the average crosses 80. The one failure this metric is for - one task running away while its neighbours idle - is exactly the one the average hides.\n\nDefaults to dashboard because the per-service alarm rate is unknown: the measurement behind the 120 threshold is a fleet snapshot, not a time series. Let it run visibly, then promote it on the services where it stays quiet.",
+      "Default": "dashboard",
+      "AllowedValues": [ "off", "dashboard", "alert" ]
+    },
+    "ServiceAlarmEvaluationPeriods": {
+      "Type": "Number",
+      "Description": "How many consecutive 5-minute periods the utilization alarms must breach before they fire. Applies to AlarmHighCpu, AlarmHighMemory and AlarmHighMemoryMax.\n\nDefault 1 reproduces the previous behaviour exactly, so adopting this template changes nothing until the value is set. Raise it to 2 on services with short legitimate spikes: a Solr restart on gwa-gut-sol-s used to trip AlarmHighCpu at a 29 percent minute-average against a threshold of 20, and the only lever available was raising the threshold - which blinds the alarm for the rest of the time. This is the better lever, because it changes how LONG a condition must persist instead of how BAD it must be.\n\nDeliberately not applied to AlarmHttp5xxTarget: errors should report on the first period.",
+      "Default": 1,
+      "MinValue": 1,
+      "MaxValue": 6
     },
     "ServiceLowCpuAlarmAction": {
       "Type": "String",
@@ -285,6 +305,12 @@
     },
     "HighMemoryAlarmNotifies": {
       "Fn::Equals": [ { "Ref": "ServiceHighMemoryAlarmAction" }, "alert" ]
+    },
+    "EnableHighMemoryMaxAlarm": {
+      "Fn::Not": [ { "Fn::Equals": [ { "Ref": "ServiceHighMemoryMaxAlarmAction" }, "off" ] } ]
+    },
+    "HighMemoryMaxAlarmNotifies": {
+      "Fn::Equals": [ { "Ref": "ServiceHighMemoryMaxAlarmAction" }, "alert" ]
     },
     "EnableLowCpuAlarm": {
       "Fn::Not": [ { "Fn::Equals": [ { "Ref": "ServiceLowCpuAlarmAction" }, "off" ] } ]
@@ -390,7 +416,7 @@
       "Type" : "AWS::Lambda::Function",
       "DependsOn" : [ "ImageResolverLogGroup" ],
       "Metadata" : {
-        "Note" : "Resolves the Docker image to use in the TaskDefinition. On Create it returns InitialDockerImage directly. On Update it calls ecs:DescribeServices to get the ARN of the task definition the service is actively running, then reads the image from that revision - ensuring CF always uses the currently deployed image rather than the stale value in InitialDockerImage. SkipImageResolver=true bypasses the ECS lookup and uses InitialDockerImage directly, for cases where a specific image must be forced. DependsOn on the log group is deliberate and is NOT one of the redundant W3005 entries: this function does not Ref the group, so without it CloudFormation may delete the group while the custom resource's Delete request is still invoking this function. Lambda then recreates /aws/lambda/<name>, the new group belongs to no stack, survives the rollback, and the next CREATE fails with 'already exists'. Seen on 2026-10-20 with lab-fac-app-p. Do not remove it to silence a linter."
+        "Note" : "Resolves the Docker image to use in the TaskDefinition. On Create it returns InitialDockerImage directly. On Update it calls ecs:DescribeServices to get the ARN of the task definition the service is actively running, then reads the image from that revision - ensuring CF always uses the currently deployed image rather than the stale value in InitialDockerImage. SkipImageResolver=true bypasses the ECS lookup and uses InitialDockerImage directly, for cases where a specific image must be forced. DependsOn on the log group is deliberate and is NOT one of the redundant W3005 entries: this function does not Ref the group, so without it CloudFormation may delete the group while the custom resource's Delete request is still invoking this function. Lambda then recreates /aws/lambda/<name>, the new group belongs to no stack, survives the rollback, and the next CREATE fails with 'already exists'. Seen on 2026-10-20 with lab-fac-app-p. Do not remove it to silence a linter.\n\nHardened in 1.8.0 against two failure modes. (1) An update after a FAILED create used to raise and take the whole stack update down with it - the service no longer exists, so describe_services returns nothing. There is nothing to preserve in that case, so it now falls back to InitialDockerImage. (2) A service that exists but never became healthy, where the deployment circuit breaker had no predecessor to roll back to, kept its broken image revived on every later update. The resolver now reads the PRIMARY deployment's rolloutState and falls back to InitialDockerImage when it is FAILED. A rollout still IN_PROGRESS is not blocked but is logged as a warning, because the value being read is still changing - that is the pipeline-versus-CloudFormation race seen on nmc-ext-por-p on 2026-10-22."
       },
       "Properties" : {
         "FunctionName" : { "Fn::Join" : [ "-", [ { "Ref" : "AWS::StackName" }, "ImageResolver" ] ] },
@@ -400,7 +426,7 @@
         "Timeout" : 30,
         "MemorySize" : 256,
         "Code" : {
-          "ZipFile" : "import json\nimport urllib.request\nimport boto3\n\ndef handler(event, context):\n    physical_id = event.get('PhysicalResourceId') or event['StackId']\n    status = 'FAILED'\n    data = {}\n    try:\n        props = event['ResourceProperties']\n        old = event.get('OldResourceProperties') or {}\n        request_type = event['RequestType']\n        initial = props['InitialDockerImage']\n        if request_type == 'Delete':\n            status = 'SUCCESS'\n        elif request_type == 'Create':\n            status = 'SUCCESS'\n            data = {'Value': initial}\n            print('ImageResolver: create -> ' + initial)\n        elif props.get('SkipImageResolver', 'false').lower() == 'true':\n            status = 'SUCCESS'\n            data = {'Value': initial}\n            print('ImageResolver: SkipImageResolver=true -> ' + initial)\n        elif initial != old.get('InitialDockerImage'):\n            # InitialDockerImage wurde in diesem Update bewusst geaendert - Vorgabe respektieren.\n            # Der Stale-Rollback-Schutz greift genau dann, wenn der Parameter UNveraendert bleibt,\n            # und das war der Fall, der die Regression im August ausgeloest hat.\n            status = 'SUCCESS'\n            data = {'Value': initial}\n            print('ImageResolver: InitialDockerImage changed by operator -> ' + initial)\n        else:\n            ecs = boto3.client('ecs')\n            svc = ecs.describe_services(cluster=props['EcsCluster'], services=[props['EcsService']])\n            if not svc['services']:\n                raise ValueError(\"ECS service '\" + props['EcsService'] + \"' not found in cluster '\" + props['EcsCluster'] + \"'\")\n            task_def_arn = svc['services'][0].get('taskDefinition')\n            if not task_def_arn:\n                raise ValueError(\"No active task definition on service '\" + props['EcsService'] + \"'\")\n            td = ecs.describe_task_definition(taskDefinition=task_def_arn)\n            running = td['taskDefinition']['containerDefinitions'][0]['image']\n            status = 'SUCCESS'\n            data = {'Value': running}\n            print('ImageResolver: read from running service -> ' + running)\n    except Exception as e:\n        print('ImageResolver error: ' + str(e))\n        data = {'Error': str(e)}\n    finally:\n        try:\n            respond(event, status, data, physical_id)\n        except Exception:\n            pass\n\ndef respond(event, status, data, physical_id):\n    body = json.dumps({'Status': status, 'Reason': 'See CloudWatch logs', 'PhysicalResourceId': physical_id, 'StackId': event['StackId'], 'RequestId': event['RequestId'], 'LogicalResourceId': event['LogicalResourceId'], 'Data': data})\n    req = urllib.request.Request(event['ResponseURL'], data=body.encode('utf-8'), method='PUT', headers={'Content-Type': ''})\n    urllib.request.urlopen(req)\n"
+          "ZipFile" : "import json\nimport urllib.request\nimport boto3\n\ndef resolve(props):\n    \"\"\"Liefert (image, note).\n\n    Der Resolver bewahrt das laufende Image, damit ein reines Template- oder\n    Parameter-Update den Service nicht auf einen alten Stand zurueckwirft. Er tut das\n    NUR, wenn es ein laufendes Image gibt, dem zu trauen ist.\"\"\"\n    initial = props['InitialDockerImage']\n    ecs = boto3.client('ecs')\n    svc = ecs.describe_services(cluster=props['EcsCluster'], services=[props['EcsService']])\n    services = svc.get('services') or []\n    if not services or services[0].get('status') == 'INACTIVE':\n        # Update nach fehlgeschlagenem Create: der Service ist weg. Frueher ein harter\n        # Fehler, der das ganze Stack-Update mitriss. Es gibt hier nichts zu bewahren,\n        # also ist InitialDockerImage die einzige sinnvolle Antwort.\n        return initial, 'service missing or inactive, falling back to InitialDockerImage'\n    service = services[0]\n    task_def_arn = service.get('taskDefinition')\n    if not task_def_arn:\n        return initial, 'no task definition on service, falling back to InitialDockerImage'\n    deployments = service.get('deployments') or []\n    primary = next((d for d in deployments if d.get('status') == 'PRIMARY'), None)\n    state = (primary or {}).get('rolloutState')\n    if state == 'FAILED':\n        # Der Service existiert, ist aber nie gesund geworden - der Circuit Breaker hatte\n        # keinen Vorgaenger zum Zurueckrollen. Sein Image zu uebernehmen wuerde das\n        # kaputte Image bei jedem weiteren Update wiederbeleben.\n        return initial, 'last rollout FAILED, falling back to InitialDockerImage'\n    td = ecs.describe_task_definition(taskDefinition=task_def_arn)\n    running = td['taskDefinition']['containerDefinitions'][0]['image']\n    if state == 'IN_PROGRESS':\n        # Nicht blockierend, aber protokollieren: waehrend eines laufenden Rollouts liest\n        # der Resolver einen Zustand, der sich noch aendert - etwa wenn eine Pipeline\n        # gerade deployt und parallel das Stack-Update laeuft.\n        return running, 'running service, WARNING rollout IN_PROGRESS so this value may be mid-change'\n    return running, 'running service'\n\ndef handler(event, context):\n    physical_id = event.get('PhysicalResourceId') or event['StackId']\n    status = 'FAILED'\n    data = {}\n    try:\n        props = event['ResourceProperties']\n        old = event.get('OldResourceProperties') or {}\n        request_type = event['RequestType']\n        initial = props['InitialDockerImage']\n        # Diagnosezeile: belegt, DASS die Resource aufgerufen wurde. CloudFormation ruft sie nur,\n        # wenn sich eine Property aendert - bei einem reinen Template-Update also nicht.\n        print('ImageResolver: invoked, request ' + request_type)\n        if request_type == 'Delete':\n            status = 'SUCCESS'\n        elif request_type == 'Create':\n            status = 'SUCCESS'\n            data = {'Value': initial}\n            print('ImageResolver: create -> ' + initial)\n        elif props.get('SkipImageResolver', 'false').lower() == 'true':\n            status = 'SUCCESS'\n            data = {'Value': initial}\n            print('ImageResolver: SkipImageResolver=true -> ' + initial)\n        elif initial != old.get('InitialDockerImage'):\n            # InitialDockerImage wurde in diesem Update bewusst geaendert - Vorgabe respektieren.\n            # Der Stale-Rollback-Schutz greift genau dann, wenn der Parameter UNveraendert bleibt,\n            # und das war der Fall, der die Regression im August ausgeloest hat.\n            status = 'SUCCESS'\n            data = {'Value': initial}\n            print('ImageResolver: InitialDockerImage changed by operator -> ' + initial)\n        else:\n            image, note = resolve(props)\n            status = 'SUCCESS'\n            data = {'Value': image}\n            print('ImageResolver: ' + note + ' -> ' + image)\n    except Exception as e:\n        print('ImageResolver error: ' + str(e))\n        data = {'Error': str(e)}\n    finally:\n        try:\n            respond(event, status, data, physical_id)\n        except Exception:\n            pass\n\ndef respond(event, status, data, physical_id):\n    body = json.dumps({'Status': status, 'Reason': 'See CloudWatch logs', 'PhysicalResourceId': physical_id, 'StackId': event['StackId'], 'RequestId': event['RequestId'], 'LogicalResourceId': event['LogicalResourceId'], 'Data': data})\n    req = urllib.request.Request(event['ResponseURL'], data=body.encode('utf-8'), method='PUT', headers={'Content-Type': ''})\n    urllib.request.urlopen(req)\n"
         }
       }
     },
@@ -1192,7 +1218,7 @@
         "Namespace": "AWS/ECS",
         "Statistic": "Average",
         "Period": 300,
-        "EvaluationPeriods": 1,
+        "EvaluationPeriods": {"Ref": "ServiceAlarmEvaluationPeriods"},
         "Threshold": {"Ref": "ServiceHighCpuThreshold"},
         "ComparisonOperator": "GreaterThanThreshold",
         "Dimensions": [
@@ -1232,8 +1258,53 @@
         "Namespace": "AWS/ECS",
         "Statistic": "Average",
         "Period": 300,
-        "EvaluationPeriods": 1,
+        "EvaluationPeriods": {"Ref": "ServiceAlarmEvaluationPeriods"},
         "Threshold": {"Ref": "ServiceHighMemoryThreshold"},
+        "ComparisonOperator": "GreaterThanThreshold",
+        "Dimensions": [
+          {
+            "Name": "ServiceName",
+            "Value": {"Fn::GetAtt": ["Service", "Name"]}
+          },
+          {
+            "Name": "ClusterName",
+            "Value": {
+              "Fn::ImportValue": {
+                "Fn::Sub": "${ClusterStackName}-Ecscluster"
+              }
+            }
+          }
+        ],
+        "TreatMissingData": "notBreaching"
+      }
+    },
+    "ServiceHighMemoryMaxAlarm": {
+      "Type": "AWS::CloudWatch::Alarm",
+      "Condition": "EnableHighMemoryMaxAlarm",
+      "Metadata": {
+        "Note": "Companion to AlarmHighMemory, which averages over the whole service. With three tasks a single container would have to reach 171 percent before the average crosses 80, so the one case this metric exists for - one task leaking while its neighbours are idle - is precisely the case the average hides. This alarm reads Maximum and therefore sees the worst task.\n\nThe threshold sits above 100 on purpose. MemoryUtilization is measured against MemoryReservation, not against a hard limit, so a healthy task routinely reports over 100. Measured across the fleet, 17 of 19 services stay below 111; 120 comes from there.\n\nIt reports, it does not prevent. TaskMemory is a reservation only, so a container that keeps growing is killed by the HOST OOM killer and takes its neighbours with it - proven 2026-09-29 and 2026-09-30 in Frankfurt, where apache2 workers died on two instances and hanging requests from tro-cur-web-p ended in the same second. The fix for that is a hard memory limit per service, which needs a measured value per service and is deliberately not part of this template yet."
+      },
+      "Properties": {
+        "AlarmName": {
+          "Fn::Sub": "${AWS::StackName}-AlarmHighMemoryMax"
+        },
+        "ActionsEnabled": { "Fn::If": [ "HighMemoryMaxAlarmNotifies", true, false ] },
+        "AlarmActions": [
+          {
+            "Fn::ImportValue": {
+              "Fn::Sub": "${ClusterStackName}-AlertTopicArn"
+            }
+          }
+        ],
+        "AlarmDescription": {
+          "Fn::Sub": "A single task in this service exceeded ${ServiceHighMemoryMaxThreshold} percent of its memory reservation. The service average can stay low while one container runs away; this alarm reads Maximum, so it sees that one. Values above 100 are normal - memory is measured against the reservation, not a hard limit."
+        },
+        "MetricName": "MemoryUtilization",
+        "Namespace": "AWS/ECS",
+        "Statistic": "Maximum",
+        "Period": 300,
+        "EvaluationPeriods": {"Ref": "ServiceAlarmEvaluationPeriods"},
+        "Threshold": {"Ref": "ServiceHighMemoryMaxThreshold"},
         "ComparisonOperator": "GreaterThanThreshold",
         "Dimensions": [
           {
