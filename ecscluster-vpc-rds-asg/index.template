@@ -11,7 +11,10 @@
             "KeypairName",
             "AscalegroupMinSize",
             "AscalegroupMaxSize",
-            "AscalegroupDesSize"
+            "AscalegroupDesSize",
+            "AmiSsmParameter",
+            "InstanceRefreshNotification",
+            "AmiRotationErrorAlarmAction"
           ]
         },
         {
@@ -22,7 +25,9 @@
             "HttpsdefaultlistenerCertificate",
             "LogsBucketName",
             "ElbHttp5xxAlarmAction",
-            "ElbHttp5xxAlarmThreshold"
+            "ElbHttp5xxAlarmThreshold",
+            "ElbHttp5xxRefreshGateAlarmAction",
+            "ElbHttp5xxRefreshGateAlarmThreshold"
           ]
         },
         {
@@ -612,6 +617,47 @@
       "Default": 40,
       "MinValue": 0,
       "Description": "Maximum simultaneous connections per database account. Every service has its own user, so this caps a single service rather than the fleet: a runaway one exhausts its own budget and is refused with error 1203, while the other services keep connecting. 0 disables it and restores the old behaviour, where one service could take the whole pool.\n\nSized against three simultaneous offenders, not one. The tro services share a codebase, a cache warmer and the same expensive 404 rendering, so they are not independent - whatever overloads one is likely to reach the others in the same minute. Against 144 total, three accounts at 40 leave 24 connections, which is still above anything the remaining services need at normal load. A fourth would exhaust the pool; at that point the problem is not the cap.\n\nDeliberately far above normal use - the whole cluster idles near one connection - because the real risk of this setting is cutting off a legitimate burst and becoming the outage itself."
+    },
+    "AmiSsmParameter": {
+      "Type": "String",
+      "Default": "/aws/service/ecs/optimized-ami/amazon-linux-2023/recommended/image_id",
+      "AllowedPattern": "^/[A-Za-z0-9._/-]+$",
+      "Description": "SSM parameter holding the AMI id. Resolved by EC2 when an instance launches, not by CloudFormation when the stack is deployed - that is the whole point of the change in 1.7.20. The default is the AWS public recommendation, so behaviour is unchanged until a region overrides this.\n\nStaged rollout works by pointing a region at an own parameter instead, filled per region with a delay. Before doing that: the Auto Scaling service-linked role must be able to read it - guaranteed for the /aws/service/ path, to be verified for an own namespace, and it fails at instance launch rather than at deploy time."
+    },
+    "ElbHttp5xxRefreshGateAlarmAction": {
+      "Type": "String",
+      "Default": "dashboard",
+      "AllowedValues": [
+        "off",
+        "dashboard",
+        "alert"
+      ],
+      "Description": "A second alarm on the same metric as elb-5xx, with a much higher threshold. It exists as a gate for the Auto Scaling instance refresh, not as a notifier: AlarmSpecification only reads the state, so dashboard - meaning ActionsEnabled false - is the right mode and sends no mail.\n\nWhy not reuse elb-5xx: that one sits at threshold 0 and fires a few times a week by design. A refresh runs for hours, so it would be interrupted by noise that has nothing to do with the refresh - and two false stops are enough to make people switch the mechanism off.\n\nSet this to off only together with the refresh itself. AlarmSpecification names the alarm by name, nothing in this template links the two parameters, and what start-instance-refresh does with a name that does not exist is unverified - it may refuse to start or it may run ungated."
+    },
+    "ElbHttp5xxRefreshGateAlarmThreshold": {
+      "Type": "Number",
+      "Default": 20,
+      "MinValue": 1,
+      "Description": "Load-balancer 5xx per 5 minutes before the gate closes. Sized from measurement, not guessed: the worst incident so far produced 8 in 5.5 minutes, while a cluster with no placeable tasks turns every request into a 503 - several hundred per period at current traffic. 20 sits clear of the noise and far below an outage."
+    },
+    "InstanceRefreshNotification": {
+      "Type": "String",
+      "Default": "on",
+      "AllowedValues": [
+        "off",
+        "on"
+      ],
+      "Description": "Mail on every stage of an Auto Scaling instance refresh - started, each checkpoint reached, succeeded, failed, cancelled. The checkpoint messages are the useful ones: that is the pause in which someone is supposed to look, and without a mail nobody knows it has begun.\n\nCovers refreshes started by hand as well, because it listens to the event rather than to the caller."
+    },
+    "AmiRotationErrorAlarmAction": {
+      "Type": "String",
+      "Default": "alert",
+      "AllowedValues": [
+        "off",
+        "dashboard",
+        "alert"
+      ],
+      "Description": "Alarm on a failed run of the AMI rotation function. off = not created. dashboard = exists, state and history only. alert = also notifies the cluster AlertTopic.\n\nDefaults to alert rather than dashboard, unlike the WAF alarms: those count requests and are tuned against noise, this one fires only when code raised an exception. A silent rotation function is indistinguishable from a quiet month, so the failure has to be pushed rather than looked up."
     }
   },
   "Rules": {
@@ -2733,7 +2779,9 @@
               "Ref": "InstanceroleProfile"
             }
           },
-          "ImageId": "{{resolve:ssm:/aws/service/ecs/optimized-ami/amazon-linux-2023/recommended/image_id}}",
+          "ImageId": {
+            "Fn::Sub": "resolve:ssm:${AmiSsmParameter}"
+          },
           "InstanceType": {
             "Ref": "EC2InstanceType"
           },
@@ -2831,7 +2879,10 @@
         "Launchtemplate",
         "SubnetPrivate1",
         "SubnetPrivate2"
-      ]
+      ],
+      "Metadata": {
+        "Note": "No UpdatePolicy on purpose: a CloudFormation rolling update only triggers when the launch template changes, and since 1.7.20 the AMI is resolved by EC2 at launch, so it no longer does. Rotation is an explicit start-instance-refresh, not a side effect of a stack update.\n\nRecommended preferences for that call - they live here because CloudFormation has no property for them, and an undocumented set of numbers is worse than a documented one:\n  MaxHealthyPercentage 110  launch before terminate. Without it the group terminates first, so a launch that fails leaves a hole that never fills.\n  MinHealthyPercentage 90   one to two instances at a time.\n  InstanceWarmup 300        matches HealthCheckGracePeriod.\n  CheckpointPercentages 25,50,75,100 with CheckpointDelay 1800 - the pause is not politeness, it is the window in which a lagging alarm can catch up before more instances are touched. The gate alarm needs about ten minutes to see anything at all, so thirty is three times its latency; four stops rather than two because at roughly five refreshes a month the decision points are worth more than the shorter run. Total is then about four hours for seventeen instances.\n  AlarmSpecification <stack>-elb-5xx-refresh-gate, BakeTime 3600, AutoRollback false.\n\nAutoRollback is off deliberately. It reverts to the previous launch template version, and that version no longer changes when the AMI does - it would replace instances and resolve the same bad image again. A rollback is also itself a mass replacement, started exactly when replacement is what is failing. Stopping keeps the good instances and leaves the decision to a person, which is the point of running this during office hours.\n\nHealthCheckType is EC2 and cannot usefully be ELB: the group is attached to no target group. The target groups belong to the service stacks and are filled by ECS with instance-and-port entries. So the group cannot tell 'booted' from 'useful' - that is what the gate alarm is for."
+      }
     },
     "CapacityProvider": {
       "Type": "AWS::ECS::CapacityProvider",
@@ -2840,6 +2891,7 @@
           "AutoScalingGroupArn": {
             "Ref": "Ascalegroup"
           },
+          "ManagedDraining": "ENABLED",
           "ManagedScaling": {
             "Status": "ENABLED",
             "TargetCapacity": 80,
@@ -2851,7 +2903,10 @@
       },
       "DependsOn": [
         "Ascalegroup"
-      ]
+      ],
+      "Metadata": {
+        "Note": "ManagedDraining is declared although ENABLED is also the AWS default, because an undeclared property is not drift - it is unmanaged. CloudFormation drift detection compares declared properties against reality, so detect-stack-drift reports IN_SYNC whether this is ENABLED or DISABLED. Neither the repository nor the drift report would show a change. It was verified by hand on 2026-09-28 and again on 2026-10-19; declaring it ends the need for that.\n\nWhat it buys: ECS installs an Auto Scaling lifecycle hook, so a terminating instance first goes to Terminating:Wait, its container instance is set to DRAINING and its tasks are moved before the hook is released. Without it an instance is terminated immediately and running tasks die with it. Scale-in is rare enough for that to go unnoticed; an instance refresh turns it into one consecutive chance per instance to drop tasks.\n\nSafe to add: createOnlyProperties on this resource are AutoScalingGroupArn, Name and ClusterName only, so this is an in-place update. Replacing a capacity provider would not be - it is referenced by the cluster association and by every service's capacityProviderStrategy.\n\nManagedTerminationProtection stays DISABLED: it only governs which instance scale-in may pick, not whether tasks are drained. The two are easy to confuse."
+      }
     },
     "Loadbalancer": {
       "Type": "AWS::ElasticLoadBalancingV2::LoadBalancer",
@@ -4683,7 +4738,7 @@
           "Fn::Sub": "${AWS::StackName}-Overview"
         },
         "DashboardBody": {
-          "Fn::Sub": "{\"start\":\"-PT3H\",\"widgets\":[{\"type\":\"metric\",\"x\":0,\"y\":0,\"width\":12,\"height\":6,\"properties\":{\"title\":\"ECS CPU by Service\",\"view\":\"timeSeries\",\"stacked\":false,\"metrics\":[[{\"expression\":\"SEARCH('{AWS/ECS,ClusterName,ServiceName} ClusterName=\\\"${AWS::StackName}-Ecscluster\\\" MetricName=\\\"CPUUtilization\\\"','Average',300)\",\"label\":\"${!LABEL}\",\"id\":\"cpu\"}]],\"period\":300,\"stat\":\"Average\",\"region\":\"${AWS::Region}\",\"yAxis\":{\"left\":{\"min\":0,\"max\":100}}}},{\"type\":\"metric\",\"x\":12,\"y\":0,\"width\":12,\"height\":6,\"properties\":{\"title\":\"ECS Memory by Service\",\"view\":\"timeSeries\",\"stacked\":false,\"metrics\":[[{\"expression\":\"SEARCH('{AWS/ECS,ClusterName,ServiceName} ClusterName=\\\"${AWS::StackName}-Ecscluster\\\" MetricName=\\\"MemoryUtilization\\\"','Average',300)\",\"label\":\"${!LABEL}\",\"id\":\"mem\"}]],\"period\":300,\"stat\":\"Average\",\"region\":\"${AWS::Region}\",\"yAxis\":{\"left\":{\"min\":0,\"max\":100}}}},{\"type\":\"metric\",\"x\":0,\"y\":6,\"width\":12,\"height\":6,\"properties\":{\"title\":\"RDS CPU & Connections\",\"view\":\"timeSeries\",\"stacked\":false,\"metrics\":[[\"AWS/RDS\",\"CPUUtilization\",\"DBClusterIdentifier\",\"${Rdscl}\",{\"stat\":\"Average\",\"label\":\"CPU %\"}],[\"AWS/RDS\",\"DatabaseConnections\",\"DBClusterIdentifier\",\"${Rdscl}\",{\"stat\":\"Average\",\"label\":\"Connections\",\"yAxis\":\"right\"}]],\"period\":300,\"region\":\"${AWS::Region}\",\"yAxis\":{\"left\":{\"min\":0,\"max\":100,\"label\":\"CPU %\"},\"right\":{\"min\":0,\"label\":\"Connections\"}},\"annotations\":{\"horizontal\":[{\"label\":\"rds-connections alarm\",\"value\":${RdsConnectionsAlarmThreshold},\"yAxis\":\"right\"}]}}},{\"type\":\"metric\",\"x\":12,\"y\":6,\"width\":12,\"height\":6,\"properties\":{\"title\":\"VPC Rejected Connections\",\"view\":\"timeSeries\",\"stacked\":false,\"metrics\":[[\"${AWS::StackName}/VpcFlowLogs\",\"RejectedConnections\",{\"stat\":\"Sum\",\"label\":\"Rejected/5min\"}]],\"period\":300,\"region\":\"${AWS::Region}\",\"annotations\":{\"horizontal\":[{\"label\":\"Alarm threshold\",\"value\":${VpcFlowLogsAlarmThreshold}}]}}},{\"type\":\"alarm\",\"x\":0,\"y\":12,\"width\":24,\"height\":7,\"properties\":{\"title\":\"Cluster alarms - red = firing, grey = not created (action set to off)\",\"alarms\":[\"arn:aws:cloudwatch:${AWS::Region}:${AWS::AccountId}:alarm:${AWS::StackName}-AlarmWafCommonRuleSet\",\"arn:aws:cloudwatch:${AWS::Region}:${AWS::AccountId}:alarm:${AWS::StackName}-AlarmWafKnownBadInputs\",\"arn:aws:cloudwatch:${AWS::Region}:${AWS::AccountId}:alarm:${AWS::StackName}-AlarmWafSQLi\",\"arn:aws:cloudwatch:${AWS::Region}:${AWS::AccountId}:alarm:${AWS::StackName}-AlarmWafWordPress\",\"arn:aws:cloudwatch:${AWS::Region}:${AWS::AccountId}:alarm:${AWS::StackName}-AlarmWafRateLimitSourceIp\",\"arn:aws:cloudwatch:${AWS::Region}:${AWS::AccountId}:alarm:${AWS::StackName}-AlarmWafRateLimitForwardedIp\",\"arn:aws:cloudwatch:${AWS::Region}:${AWS::AccountId}:alarm:${AWS::StackName}-AlarmWafSecretPaths\",\"arn:aws:cloudwatch:${AWS::Region}:${AWS::AccountId}:alarm:${AWS::StackName}-dns-firewall-alert-surge\",\"arn:aws:cloudwatch:${AWS::Region}:${AWS::AccountId}:alarm:${AWS::StackName}-dns-firewall-blocked\",\"arn:aws:cloudwatch:${AWS::Region}:${AWS::AccountId}:alarm:${AWS::StackName}-vpc-rejected-surge\",\"arn:aws:cloudwatch:${AWS::Region}:${AWS::AccountId}:alarm:${AWS::StackName}-egress-blocked\",\"arn:aws:cloudwatch:${AWS::Region}:${AWS::AccountId}:alarm:${AWS::StackName}-alb-late-response\",\"arn:aws:cloudwatch:${AWS::Region}:${AWS::AccountId}:alarm:${AWS::StackName}-rds-error\",\"arn:aws:cloudwatch:${AWS::Region}:${AWS::AccountId}:alarm:${AWS::StackName}-rds-slow-queries\",\"arn:aws:cloudwatch:${AWS::Region}:${AWS::AccountId}:alarm:${AWS::StackName}-rds-connections\",\"arn:aws:cloudwatch:${AWS::Region}:${AWS::AccountId}:alarm:${AWS::StackName}-elb-5xx\"],\"sortBy\":\"stateUpdatedTimestamp\",\"states\":[\"ALARM\",\"INSUFFICIENT_DATA\",\"OK\"]}},{\"type\":\"log\",\"x\":0,\"y\":19,\"width\":8,\"height\":7,\"properties\":{\"title\":\"DNS Firewall - what the whitelist does not cover (14d)\",\"region\":\"${AWS::Region}\",\"view\":\"table\",\"query\":\"SOURCE '${AWS::StackName}-DnsFirewallLogs' | filter firewall_rule_action in [\\\"ALERT\\\",\\\"BLOCK\\\"] | filter query_type not in [\\\"PTR\\\"] | stats count(*) as requests by query_name, firewall_rule_action | sort requests desc | limit 20\"}},{\"type\":\"log\",\"x\":8,\"y\":19,\"width\":8,\"height\":7,\"properties\":{\"title\":\"Rejected outbound connections - signal once egress is restricted\",\"region\":\"${AWS::Region}\",\"view\":\"table\",\"query\":\"SOURCE '${AWS::StackName}-VpcFlowLogs' | stats count(*) as flows by dstAddr, dstPort, srcAddr | sort flows desc | limit 20\"}},{\"type\":\"log\",\"x\":16,\"y\":19,\"width\":8,\"height\":7,\"properties\":{\"title\":\"Slow queries (long_query_time)\",\"region\":\"${AWS::Region}\",\"view\":\"table\",\"query\":\"SOURCE '/aws/rds/cluster/${Rdscl}/slowquery' | parse @message /Query_time: (?<qt>[0-9.]+)/ | filter ispresent(qt) | sort qt desc | limit 20\"}}]}"
+          "Fn::Sub": "{\"start\":\"-PT3H\",\"widgets\":[{\"type\":\"metric\",\"x\":0,\"y\":0,\"width\":12,\"height\":6,\"properties\":{\"title\":\"ECS CPU by Service\",\"view\":\"timeSeries\",\"stacked\":false,\"metrics\":[[{\"expression\":\"SEARCH('{AWS/ECS,ClusterName,ServiceName} ClusterName=\\\"${AWS::StackName}-Ecscluster\\\" MetricName=\\\"CPUUtilization\\\"','Average',300)\",\"label\":\"${!LABEL}\",\"id\":\"cpu\"}]],\"period\":300,\"stat\":\"Average\",\"region\":\"${AWS::Region}\",\"yAxis\":{\"left\":{\"min\":0,\"max\":100}}}},{\"type\":\"metric\",\"x\":12,\"y\":0,\"width\":12,\"height\":6,\"properties\":{\"title\":\"ECS Memory by Service\",\"view\":\"timeSeries\",\"stacked\":false,\"metrics\":[[{\"expression\":\"SEARCH('{AWS/ECS,ClusterName,ServiceName} ClusterName=\\\"${AWS::StackName}-Ecscluster\\\" MetricName=\\\"MemoryUtilization\\\"','Average',300)\",\"label\":\"${!LABEL}\",\"id\":\"mem\"}]],\"period\":300,\"stat\":\"Average\",\"region\":\"${AWS::Region}\",\"yAxis\":{\"left\":{\"min\":0,\"max\":100}}}},{\"type\":\"metric\",\"x\":0,\"y\":6,\"width\":12,\"height\":6,\"properties\":{\"title\":\"RDS CPU & Connections\",\"view\":\"timeSeries\",\"stacked\":false,\"metrics\":[[\"AWS/RDS\",\"CPUUtilization\",\"DBClusterIdentifier\",\"${Rdscl}\",{\"stat\":\"Average\",\"label\":\"CPU %\"}],[\"AWS/RDS\",\"DatabaseConnections\",\"DBClusterIdentifier\",\"${Rdscl}\",{\"stat\":\"Average\",\"label\":\"Connections\",\"yAxis\":\"right\"}]],\"period\":300,\"region\":\"${AWS::Region}\",\"yAxis\":{\"left\":{\"min\":0,\"max\":100,\"label\":\"CPU %\"},\"right\":{\"min\":0,\"label\":\"Connections\"}},\"annotations\":{\"horizontal\":[{\"label\":\"rds-connections alarm\",\"value\":${RdsConnectionsAlarmThreshold},\"yAxis\":\"right\"}]}}},{\"type\":\"metric\",\"x\":12,\"y\":6,\"width\":12,\"height\":6,\"properties\":{\"title\":\"VPC Rejected Connections\",\"view\":\"timeSeries\",\"stacked\":false,\"metrics\":[[\"${AWS::StackName}/VpcFlowLogs\",\"RejectedConnections\",{\"stat\":\"Sum\",\"label\":\"Rejected/5min\"}]],\"period\":300,\"region\":\"${AWS::Region}\",\"annotations\":{\"horizontal\":[{\"label\":\"Alarm threshold\",\"value\":${VpcFlowLogsAlarmThreshold}}]}}},{\"type\":\"alarm\",\"x\":0,\"y\":12,\"width\":24,\"height\":7,\"properties\":{\"title\":\"Cluster alarms - red = firing, grey = not created (action set to off)\",\"alarms\":[\"arn:aws:cloudwatch:${AWS::Region}:${AWS::AccountId}:alarm:${AWS::StackName}-AlarmWafCommonRuleSet\",\"arn:aws:cloudwatch:${AWS::Region}:${AWS::AccountId}:alarm:${AWS::StackName}-AlarmWafKnownBadInputs\",\"arn:aws:cloudwatch:${AWS::Region}:${AWS::AccountId}:alarm:${AWS::StackName}-AlarmWafSQLi\",\"arn:aws:cloudwatch:${AWS::Region}:${AWS::AccountId}:alarm:${AWS::StackName}-AlarmWafWordPress\",\"arn:aws:cloudwatch:${AWS::Region}:${AWS::AccountId}:alarm:${AWS::StackName}-AlarmWafRateLimitSourceIp\",\"arn:aws:cloudwatch:${AWS::Region}:${AWS::AccountId}:alarm:${AWS::StackName}-AlarmWafRateLimitForwardedIp\",\"arn:aws:cloudwatch:${AWS::Region}:${AWS::AccountId}:alarm:${AWS::StackName}-AlarmWafSecretPaths\",\"arn:aws:cloudwatch:${AWS::Region}:${AWS::AccountId}:alarm:${AWS::StackName}-dns-firewall-alert-surge\",\"arn:aws:cloudwatch:${AWS::Region}:${AWS::AccountId}:alarm:${AWS::StackName}-dns-firewall-blocked\",\"arn:aws:cloudwatch:${AWS::Region}:${AWS::AccountId}:alarm:${AWS::StackName}-vpc-rejected-surge\",\"arn:aws:cloudwatch:${AWS::Region}:${AWS::AccountId}:alarm:${AWS::StackName}-egress-blocked\",\"arn:aws:cloudwatch:${AWS::Region}:${AWS::AccountId}:alarm:${AWS::StackName}-alb-late-response\",\"arn:aws:cloudwatch:${AWS::Region}:${AWS::AccountId}:alarm:${AWS::StackName}-rds-error\",\"arn:aws:cloudwatch:${AWS::Region}:${AWS::AccountId}:alarm:${AWS::StackName}-rds-slow-queries\",\"arn:aws:cloudwatch:${AWS::Region}:${AWS::AccountId}:alarm:${AWS::StackName}-rds-connections\",\"arn:aws:cloudwatch:${AWS::Region}:${AWS::AccountId}:alarm:${AWS::StackName}-elb-5xx\",\"arn:aws:cloudwatch:${AWS::Region}:${AWS::AccountId}:alarm:${AWS::StackName}-elb-5xx-refresh-gate\"],\"sortBy\":\"stateUpdatedTimestamp\",\"states\":[\"ALARM\",\"INSUFFICIENT_DATA\",\"OK\"]}},{\"type\":\"log\",\"x\":0,\"y\":19,\"width\":8,\"height\":7,\"properties\":{\"title\":\"DNS Firewall - what the whitelist does not cover (14d)\",\"region\":\"${AWS::Region}\",\"view\":\"table\",\"query\":\"SOURCE '${AWS::StackName}-DnsFirewallLogs' | filter firewall_rule_action in [\\\"ALERT\\\",\\\"BLOCK\\\"] | filter query_type not in [\\\"PTR\\\"] | stats count(*) as requests by query_name, firewall_rule_action | sort requests desc | limit 20\"}},{\"type\":\"log\",\"x\":8,\"y\":19,\"width\":8,\"height\":7,\"properties\":{\"title\":\"Rejected outbound connections - signal once egress is restricted\",\"region\":\"${AWS::Region}\",\"view\":\"table\",\"query\":\"SOURCE '${AWS::StackName}-VpcFlowLogs' | stats count(*) as flows by dstAddr, dstPort, srcAddr | sort flows desc | limit 20\"}},{\"type\":\"log\",\"x\":16,\"y\":19,\"width\":8,\"height\":7,\"properties\":{\"title\":\"Slow queries (long_query_time)\",\"region\":\"${AWS::Region}\",\"view\":\"table\",\"query\":\"SOURCE '/aws/rds/cluster/${Rdscl}/slowquery' | parse @message /Query_time: (?<qt>[0-9.]+)/ | filter ispresent(qt) | sort qt desc | limit 20\"}}]}"
         }
       },
       "Metadata": {
@@ -5283,6 +5338,370 @@
           "Fn::Sub": "SOURCE logGroups(logGroupName: \"${VpcFlowLogGroup}\") START=-86400s END=0s\n| fields @timestamp, @message\n| parse @message \"* * * * * * * * * * * * * * * * *\" as version, account, eni, srcaddr, dstaddr, srcport, dstport, protocol, packets, bytes, startTime, endTime, action, status, pkt_srcaddr, pkt_dstaddr, direction\n| filter action = \"REJECT\" and direction = \"egress\"\n| filter dstaddr like /^10\\.1\\.[12]\\./\n| stats sum(bytes) as bytesTotal, sum(packets) as packetsTotal, min(startTime) as firstEpoch, max(startTime) as lastEpoch by pkt_srcaddr, srcport\n| fields bytesTotal / packetsTotal as bytesPerPacket, formatDate(fromMillis(firstEpoch * 1000), \"%Y-%m-%d %H:%M:%S\", \"UTC\") as firstUtc, formatDate(fromMillis(lastEpoch * 1000), \"%Y-%m-%d %H:%M:%S\", \"UTC\") as lastUtc\n| sort lastEpoch desc\n| limit 50"
         }
       }
+    },
+    "ElbHttp5xxRefreshGateAlarm": {
+      "Type": "AWS::CloudWatch::Alarm",
+      "Condition": "ElbHttp5xxRefreshGateAlarmEnabled",
+      "Properties": {
+        "AlarmName": {
+          "Fn::Sub": "${AWS::StackName}-elb-5xx-refresh-gate"
+        },
+        "ActionsEnabled": {
+          "Fn::If": [
+            "ElbHttp5xxRefreshGateAlarmAlerts",
+            true,
+            false
+          ]
+        },
+        "AlarmActions": [
+          {
+            "Ref": "AlertTopic"
+          }
+        ],
+        "AlarmDescription": {
+          "Fn::Sub": "Gate for the Auto Scaling instance refresh: more than ${ElbHttp5xxRefreshGateAlarmThreshold} load-balancer-generated 5xx in 5 minutes. Passed to start-instance-refresh via AlarmSpecification; Auto Scaling reads the state during the refresh and during BakeTime and stops when it turns ALARM. It catches the failure mode the autoscaling group cannot see: an instance that boots and is therefore EC2-healthy but never registers with ECS. It does NOT catch instances that fail to launch at all - MaxHealthyPercentage covers that - and it stays quiet for partial damage, which is intended for a gate."
+        },
+        "Namespace": "AWS/ApplicationELB",
+        "MetricName": "HTTPCode_ELB_5XX_Count",
+        "Dimensions": [
+          {
+            "Name": "LoadBalancer",
+            "Value": {
+              "Fn::Select": [
+                1,
+                {
+                  "Fn::Split": [
+                    "loadbalancer/",
+                    {
+                      "Ref": "Loadbalancer"
+                    }
+                  ]
+                }
+              ]
+            }
+          }
+        ],
+        "Statistic": "Sum",
+        "Period": 300,
+        "EvaluationPeriods": 1,
+        "Threshold": {
+          "Ref": "ElbHttp5xxRefreshGateAlarmThreshold"
+        },
+        "ComparisonOperator": "GreaterThanThreshold",
+        "TreatMissingData": "notBreaching"
+      }
+    },
+    "InstanceRefreshEventRule": {
+      "Type": "AWS::Events::Rule",
+      "Condition": "InstanceRefreshNotificationOn",
+      "Metadata": {
+        "Note": "Matches by detail-type prefix instead of listing each event name, so a stage AWS adds later is covered without a template change. Scoped to this stack's group - the account holds other autoscaling groups and an unscoped rule would report theirs too.\n\nThe input transformer only reads fields present in every refresh event. CheckpointPercentage would be the interesting one but exists solely in the checkpoint event, and a path that is missing makes the transformation fail for all the others.\n\nNo policy change was needed: AlertTopicPolicy already allows events.amazonaws.com to publish, scoped by aws:SourceAccount."
+      },
+      "Properties": {
+        "Name": {
+          "Fn::Sub": "${AWS::StackName}-instance-refresh"
+        },
+        "Description": "Auto Scaling instance refresh lifecycle to the cluster alert topic",
+        "State": "ENABLED",
+        "EventPattern": {
+          "source": [
+            "aws.autoscaling"
+          ],
+          "detail-type": [
+            {
+              "prefix": "EC2 Auto Scaling Instance Refresh"
+            }
+          ],
+          "detail": {
+            "AutoScalingGroupName": [
+              {
+                "Ref": "Ascalegroup"
+              }
+            ]
+          }
+        },
+        "Targets": [
+          {
+            "Id": "AlertTopic",
+            "Arn": {
+              "Ref": "AlertTopic"
+            },
+            "InputTransformer": {
+              "InputPathsMap": {
+                "stage": "$.detail-type",
+                "asg": "$.detail.AutoScalingGroupName",
+                "refresh": "$.detail.InstanceRefreshId",
+                "when": "$.time"
+              },
+              "InputTemplate": "\"<stage> - <asg> - refresh <refresh> - <when>\""
+            }
+          }
+        ]
+      }
+    },
+    "AmiRotationLogGroup": {
+      "Type": "AWS::Logs::LogGroup",
+      "Properties": {
+        "LogGroupName": {
+          "Fn::Sub": "/aws/lambda/${AWS::StackName}-ami-rotation"
+        },
+        "RetentionInDays": 14
+      }
+    },
+    "AmiRotationRole": {
+      "Type": "AWS::IAM::Role",
+      "Properties": {
+        "AssumeRolePolicyDocument": {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Effect": "Allow",
+              "Principal": {
+                "Service": "lambda.amazonaws.com"
+              },
+              "Action": "sts:AssumeRole"
+            }
+          ]
+        },
+        "Policies": [
+          {
+            "PolicyName": "AmiRotationPolicy",
+            "PolicyDocument": {
+              "Version": "2012-10-17",
+              "Statement": [
+                {
+                  "Effect": "Allow",
+                  "Action": "ssm:GetParameter",
+                  "Resource": [
+                    {
+                      "Fn::Sub": "arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter${AmiSsmParameter}"
+                    },
+                    {
+                      "Fn::Sub": "arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/${AWS::StackName}/ami-rotation/*"
+                    },
+                    {
+                      "Fn::Sub": "arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/aws/service/ecs/*"
+                    }
+                  ]
+                },
+                {
+                  "Effect": "Allow",
+                  "Action": "ssm:PutParameter",
+                  "Resource": {
+                    "Fn::Sub": "arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter${AmiSsmParameter}"
+                  }
+                },
+                {
+                  "Effect": "Allow",
+                  "Action": [
+                    "ec2:DescribeImages",
+                    "cloudwatch:DescribeAlarms"
+                  ],
+                  "Resource": "*"
+                },
+                {
+                  "Effect": "Allow",
+                  "Action": [
+                    "autoscaling:DescribeInstanceRefreshes",
+                    "autoscaling:StartInstanceRefresh"
+                  ],
+                  "Resource": {
+                    "Fn::Sub": "arn:${AWS::Partition}:autoscaling:${AWS::Region}:${AWS::AccountId}:autoScalingGroup:*:autoScalingGroupName/${Ascalegroup}"
+                  }
+                },
+                {
+                  "Effect": "Allow",
+                  "Action": "sns:Publish",
+                  "Resource": {
+                    "Ref": "AlertTopic"
+                  }
+                },
+                {
+                  "Effect": "Allow",
+                  "Action": [
+                    "logs:CreateLogStream",
+                    "logs:PutLogEvents"
+                  ],
+                  "Resource": {
+                    "Fn::GetAtt": [
+                      "AmiRotationLogGroup",
+                      "Arn"
+                    ]
+                  }
+                }
+              ]
+            }
+          }
+        ]
+      },
+      "Metadata": {
+        "Note": "ec2:DescribeImages and cloudwatch:DescribeAlarms carry no resource scope - neither supports resource-level permissions, so * is the only expression AWS accepts. Everything else is scoped: the function may read exactly three parameter paths and write exactly one, and it may touch only this stack's group.\n\nssm:PutParameter is deliberately narrower than ssm:GetParameter. A bug that writes the wrong name fails instead of filling a foreign parameter with an AMI id.\n\nlogs:CreateLogGroup is absent on purpose. The group is a stack resource, so the function never needs to create one - and without the permission it cannot recreate /aws/lambda/<name> outside the stack after a delete, which is the trap documented on ImageResolverFunction in ecsservice."
+      }
+    },
+    "AmiRotationFunction": {
+      "Type": "AWS::Lambda::Function",
+      "DependsOn": [
+        "AmiRotationLogGroup"
+      ],
+      "Properties": {
+        "FunctionName": {
+          "Fn::Sub": "${AWS::StackName}-ami-rotation"
+        },
+        "Description": "Picks the newest ECS-optimized AMI that is at least N days old and rotates the fleet onto it",
+        "Runtime": "python3.12",
+        "Handler": "index.handler",
+        "Role": {
+          "Fn::GetAtt": [
+            "AmiRotationRole",
+            "Arn"
+          ]
+        },
+        "Timeout": 60,
+        "MemorySize": 256,
+        "Environment": {
+          "Variables": {
+            "AMI_PARAM": {
+              "Ref": "AmiSsmParameter"
+            },
+            "ASG_NAME": {
+              "Ref": "Ascalegroup"
+            },
+            "GATE_ALARM": {
+              "Fn::Sub": "${AWS::StackName}-elb-5xx-refresh-gate"
+            },
+            "TOPIC_ARN": {
+              "Ref": "AlertTopic"
+            },
+            "PUBLIC_PARAM": "/aws/service/ecs/optimized-ami/amazon-linux-2023/recommended/image_id",
+            "CONTROL_PREFIX": {
+              "Fn::Sub": "/${AWS::StackName}/ami-rotation/"
+            }
+          }
+        },
+        "Code": {
+          "ZipFile": "import os\nimport datetime\nimport boto3\n\nALLOWED = ('aus', '1', '3', '7', '14')\nPREFS = {\n    'MinHealthyPercentage': 90,\n    'MaxHealthyPercentage': 110,\n    'InstanceWarmup': 300,\n    'CheckpointPercentages': [25, 50, 75, 100],\n    'CheckpointDelay': 1800,\n    'SkipMatching': False,\n    'AutoRollback': False,\n    'BakeTime': 3600,\n}\n\n\ndef log(msg):\n    print('AmiRotation: ' + msg)\n\n\ndef read(ssm, name, default=''):\n    try:\n        return ssm.get_parameter(Name=name)['Parameter']['Value'].strip()\n    except Exception:\n        return default\n\n\ndef now():\n    return datetime.datetime.now(datetime.timezone.utc).replace(tzinfo=None)\n\n\ndef created(image):\n    return datetime.datetime.strptime(image['CreationDate'][:19], '%Y-%m-%dT%H:%M:%S')\n\n\ndef candidates(ec2, newest_id):\n    \"\"\"Owner und Namensmuster vom empfohlenen Bild ablesen, siehe Metadata.\"\"\"\n    newest = ec2.describe_images(ImageIds=[newest_id])['Images'][0]\n    parts = newest['Name'].split('-')\n    head = '-'.join(parts[:4])\n    tail = '-'.join(parts[5:])\n    pattern = head + '-*-' + tail if tail else head + '-*'\n    found = ec2.describe_images(\n        Owners=[newest['OwnerId']],\n        Filters=[\n            {'Name': 'name', 'Values': [pattern]},\n            {'Name': 'architecture', 'Values': [newest['Architecture']]},\n            {'Name': 'state', 'Values': ['available']},\n        ],\n    )['Images']\n    return sorted(found, key=lambda i: i['CreationDate'], reverse=True), pattern\n\n\ndef handler(event, context):\n    ami_param = os.environ['AMI_PARAM']\n    asg = os.environ['ASG_NAME']\n    gate = os.environ['GATE_ALARM']\n    topic = os.environ['TOPIC_ARN']\n    public = os.environ['PUBLIC_PARAM']\n    controls = os.environ['CONTROL_PREFIX']\n\n    ssm = boto3.client('ssm')\n    age = read(ssm, controls + 'min-age-days')\n    if not age:\n        # Nicht dasselbe wie aus: hier hat nie jemand etwas eingestellt.\n        log('not configured, ' + controls + 'min-age-days does not exist')\n        return\n    if age not in ALLOWED:\n        log('min-age-days is \"' + age + '\", expected one of ' + ', '.join(ALLOWED) + ' - treating as aus')\n        return\n    if age == 'aus':\n        log('aus, nothing to do')\n        return\n    if ami_param.startswith('/aws/'):\n        # Der oeffentliche Pfad gehoert AWS und ist nicht beschreibbar. Wer hier\n        # steht, hat die Region noch nicht auf einen eigenen Parameter gestellt.\n        log('ERROR ' + ami_param + ' is AWS-owned and cannot be written - point AmiSsmParameter at an own parameter first')\n        return\n\n    current = read(ssm, ami_param)\n    newest = read(ssm, public)\n    if not newest:\n        log('ERROR public parameter ' + public + ' unreadable')\n        return\n\n    ec2 = boto3.client('ec2')\n    images, pattern = candidates(ec2, newest)\n    if not images:\n        log('ERROR no image matched ' + pattern)\n        return\n\n    limit = now() - datetime.timedelta(days=int(age))\n    pick = next((i for i in images if created(i) <= limit), None)\n    if pick is None:\n        log('no image is at least ' + age + ' days old, newest was built ' + images[0]['CreationDate'])\n        return\n    if pick['ImageId'] == current:\n        log('already on ' + current + ', nothing to do')\n        return\n\n    have = next((i for i in images if i['ImageId'] == current), None)\n    if have is not None and created(pick) <= created(have):\n        # Rueckwaertssperre: ein spaeter hochgesetztes N waehlt ein aelteres Bild\n        # aus. Ohne diese Zeile wuerde die Flotte dafuer vier Stunden rotieren.\n        log('candidate ' + pick['ImageId'] + ' is not newer than current ' + current + ' - refusing to move backwards')\n        return\n\n    autoscaling = boto3.client('autoscaling')\n    seen = autoscaling.describe_instance_refreshes(AutoScalingGroupName=asg)['InstanceRefreshes']\n    busy = [r for r in seen if r['Status'] in ('Pending', 'InProgress', 'Cancelling', 'RollbackInProgress', 'Baking')]\n    if busy:\n        log('a refresh is already ' + busy[0]['Status'] + ', skipping this run')\n        return\n\n    note = current + ' -> ' + pick['ImageId'] + ' (built ' + pick['CreationDate'] + ', min age ' + age + ' days)'\n    if isinstance(event, dict) and event.get('dry_run'):\n        # Nur bei Aufruf von Hand. Bewusst kein Schalter in SSM: einer, der\n        # versehentlich stehen bleibt, legt die Rotation still lahm.\n        log('DRY RUN would rotate ' + note)\n        return\n\n    prefs = dict(PREFS)\n    if boto3.client('cloudwatch').describe_alarms(AlarmNames=[gate])['MetricAlarms']:\n        prefs['AlarmSpecification'] = {'Alarms': [gate]}\n    else:\n        # ElbHttp5xxRefreshGateAlarmAction steht auf off. Laufen lassen, aber so,\n        # dass im Log steht, dass niemand zusieht.\n        log('WARNING gate alarm ' + gate + ' does not exist, this refresh runs ungated')\n\n    ssm.put_parameter(Name=ami_param, Value=pick['ImageId'], Type='String', DataType='aws:ec2:image', Overwrite=True)\n    refresh = autoscaling.start_instance_refresh(AutoScalingGroupName=asg, Preferences=prefs)['InstanceRefreshId']\n    log('rotating ' + note + ', refresh ' + refresh)\n    boto3.client('sns').publish(\n        TopicArn=topic,\n        Subject='AMI rotation started on ' + asg,\n        Message='AMI rotation\\n\\n' + note + '\\n\\ngroup ' + asg + '\\nrefresh ' + refresh + '\\nparameter ' + ami_param,\n    )\n"
+        }
+      },
+      "Metadata": {
+        "Note": "Staged AMI rotation, step 3. Steps 1 and 2 are the launch template resolving resolve:ssm: at instance launch and the region pointing at an own parameter instead of the AWS one.\n\nONE SSM PARAMETER STEERS THIS AND IS NOT CREATED HERE - it must exist before the schedule first fires:\n  <stack>/ami-rotation/min-age-days   aus | 1 | 3 | 7 | 14\nIt is deliberately outside CloudFormation. ORDER MATTERS WHEN A CLUSTER IS BUILT: create the stack with AmiSsmParameter on its default, the AWS public path, and point it at an own parameter only after that parameter exists. A stack created with a path that does not exist reports CREATE_COMPLETE and then cannot launch a single instance - the launch template holds a string, and the failure surfaces at RunInstances. A parameter CloudFormation owns is reset to the template value on the next stack update, and the whole point of this mechanism is that an operator can change it without a deploy. The same reasoning applies to the AMI parameter itself, which the function writes.\n\nA dry run is a property of the invocation, not of the configuration: invoke with {\"dry_run\": true} and the function walks the whole decision - resolve, derive owner and name pattern, list images, compute ages, apply the backwards guard - and logs what it would do without writing or refreshing. That is where this function's real risk sits; writing a parameter and starting a refresh are two API calls. It is not a second handbrake, and it is not a parameter, because a switch left in the wrong position would silently stop the rotation forever.\n\nA missing parameter is reported as 'not configured' rather than as aus, so a cluster nobody ever set up does not read like one that was paused on purpose. Both do nothing: the safe state is doing nothing, and a typo must never become 'rotate immediately'. The safe state is doing nothing, and a typo must never become 'rotate immediately'.\n\nThe staggering between regions comes from min-age-days alone, not from the schedule: both regions wake at the same hour, staging takes an image after a day, production only after a week. There is no cross-region lookup and no coordination - a region that is behind simply picks the image the other one has been running all along.\n\nWhy it starts the refresh itself rather than only writing the parameter: a written parameter alone changes nothing: it reaches new instances only. Separating the two would mean a fleet that is a week behind its own parameter and nobody noticing.\n\nOwner and name pattern are read from the image AWS currently recommends rather than written down. The publishing account is not the alias 'amazon' and the prefix is al2023-ami-ecs-hvm-, not amzn2023- - both were wrong in earlier notes, and neither belongs in a public repository as a literal.\n\nTimeout 60 is generous: the run is five API calls. It is sized for describe_images returning a few hundred images on a slow day, not for the refresh, which is asynchronous and returns an id immediately."
+      }
+    },
+    "AmiRotationScheduleRole": {
+      "Type": "AWS::IAM::Role",
+      "Properties": {
+        "AssumeRolePolicyDocument": {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Effect": "Allow",
+              "Principal": {
+                "Service": "scheduler.amazonaws.com"
+              },
+              "Action": "sts:AssumeRole",
+              "Condition": {
+                "StringEquals": {
+                  "aws:SourceAccount": {
+                    "Ref": "AWS::AccountId"
+                  }
+                }
+              }
+            }
+          ]
+        },
+        "Policies": [
+          {
+            "PolicyName": "AmiRotationInvokePolicy",
+            "PolicyDocument": {
+              "Version": "2012-10-17",
+              "Statement": [
+                {
+                  "Effect": "Allow",
+                  "Action": "lambda:InvokeFunction",
+                  "Resource": {
+                    "Fn::GetAtt": [
+                      "AmiRotationFunction",
+                      "Arn"
+                    ]
+                  }
+                }
+              ]
+            }
+          }
+        ]
+      },
+      "Metadata": {
+        "Note": "EventBridge Scheduler invokes through a role rather than through a resource policy, which is the one structural difference to the Events::Rule used by InstanceRefreshEventRule. The aws:SourceAccount condition is there so the role cannot be assumed on behalf of a schedule in a foreign account."
+      }
+    },
+    "AmiRotationSchedule": {
+      "Type": "AWS::Scheduler::Schedule",
+      "Properties": {
+        "Name": {
+          "Fn::Sub": "${AWS::StackName}-ami-rotation"
+        },
+        "Description": "Daily check whether a newer ECS AMI is old enough to roll onto",
+        "State": "ENABLED",
+        "ScheduleExpression": "cron(0 10 ? * MON-FRI *)",
+        "ScheduleExpressionTimezone": "Europe/Berlin",
+        "FlexibleTimeWindow": {
+          "Mode": "OFF"
+        },
+        "Target": {
+          "Arn": {
+            "Fn::GetAtt": [
+              "AmiRotationFunction",
+              "Arn"
+            ]
+          },
+          "RoleArn": {
+            "Fn::GetAtt": [
+              "AmiRotationScheduleRole",
+              "Arn"
+            ]
+          }
+        }
+      },
+      "Metadata": {
+        "Note": "Scheduler rather than Events::Rule because only Scheduler understands a timezone. An Events::Rule cron is UTC, so '10:00' would silently become 11:00 local every summer - and nobody remembers that a year later.\n\n10:00 on weekdays is a decision, not a default: the refresh runs for hours with checkpoints whose purpose is that a person looks, and at 03:00 nobody does. The price is that the rotation happens during business hours. Note that it is not free of effect - a single-task service briefly has no healthy target while its task moves, and the load balancer answers 503. That is the same effect ElbHttp5xxAlarmThreshold defaults to 10 for.\n\nThe schedule is always ENABLED and carries no off switch of its own. min-age-days = aus is the handbrake, and it has the better failure mode: the function still wakes up daily and says so in the log, whereas a disabled schedule is indistinguishable from one nobody ever created."
+      }
+    },
+    "AmiRotationErrorAlarm": {
+      "Type": "AWS::CloudWatch::Alarm",
+      "Condition": "AmiRotationErrorAlarmEnabled",
+      "Properties": {
+        "AlarmName": {
+          "Fn::Sub": "${AWS::StackName}-ami-rotation-errors"
+        },
+        "ActionsEnabled": {
+          "Fn::If": [
+            "AmiRotationErrorAlarmAlerts",
+            true,
+            false
+          ]
+        },
+        "AlarmActions": [
+          {
+            "Ref": "AlertTopic"
+          }
+        ],
+        "AlarmDescription": "The AMI rotation function failed. It reports success by staying quiet, so this alarm is the only thing that distinguishes a broken rotation from a month without a new image. It does not catch the opposite case - a function that runs, decides there is nothing to do, and is wrong about it.",
+        "Namespace": "AWS/Lambda",
+        "MetricName": "Errors",
+        "Dimensions": [
+          {
+            "Name": "FunctionName",
+            "Value": {
+              "Ref": "AmiRotationFunction"
+            }
+          }
+        ],
+        "Statistic": "Sum",
+        "Period": 300,
+        "EvaluationPeriods": 1,
+        "Threshold": 0,
+        "ComparisonOperator": "GreaterThanThreshold",
+        "TreatMissingData": "notBreaching"
+      }
     }
   },
   "Outputs": {
@@ -5449,7 +5868,7 @@
     },
     "TemplateVersion": {
       "Description": "Version of the ecscluster-vpc-rds-asg template this stack was last updated with. Bump on every template change (see README).",
-      "Value": "1.7.19"
+      "Value": "1.8.0"
     }
   },
   "Conditions": {
@@ -6196,6 +6615,54 @@
       "Fn::Equals": [
         {
           "Ref": "AlbLateResponseAlarmAction"
+        },
+        "alert"
+      ]
+    },
+    "ElbHttp5xxRefreshGateAlarmEnabled": {
+      "Fn::Not": [
+        {
+          "Fn::Equals": [
+            {
+              "Ref": "ElbHttp5xxRefreshGateAlarmAction"
+            },
+            "off"
+          ]
+        }
+      ]
+    },
+    "ElbHttp5xxRefreshGateAlarmAlerts": {
+      "Fn::Equals": [
+        {
+          "Ref": "ElbHttp5xxRefreshGateAlarmAction"
+        },
+        "alert"
+      ]
+    },
+    "InstanceRefreshNotificationOn": {
+      "Fn::Equals": [
+        {
+          "Ref": "InstanceRefreshNotification"
+        },
+        "on"
+      ]
+    },
+    "AmiRotationErrorAlarmEnabled": {
+      "Fn::Not": [
+        {
+          "Fn::Equals": [
+            {
+              "Ref": "AmiRotationErrorAlarmAction"
+            },
+            "off"
+          ]
+        }
+      ]
+    },
+    "AmiRotationErrorAlarmAlerts": {
+      "Fn::Equals": [
+        {
+          "Ref": "AmiRotationErrorAlarmAction"
         },
         "alert"
       ]
